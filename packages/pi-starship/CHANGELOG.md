@@ -1,5 +1,53 @@
 # @narumitw/pi-starship
 
+## 0.56.3
+
+### Patch Changes
+
+- 8abd5b7: Keep generated extension runtime graphs inside Pi's Jiti-loaded TypeScript path to avoid duplicate peer-runtime evaluation during startup. Add measured generated runtimes for Context Management, Herdr, and TypeSafe Search.
+
+## 0.56.2
+
+### Patch Changes
+
+- 67a3049: Adapt provider, transcript, usage, deferred-tool, and telemetry behavior to Pi's current runtime contracts, including accurate cache-warming accounting and exclusion from ordinary generation traces.
+
+## 0.56.1
+
+### Patch Changes
+
+- a2803d2: Import the TOML parser instead of resolving it through `createRequire` so settings load under a compiled Pi binary, whose Jiti loader resolves a call-time `require` against the binary's embedded modules rather than the directory the package was installed into. The runtime build now refuses a generated chunk that resolves a package at call time, and the package has the Jiti-loader test its siblings already carry.
+
+## 0.56.0
+
+### Minor Changes
+
+- ff31206: Add ordered exact-match style rules for the provider, model, and thinking modules.
+
+### Patch Changes
+
+- 5e61ff4: Keep timestamped long-term backups when the bundled configuration skill replaces an existing pi-starship document.
+
+## 0.55.2
+
+### Patch Changes
+
+- d365daa: Publish the updated YAML runtime dependency range.
+- Updated dependencies [d365daa]
+  - @narumitw/pi-tui-kit@0.63.1
+
+## 0.55.1
+
+### Patch Changes
+
+- c5c0151: Avoid periodic TUI redraw requests when cached footer snapshots are unchanged, while preserving clock updates without rescanning session history on idle ticks.
+
+## 0.55.0
+
+### Minor Changes
+
+- f1fffcb: Bundle an authoritative configuration skill with detailed schema, module, runtime, and security references for answering pi-starship setup questions and safely editing or syntax-checking `pi-starship.toml`.
+
 ## 0.54.0
 
 ### Minor Changes

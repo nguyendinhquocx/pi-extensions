@@ -1,0 +1,44 @@
+────────────────────────────────
+Review sync setup
+Review before saving. Back
+cancels this draft.
+
+Sync setup: team-archive-team-ar
+chive-team-archive-team-archive-
+team-archive-team-archive-team-a
+rchive-team-archive-
+WebDAV URL: https://cloud.exampl
+e.com/dav/team/archive/
+Remote path: backups/team/settin
+gs
+Included path 0: exact/0/setting
+s.json
+Included path 1: exact/1/setting
+s.json
+1-12/73
+↑/↓ navigate • enter Save setup
+• esc back • ctrl+c close
+────────────────────────────────
+
+Scrolled to end:
+────────────────────────────────
+Review sync setup
+Review before saving. Back
+cancels this draft.
+
+ngs.json
+Included path 27: exact/27/setti
+ngs.json
+Included path 28: exact/28/setti
+ngs.json
+Included path 29: exact/29/setti
+ngs.json
+Automatic sync: Off
+Credentials: stored privately (v
+alues hidden)
+Saves local settings only. No re
+mote data is changed.
+62-73/73
+↑/↓ navigate • enter Save setup
+• esc back • ctrl+c close
+────────────────────────────────

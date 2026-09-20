@@ -8,7 +8,7 @@ Connect Pi's interactive lifecycle to Herdr and bootstrap the operating guidance
 
 - Reports Pi session identity and `working`, `blocked`, and `idle` lifecycle states to the current Herdr pane.
 - Publishes bounded `model`, `provider`, `thinking`, `session`, and `context_usage` tokens for Herdr sidebar rows.
-- Shows recognized sibling agents from the current Herdr workspace in a passive widget above Pi's editor.
+- Shows recognized sibling agents from the current Herdr workspace in a passive widget above Pi's editor, with a saved visibility toggle in `/herdr`.
 - Updates the widget from Herdr pane lifecycle and agent-status events without polling the CLI.
 - Coalesces rapid state changes and retries short-lived local socket failures without interrupting Pi.
 - Derives blocked state from Pi's public `ui_prompt_start` and `ui_prompt_end` lifecycle events.
@@ -30,11 +30,14 @@ Try from npm without installing permanently:
 pi -e npm:@narumitw/pi-herdr
 ```
 
-Load a local checkout from the repository root:
+Build and load a local checkout from the repository root:
 
 ```bash
+npm --workspace @narumitw/pi-herdr run build
 pi --no-extensions -e ./packages/pi-herdr
 ```
+
+An unbuilt local checkout has no generated entrypoint and cannot be loaded by package directory.
 
 Pi extensions and skills run with your user permissions.
 Install only trusted packages, and review the source and bundled instructions before loading this package.
@@ -55,6 +58,38 @@ rm -rf ~/.agents/skills/herdr
 ```
 
 Run `/reload` or restart Pi after changing the installed resources.
+
+## 🧠 Skills
+
+The bundled `herdr` skill loads version-matched operating guidance after an explicit Herdr request.
+It treats panes created for background work as temporary and attempts to close them after collecting the required output.
+Ask Pi explicitly to keep a pane open after the task when you want to inspect or use it later.
+Automatic cleanup runs only when the installed Herdr guidance provides a conditional close that atomically confirms the recorded pane ownership and acceptable agent or shell state; otherwise Pi leaves the pane open and reports the limitation.
+
+## 💬 Commands
+
+`/herdr` opens a menu to toggle the agent widget and view status or help, inspired by `/tool`.
+It accepts no arguments and is available inside Herdr in TUI and RPC modes; print and JSON modes reject it.
+RPC can save the preference but does not display the widget.
+Changes apply immediately and closing the menu does not undo saved changes.
+
+## ⚙️ Settings
+
+Toggle **Agent widget** in `/herdr`, or edit `<getAgentDir()>/pi-herdr.json` (normally `~/.pi/agent/pi-herdr.json`):
+
+```json
+{
+  "widget": false
+}
+```
+
+`widget` accepts only `true` or `false` and defaults to `true` when absent.
+Only user settings are supported; project files are not read.
+Manual edits apply after `/reload` or the next session start.
+Missing files are not created until an explicit save. Invalid files trigger a warning, use defaults, and block saves until repaired.
+Saves preserve unknown fields and use atomic temporary-file-plus-rename publication, with reads and writes ordered within one Pi process, not across processes.
+Failed saves restore the previous effective value and leave the existing file untouched.
+Turning the widget off closes its subscription and pending requests without disabling lifecycle or metadata reporting.
 
 ## 🔄 Lifecycle reporting
 
@@ -135,39 +170,26 @@ Command recipes, approval handling, and other operating safety rules come from t
 ## 🚧 Limitations
 
 - Lifecycle reporting, metadata reporting, and the agent widget are disabled in RPC, JSON, and print modes.
-- The widget has no settings for placement, workspace scope, visibility, or row count.
+- The widget has no settings for placement, workspace scope, or row count.
 - The widget cannot show blocked prompt text because Herdr does not expose it through public pane responses.
 - Herdr exposes no rename event, so agent and pane renames appear after the next topology refresh, reconnect, Pi `/reload`, or session start rather than immediately.
 - Integration requires a running compatible Herdr session and valid injected environment variables.
 - Model control requires an installed Herdr CLI that supports `herdr --skill`.
 - Socket failures are intentionally silent after the bounded retry.
+- Skill cleanup tracking exists only in the active model context, so compaction, session replacement, `/reload`, or shutdown can leave temporary panes open.
 - The package does not install, start, update, or configure Herdr itself.
 
 ## 🗂️ Package layout
 
 ```text
 packages/pi-herdr/
-├── skills/herdr/
-│   └── SKILL.md              # Thin bootstrap for CLI-owned operating guidance
-├── src/
-│   ├── index.ts              # Thin Pi entrypoint
-│   ├── herdr-agent-state.ts  # Pi lifecycle and integration ownership
-│   ├── herdr-client.ts       # Bounded Herdr socket transport
-│   ├── herdr-metadata.ts     # Token normalization and request helpers
-│   ├── herdr-observer.ts     # Read-only event subscription lifecycle
-│   ├── herdr-protocol.ts     # Narrow response and event validation
-│   └── herdr-widget.ts       # Agent state model and presentation
-├── test/
-│   ├── herdr-agent-state.test.ts
-│   ├── herdr-client.test.ts
-│   ├── herdr-metadata.test.ts
-│   ├── herdr-observer.test.ts
-│   ├── herdr-skill.test.ts
-│   └── herdr-widget.test.ts
-├── package.json              # Pi extension and skill declarations
-├── tsconfig.json
-├── README.md
-└── LICENSE
+├── src/                               # Authoritative implementation and helpers
+│   ├── index.ts                       # Thin repository entrypoint
+│   └── herdr-agent-state.ts           # Herdr lifecycle integration
+├── dist/                              # Generated TypeScript runtime loaded by Pi
+├── scripts/                           # Deterministic runtime builder
+├── skills/herdr/                      # Published bootstrap for CLI-owned guidance
+└── test/                              # Behavior and lifecycle coverage
 ```
 
 ## 🔎 Keywords

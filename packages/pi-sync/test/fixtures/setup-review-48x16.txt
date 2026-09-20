@@ -1,0 +1,28 @@
+────────────────────────────────────────────────
+Review sync setup
+Review before saving. Back cancels this draft.
+
+Sync setup: team-archive-team-archive-team-archi
+ve-team-archive-team-archive-team-archive-team-a
+rchive-team-archive-
+WebDAV URL: https://cloud.example.com/dav/team/a
+rchive/
+1-5/40
+↑/↓ navigate • enter Save setup • esc back •
+ctrl+c close
+────────────────────────────────────────────────
+
+Scrolled to end:
+────────────────────────────────────────────────
+Review sync setup
+Review before saving. Back cancels this draft.
+
+Included path 29: exact/29/settings.json
+Automatic sync: Off
+Credentials: stored privately (values hidden)
+Saves local settings only. No remote data is cha
+nged.
+36-40/40
+↑/↓ navigate • enter Save setup • esc back •
+ctrl+c close
+────────────────────────────────────────────────

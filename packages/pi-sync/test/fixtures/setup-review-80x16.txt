@@ -1,0 +1,28 @@
+────────────────────────────────────────────────────────────────────────────────
+Review sync setup
+Review before saving. Back cancels this draft.
+
+Sync setup: team-archive-team-archive-team-archive-team-archive-team-archive-tea
+m-archive-team-archive-team-archive-
+WebDAV URL: https://cloud.example.com/dav/team/archive/
+Remote path: backups/team/settings
+Included path 0: exact/0/settings.json
+Included path 1: exact/1/settings.json
+1-6/37
+↑/↓ navigate • enter Save setup • esc back • ctrl+c close
+────────────────────────────────────────────────────────────────────────────────
+
+Scrolled to end:
+────────────────────────────────────────────────────────────────────────────────
+Review sync setup
+Review before saving. Back cancels this draft.
+
+Included path 27: exact/27/settings.json
+Included path 28: exact/28/settings.json
+Included path 29: exact/29/settings.json
+Automatic sync: Off
+Credentials: stored privately (values hidden)
+Saves local settings only. No remote data is changed.
+32-37/37
+↑/↓ navigate • enter Save setup • esc back • ctrl+c close
+────────────────────────────────────────────────────────────────────────────────

@@ -61,6 +61,16 @@ These extensions are part of my daily Pi setup:
 | [`pi-plan-mode`](./packages/pi-plan-mode) | Codex-like, read-only `/plan` collaboration before implementation begins. | `pi install npm:@narumitw/pi-plan-mode` |
 | [`pi-subagents`](./packages/pi-subagents) | Start bounded background Pi jobs with authenticated main-agent messaging. | [Install from source](./packages/pi-subagents#-install) |
 
+### TypeSafe AI
+
+These TypeSafe AI integrations are experimental and may change as they are evaluated in real workflows.
+
+| Package | Use it for | Install |
+| --- | --- | --- |
+| [`pi-typesafe`](./packages/pi-typesafe) | Make typed Jev decisions with validated probabilities for yes-or-no, fixed-choice, and ordered-score questions. | `pi install npm:@narumitw/pi-typesafe` |
+| [`pi-typesafe-compact`](./packages/pi-typesafe-compact) | Use Jev to select older history before summarizing it with Pi's native compaction flow and active model. | `pi install npm:@narumitw/pi-typesafe-compact` |
+| [`pi-typesafe-search`](./packages/pi-typesafe-search) | Search workspace files with SQLite FTS5 and Jev semantic reranking, without embeddings or a vector database. | `pi install npm:@narumitw/pi-typesafe-search` |
+
 ### Browser and research
 
 | Package | Use it for | Install |
@@ -93,6 +103,7 @@ The deprecated combined `pi-workflow` package has no atomic Plan-to-Goal replace
 | Package | Use it for | Install |
 | --- | --- | --- |
 | [`pi-accounts`](./packages/pi-accounts) | Switch named OpenAI Codex, Anthropic, GitHub Copilot, Kimi For Coding, OpenRouter, Radius, and xAI OAuth accounts with `/accounts`. | `pi install npm:@narumitw/pi-accounts` |
+| [`pi-dotenv`](./packages/pi-dotenv) | Load one explicit dotenv file early enough for provider credential discovery during normal Pi startup. | `pi install npm:@narumitw/pi-dotenv` |
 | [`pi-recall`](./packages/pi-recall) | Save selected text messages locally and preview or quote them across Pi sessions. | `pi install npm:@narumitw/pi-recall` |
 | [`pi-usage`](./packages/pi-usage) | View current-account Codex subscription limits or OpenRouter API-key spend limits with `/usage`. | `pi install npm:@narumitw/pi-usage` |
 | [`pi-sync`](./packages/pi-sync) | Sync allowlisted Pi settings and optional sessions through Cloudflare R2 or S3-compatible storage. | `pi install npm:@narumitw/pi-sync` |
@@ -102,6 +113,7 @@ The deprecated combined `pi-workflow` package has no atomic Plan-to-Goal replace
 | Package | Use it for | Install |
 | --- | --- | --- |
 | [`pi-analytics`](./packages/pi-analytics) | Review private, content-free local metrics for model calls, skills, tools, response cycles, and observed provider reliability through `/analytics`. | `pi install npm:@narumitw/pi-analytics` |
+| [`pi-cache-hit-monitor`](./packages/pi-cache-hit-monitor) | Show live prompt-cache reuse, token, and estimated cost diagnostics above the editor. | `pi install npm:@narumitw/pi-cache-hit-monitor` |
 | [`pi-github-pr`](./packages/pi-github-pr) | Show current-branch pull request checks, reviews, and comment counts through the authenticated `gh` CLI. | `pi install npm:@narumitw/pi-github-pr` |
 | [`pi-langfuse`](./packages/pi-langfuse) | Send agent runs, generations, token usage, costs, and tool activity to Langfuse. | `pi install npm:@narumitw/pi-langfuse` |
 | [`pi-stamp`](./packages/pi-stamp) | Show configurable timestamps with opt-in assistant metadata, response timing, and tool timing in the TUI transcript. | `pi install npm:@narumitw/pi-stamp` |

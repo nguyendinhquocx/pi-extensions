@@ -1,5 +1,17 @@
 # @narumitw/pi-accounts
 
+## 0.52.1
+
+### Patch Changes
+
+- 8abd5b7: Keep generated extension runtime graphs inside Pi's Jiti-loaded TypeScript path to avoid duplicate peer-runtime evaluation during startup. Add measured generated runtimes for Context Management, Herdr, and TypeSafe Search.
+
+## 0.52.0
+
+### Minor Changes
+
+- da8b65e: Add a Set default account picker to `/accounts` for each provider. New sessions use the saved default, while current, resumed, and reloaded sessions retain their own account selections. Preserve unknown settings fields during saves and order asynchronous reads after queued writes.
+
 ## 0.51.0
 
 ### Minor Changes

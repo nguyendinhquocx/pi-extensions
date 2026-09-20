@@ -1,5 +1,35 @@
 # @narumitw/pi-codex-compact
 
+## 0.53.3
+
+### Patch Changes
+
+- 8abd5b7: Keep generated extension runtime graphs inside Pi's Jiti-loaded TypeScript path to avoid duplicate peer-runtime evaluation during startup. Add measured generated runtimes for Context Management, Herdr, and TypeSafe Search.
+
+## 0.53.2
+
+### Patch Changes
+
+- 67a3049: Adapt provider, transcript, usage, deferred-tool, and telemetry behavior to Pi's current runtime contracts, including accurate cache-warming accounting and exclusion from ordinary generation traces.
+
+## 0.53.1
+
+### Patch Changes
+
+- eeede25: Allow managed npm installs without physical Pi peer packages to open the settings menu.
+
+## 0.53.0
+
+### Minor Changes
+
+- 2edfea9: Support explicit Codex Responses compatibility profiles for custom Pi model APIs, including safe checkpoint replay authorization and migration of earlier checkpoints.
+
+## 0.52.0
+
+### Minor Changes
+
+- ac74542: Add Remote V2 and unary Responses Compact routing for OpenAI Codex, OpenAI, Azure OpenAI, and compatible custom providers while preserving existing checkpoints.
+
 ## 0.51.3
 
 ### Patch Changes

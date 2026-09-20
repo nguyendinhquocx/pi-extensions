@@ -41,10 +41,23 @@ Extensions run with Pi's permissions, so install only packages from sources you 
 ## 🚀 Quick start
 
 Run `/sync` and choose **Set up sync**.
-Before saving, review the storage connection, exact remote path, included content, automatic-sync choice, and masked credentials.
+Name the setup once; its first storage connection uses the same name.
+Input prompts show examples or an explicit default that you can accept by submitting an empty value; cancelling never accepts a default.
+Remote URLs, endpoints, usernames, and credentials require your own values, not the displayed examples.
+All new setups default to storage path `./`: the Git repository root, the WebDAV collection URL, or the selected R2/S3 bucket root.
+Git also suggests branch `main`.
+Use different folders or prefixes for independent setups sharing a WebDAV collection or bucket; existing settings and paths are unchanged.
+If another configured setup already uses the chosen location, setup asks for a different path before the content selection and review; Git requires a different branch, even when the directory differs.
+Every new setup asks for included content and automatic sync; automatic sync is off unless you enable it. Recommended includes nine Pi roots; Minimal includes `settings.json` and `AGENTS.md`. Sessions stay off unless explicitly included with a privacy acknowledgement.
+Before saving, scroll through the exact destination, every included path, automatic-sync choice, and hidden-credential summary. R2/S3 always asks for an existing bucket; an example bucket name is not a default.
+
+Invalid fields ask for a correction without restarting setup. A temporary local save failure keeps the review for another Save; changed settings require reopening and reviewing the current values. Saving only changes local settings, not remote data. A connection saved through **Add a new storage connection…** remains saved if you later cancel the setup.
 
 Buckets and remote repositories must already exist.
 Git uses existing non-interactive SSH or credential-helper configuration and never stores Git credentials.
+It owns the entire selected branch: use an empty repository or a new branch if `main` already contains unrelated content.
+At `./`, Git stores `manifest.json` and `files/` at the repository root; it does not modify your local working tree.
+WebDAV and R2/S3 store `latest.json`, `history.json`, and `snapshots/` directly under their selected root, not under a literal `./` prefix.
 
 ## 🧭 Manager, conflicts, and recovery
 
@@ -54,7 +67,7 @@ The `/sync` manager shows local state without contacting remote storage:
 Current sync setup: home
 Storage: Cloudflare R2 · r2 · personal-pi
 Included: 5 built-in groups · 0 extra files · Sessions off
-Automatic sync: On
+Automatic sync: On (startup check; shutdown pushes selected content if sessions included)
 Remote status: Not checked
 ```
 
@@ -63,9 +76,11 @@ Primary actions include **Sync now**, **Switch sync setup**, **Status & changes*
 After Pi Sync detects an included-content mismatch, the manager shows **Sync status: Review needed** and puts **Review synced content (recommended)** first.
 **Sync now** remains unavailable until you review the mismatch.
 Opening the manager does not make another remote request.
-The manager also provides setup and connection details, history, and recovery.
+Under **More…**, **Storage connections** holds reusable server addresses and sign-in details; **Sync setups** holds content, destination, and automatic-sync choices. **Edit storage location…** changes only bucket, branch, or path, not the connection or included content. Use **Settings** for the current setup's content and automatic sync; make another setup current before changing those settings.
 
-On secondary screens, **Back** and Escape return to the previous screen, while Ctrl+C closes the flow.
+**More… → Check setup** (also `/sync doctor`) reports configuration and backend-specific access checks. S3/R2 performs a read-only request: success does not prove write access or snapshot validity, and an ambiguous 404 does not prove a bucket is missing. Check the indicated credentials, address, bucket, or path before retrying. Git checks remote reads and the local cache, not write access. WebDAV uses an isolated write/cleanup probe and repairs the active snapshot's history entry if missing. The existing **History & recovery** route remains available.
+
+On secondary menus, **Back** and Escape return to the previous screen. In setup inputs and save reviews, cancellation (including Ctrl+C) discards the current unsaved draft and returns to its owning menu. Session replacement or shutdown closes the owning flow.
 Specialized operation and masked-credential prompts show the effective cancellation bindings and keep Ctrl+C as a hard-cancel input when Back is remapped.
 Destructive, credential-bearing, and externally visible operations show exact previews and confirmations.
 
@@ -102,13 +117,12 @@ Then choose one action:
 - **Keep this device's content list and update remote…** opens the existing `push --force` preparation and exact confirmation without `--yes`.
   Cancelling preparation or confirmation returns to the content-list choice without changing remote data.
 - **Cancel** returns to the manager without changing settings, files, remote data, or sync state.
-- **Later** appears when automatic startup sync detected the mismatch and returns immediately to the Pi editor without changing anything.
 
 Choose **Review differences (recommended)** in an ordinary file-direction conflict to inspect the exact affected paths without changing local files, remote data, or sync state.
 Then choose one reviewed direction:
 
 - **Keep local content and replace remote…** uses the existing forced-push path.
-  It scans managed local files for secrets, shows the exact remote publication effect, re-reads a changed remote head, and asks again if the reviewed plan changed.
+  It applies the [secret-scan setting](./docs/settings.md#secret-scanning), shows the exact remote publication effect, re-reads a changed remote head, and asks again if the reviewed plan changed.
 - **Use remote content and replace local…** uses the existing forced-pull path.
   It shows exact local writes and deletions, protects the live session, and creates a local backup before applying.
 - First sync uses **Use local as initial source…** and **Use remote as initial source…** labels.
@@ -117,80 +131,55 @@ Then choose one reviewed direction:
 Cancelling a preparation or confirmation returns to conflict resolution with no side effects.
 Back returns to the sync manager, and Ctrl+C closes the complete flow.
 
-When automatic startup sync detects an explicit content-list mismatch in TUI mode, it opens **Synced content differs** once for that session instead of ending at a warning.
-Choosing **Later** or closing the flow leaves a compact **Pi Sync needs review** widget above the editor and a **review needed** footer status.
-The attention state is in memory only, contains no credentials or file contents, and is revalidated before any settings or remote mutation.
-It clears after verified resolution, invalidation, session replacement, or shutdown.
+Startup checks never open a dialog. While checking, TUI and RPC status show **sync ...**. With a sync baseline and no content-list mismatch, they use **sync ⇡** for local changes to push and **sync ⇣** for remote changes to pull. Review conditions use **sync ⇕**; in TUI, a persistent widget above the editor also identifies both sides changing, first sync with an existing remote snapshot, a differing content list (including order-only differences), or a missing remote snapshot despite an existing baseline. Both sides changing is a reason to review, not a confirmed file conflict.
+No selected content and first sync with an empty remote stay quiet outside `/sync`, which provides setup or initialization guidance. Legacy remote metadata without an authoritative content list does not independently trigger a widget; the baseline and change conditions still apply. An included-content mismatch puts **Review synced content (recommended)** in the manager, where a fresh review verifies the remote snapshot before offering changes.
+Check results are advisory observations against the last sync baseline, not proof of a file conflict or current equality. Opening the manager uses local information and shows when the check completed; it does not contact remote storage. Transfer actions recheck current content.
+The widget has no expiry timer. Attention stays in memory and is invalidated by relevant settings/state changes or a foreground transfer's commit boundary, and cleared on session replacement or shutdown. A newer observation replaces the presentation, clearing the widget when only status or no reminder is needed. Cancelling a review or a failure before commit preserves a still-valid observation and its appropriate presentation.
 
 Interactive TUI `/sync sync`, `/sync pull`, and `/sync push` routes without `--yes` open the same review flow when they detect the mismatch.
 Explicit `--yes` routes remain non-interactive and report exact remote-only, device-only, or order-only guidance while leaving visible attention for later review.
 Shutdown automatic sync never opens a dialog because Pi is exiting.
-RPC startup mismatch review remains read-only and notification-based.
+RPC startup checks use status for one-sided changes and nonblocking warning notifications for review conditions; included-content review remains read-only.
 Print and JSON modes do not support `/sync` because UI output is not observable there.
 
 ## ⚙️ Settings
 
-The canonical private user file is:
+Run `/sync` → **Set up sync** to create the canonical private user file at `<getAgentDir()>/pi-sync.json` (normally `~/.pi/agent/pi-sync.json`).
+Use **Settings** to manage an existing setup.
+Missing settings stay unconfigured without creating files or locks.
 
-```text
-~/.pi/agent/pi-sync.json
-```
+### Background startup checks
 
-Pi's configured agent directory replaces `~/.pi/agent` when applicable.
-Missing settings load as unconfigured without creating an agent directory, file, temporary file, or lock.
+With **Automatic sync** enabled, session startup schedules a background check instead of waiting for a transfer. Pi remains usable while Git, WebDAV, R2, or S3 checks local hashes and remote metadata. Results follow the [status and review classifications](#resolve-conflicts-in-the-manager); check failures provide `/sync` guidance without opening a dialog. Use **Sync now** to start a reviewed transfer, or `/sync status` to retry a check. Foreground `/sync` cancels and drains the background check before starting.
 
-An explicit setup creates the file atomically.
-On POSIX, pi-sync creates and replaces it with mode `0600`.
-Pi-sync processes coordinate settings access through `pi-sync.json.mutation-lock`; lock-unaware editors are outside that serialization boundary and should not save the file while a pi-sync settings operation is running.
-Credentials stay in this canonical private file and are never shown in menus, reviews, status, notifications, errors, logs, or completion metadata.
+Checks run once per session start, including `/reload`, new, resumed, and forked sessions, in TUI and RPC only. Print/JSON skip startup checks. There is no polling or automatic check retry loop. The overall deadline is 30 seconds, followed by underlying cleanup where needed; Git process termination and temporary-ref cleanup can take additional time. Git checks can still fetch objects and update the extension's private bare cache, but never push, apply managed files, update the sync baseline, or reload Pi.
 
-A private `pi-sync.local.json` containing a valid version 3 document is copied byte-for-byte to `pi-sync.json`.
-The old file remains as a recovery copy.
-If both paths exist, `pi-sync.json` wins and the legacy file remains untouched.
+**Compatibility change:** the existing `sync.automatic` boolean and Off default are unchanged, but On no longer performs startup push/pull. Startup is not guaranteed to use the latest remote content. Local transaction recovery remains an awaited safety barrier and can restore interrupted file changes before use; existing legacy settings-file initialization is also retained.
 
-### Complete version 3 example
+Shutdown behavior is unchanged: when **Automatic sync** is On and sessions are included, pi-sync can automatically push the selected content, not only session files. This also applies to headless modes; shutdown never opens a dialog, and `/reload` skips this push. Turning the setting Off disables both future startup checks and automatic shutdown pushes.
+
+**Settings → Show status (all setups)** defaults to **On**. Turning it Off immediately clears and suppresses pi-sync status text for background checks, transfers, and review attention; widgets and notifications remain available.
+
+**Settings → Skip secret scan (all setups)** defaults to **Off**; enable it only after reviewing the destination and selected content because it disables push scanning for every setup.
+See [Secret scanning](./docs/settings.md#secret-scanning) for the setting and diagnostic behavior.
+
+A minimal Git setup uses an existing private remote and keeps automatic sync off:
 
 ```json
 {
   "version": 3,
   "activeSyncSetup": "home",
   "onSwitch": "ask-before-pull",
+  "skipSecretScan": false,
+  "showStatus": true,
   "storageConnections": {
-    "r2": {
-      "type": "s3",
-      "endpoint": "https://example.r2.cloudflarestorage.com",
-      "region": "auto",
-      "credentials": {
-        "accessKeyId": "<access-key-id>",
-        "secretAccessKey": "<secret-access-key>"
-      }
-    },
     "github": {
       "type": "git",
       "remote": "git@github.com:owner/private-pi-sync.git"
-    },
-    "nextcloud": {
-      "type": "webdav",
-      "url": "https://cloud.example.com/remote.php/dav/files/user",
-      "credentials": {
-        "username": "user",
-        "password": "<app-password>"
-      }
     }
   },
   "syncSetups": {
     "home": {
-      "storage": {
-        "connection": "r2",
-        "bucket": "personal-pi",
-        "path": "pi-sync/home"
-      },
-      "sync": {
-        "include": ["settings.json", "AGENTS.md", "skills", "prompts", "themes"],
-        "automatic": true
-      }
-    },
-    "git-backup": {
       "storage": {
         "connection": "github",
         "branch": "pi-sync/home",
@@ -200,137 +189,53 @@ If both paths exist, `pi-sync.json` wins and the legacy file remains untouched.
         "include": ["settings.json", "AGENTS.md"],
         "automatic": false
       }
-    },
-    "webdav-backup": {
-      "storage": {
-        "connection": "nextcloud",
-        "path": "pi-sync/home"
-      },
-      "sync": {
-        "include": ["settings.json", "sessions"],
-        "automatic": false
-      }
     }
   }
 }
 ```
 
-Cloudflare R2 is persisted as `"type": "s3"`; R2 is a setup preset, not another schema type.
-Temporary S3 credentials may additionally include `credentials.sessionToken`.
-
-### Required backend shapes
-
-- **S3/R2 connection:** `type`, `endpoint`, `region`, and `credentials.accessKeyId` / `credentials.secretAccessKey`.
-- **S3/R2 setup storage:** `connection`, `bucket`, and complete relative `path`; `branch` is rejected.
-- **Git connection:** `type` and a credential-free SSH or HTTPS `remote`.
-- **Git setup storage:** `connection`, `branch`, and complete repository `path`; `bucket` is rejected.
-- **WebDAV connection:** `type`, HTTPS `url`, and `credentials.username` / `credentials.password`.
-- **WebDAV setup storage:** `connection` and complete relative `path`; `bucket` and `branch` are rejected.
-
-Every setup requires `sync.include` and explicit `sync.automatic`.
-`activeSyncSetup` must reference an own-property setup when any setups exist and must be absent when the setup catalog is empty.
-A referenced connection cannot be removed.
-The current setup must be switched before removal.
-Two setups cannot resolve to the same normalized backend location.
-
-`onSwitch` accepts:
-
-- `ask-before-pull` — switch, then ask in TUI whether to start a reviewed pull;
-- `pull-after-switch` — require observable UI and start the normal reviewed pull;
-- `switch-only` — switch without reading or applying remote content.
-
-### Included content
-
-`sync.include` is ordered and duplicate-free.
-Supported Pi roots are:
-
-```text
-settings.json, keybindings.json, models.json, AGENTS.md, APPEND_SYSTEM.md,
-skills, prompts, themes, extensions, sessions
-```
-
-Safe agent-relative custom files or directories may also be included.
-Absolute paths, `..`, backslashes, controls, denied secret/settings paths, duplicate case variants, and ambiguous nested paths under reserved roots are rejected.
-
-An empty array is valid.
-It means no useful transfer is selected: **Sync now** reports the condition and does not claim that the setup is up to date.
-Unselected content remains unmanaged locally and is preserved when republishing existing remote snapshots.
-
-The Included Content editor is a standard bounded multi-select backed by one in-memory draft.
-Toggles never write settings.
-**Add custom path…** accepts a safe agent-relative file or directory even when it does not exist locally yet, allowing a new environment to select content that exists only in the remote snapshot.
-Leaving the editor opens an exact Include/Exclude review with **Save changes**, **Discard changes**, and **Continue editing**; only reviewed Save publishes, while Continue preserves the draft and Discard/cancellation preserves the settings bytes.
-RPC remains a read-only summary with the manual `sync.include` path.
-
-Every new snapshot stores the normalized included-content selection separately from the files that happened to exist.
-This preserves selected-but-missing paths without syncing `pi-sync.json`, storage credentials, automatic-sync preferences, or setup names.
-**Settings → Compare synced content** opens the same review-first flow as a manager operation when local and remote lists differ.
-Adoption revalidates the remote head, immutable snapshot, reviewed storage coordinates, and local include list before one atomic settings update.
-The saved state changes only `sync.include`, preserves unknown settings fields, and never pulls files or writes sync state.
-Its explicit Continue action starts a fresh **Sync now** route, while **Done** leaves the reviewed settings change saved without implying a file operation.
-Keeping this device's list opens the reviewed force-push path and explicitly replaces the remote policy while preserving eligible unmanaged remote files.
-
-Automatic sync and pull, including forced pull, pause on an explicit remote-policy difference rather than silently expanding local scope.
-Status reports matches and exact local-only/remote-only paths.
-Old snapshots remain readable.
-Because they have no authoritative selection, pi-sync offers only a clearly labeled read-only partial discovery from safe remote file roots; selected-but-missing and preserved-unmanaged intent cannot be reconstructed.
-Use **Add custom path…** for any needed path.
-
-Adding `sessions` requires a privacy acknowledgement in interactive flows.
-Session JSONL can contain prompts, tool output, file paths, images, and secrets.
-Automatic apply protects the currently open session file; restart Pi or resume a pulled session to use newly synchronized conversations.
-
-### Unsupported old settings and recovery
-
-Version 1, version 2, and non-empty unversioned documents are unsupported after the version 3 schema reset.
-Pi Sync does **not** migrate, partially interpret, downgrade, or overwrite them.
-Automatic sync pauses and reports an actionable version 3 error without displaying secrets.
-
-Recovery:
-
-1. retain the old file byte-for-byte;
-2. move it aside manually;
-3. create a new version 3 document or run the setup manager;
-4. run `/sync doctor`, inspect the exact storage path, and review the first pull or push;
-5. restore the retained file and a compatible older package only if rolling back.
-
+Setup saves are atomic and private (`0600` on POSIX), preserve unknown fields, and coordinate across pi-sync processes.
+Do not save from a lock-unaware editor during a pi-sync settings operation.
 Malformed, invalid, unsupported, symlinked, or concurrently changed documents remain untouched.
-Failed UI saves keep the previous file and displayed/effective state.
+Version 1, version 2, and non-empty unversioned settings require manual recovery rather than automatic migration.
+
+Adding `sessions` can upload prompts, tool output, paths, images, and secrets; interactive flows require a privacy acknowledgement.
+Startup checks report included-content differences without changing anything. Transfers retain their existing included-content policy checks instead of silently expanding local scope.
+
+Read the [settings reference](./docs/settings.md) for complete S3/R2, Git, and WebDAV examples, backend fields, included-content rules, legacy paths, and recovery steps.
 
 ## 💬 Commands
 
-The menu is preferred, while deterministic routes remain available:
+| Command | Purpose |
+| --- | --- |
+| `/sync` | Set up storage, manage synced content, and review sync operations or recovery. |
+| `/sync help` | Show command usage. |
+| `/sync use <setup>` | Switch the active local sync setup, following its switch policy. |
+| `/sync init` | Create a local configuration template. |
+| `/sync config` | Show resolved configuration. |
+| `/sync files` | List included local files. |
+| `/sync status` | Compare local and remote snapshot state. |
+| `/sync diff` | Show local and remote differences. |
+| `/sync doctor` | Check configuration, connectivity, and backend safety. |
+| `/sync push` | Publish local content to remote storage. |
+| `/sync pull` | Back up local content, then apply the remote snapshot. |
+| `/sync sync` | Choose a safe sync direction or require conflict review. |
+| `/sync history` | Browse remote snapshots and review a rollback. |
+| `/sync rollback <snapshot-id>` | Back up local content, apply a historical snapshot, and republish it remotely. |
+| `/sync migrate-state` | Migrate the legacy local state directory. |
+| `/sync unlock --stale` | Recover an abandoned local lock after guarded ownership checks. |
 
-```text
-/sync help
-/sync use <setup>
-/sync init
-/sync config [--setup <name>]
-/sync files [--setup <name>]
-/sync status [--setup <name>]
-/sync diff [--setup <name>]
-/sync doctor [--setup <name>]
-/sync push [--setup <name>]
-/sync pull [--setup <name>]
-/sync sync [--setup <name>]
-/sync history [--setup <name>]
-/sync rollback <snapshot-id> [--setup <name>]
-/sync migrate-state [--yes]
-/sync unlock --stale
-```
+All routes support TUI and RPC; RPC settings and included-content screens are read-only.
+Print and JSON modes reject `/sync`.
+Unknown commands or flags, trailing values, and missing setup/snapshot values are rejected, including the former version 2 setup-addressing flag.
 
-- `--setup <name>` addresses a setup without switching it.
-- `--yes` or `-y` skips confirmation for `push`, `pull`, `sync`, `rollback`, or `migrate-state`.
-- `--force` lets `push`, `pull`, and `sync` accept a reviewed content conflict without disabling backend concurrency protection.
-- `--stale` applies only to guarded stale-lock recovery through `unlock`.
+- `--setup <name>` targets a setup without switching it on `config`, `files`, `status`, `diff`, `doctor`, `push`, `pull`, `sync`, `history`, and `rollback`.
+- `--yes` (alias: `-y`) skips confirmation on `push`, `pull`, `sync`, `rollback`, and `migrate-state`; use only after reviewing the affected content.
+- `--force` lets `push` or `pull` accept content conflicts without disabling backend concurrency protection. It is also accepted by `sync`, which still requires a direction choice for divergent content, and by `rollback`, where it has no additional effect.
+- `--stale` is accepted only by `unlock` and is required to remove a stale lock.
 
-The former version 2 setup-addressing flag is rejected.
-Unknown flags, unknown commands, trailing values, and missing setup/snapshot values are rejected.
-Completion includes known setup names and preserves preceding command tokens.
-
-TUI mode provides manager, settings, resource, included-content, secret, wizard, confirmation, and operation-review screens.
-In RPC mode, the **Settings** and **Included Content** interfaces provide read-only summaries through Pi's dialog and notification protocol.
-Print and JSON modes reject `/sync` before entering interactive screens.
+Push and rollback publish data externally; pull and rollback can replace or delete local managed files.
+Review [Settings](#-settings) for included-content privacy and [Manager, conflicts, and recovery](#-manager-conflicts-and-recovery) before forcing a direction, skipping confirmation, or removing a lock.
 
 ## 🔄 Backend and recovery model
 
@@ -347,7 +252,7 @@ The private bare cache under `<agent-dir>/pi-sync/git/` is rebuildable.
 
 WebDAV requires HTTPS except loopback tests.
 URL credentials, query strings, fragments, unsafe redirects, weak/missing ETags, and ignored conditional headers fail closed.
-`/sync doctor` verifies collection and conditional-write behavior with an isolated probe.
+`/sync doctor` verifies collection and conditional-write behavior with an isolated probe, then repairs a missing active-snapshot history entry.
 
 S3/R2 stages immutable bundles, rechecks the visible head before publication, and verifies afterward.
 Unlike Git/WebDAV, generic S3 does not provide an atomic compare-and-swap for `latest.json`; status review remains important for simultaneous writers.
@@ -367,7 +272,7 @@ Preserve both roots before manual recovery; with every Pi process closed and no 
 ## 🔒 Security and privacy
 
 - Canonical, legacy, temporary, and recovery settings paths are denied from snapshots; both `pi-sync/` and `.pisync/` state roots are permanently denied.
-- Push scans managed local content for common secret patterns.
+- Push scans managed local content for common secret patterns unless the user explicitly enables **Skip secret scan**; `/sync doctor` always retains the diagnostic scan.
 - Remote snapshot references, checksums, paths, manifests, response sizes, and publication revisions are validated.
 - Symlink parents, path escapes, duplicate paths, and unsafe file/directory replacement fail before local mutation.
 - Live locks block mutation; stale recovery rechecks process and guard ownership.
@@ -379,50 +284,32 @@ Preserve both roots before manual recovery; with every Pi process closed and no 
 
 Pi exposes terminal components rather than a semantic or ARIA tree.
 Release checks cover textual state, keyboard operation, Escape and Back behavior, control escaping, and narrow rendering.
-Critical meaning appears in text such as `(current)`, `Review needed`, `Later`, `Warning`, `Invalid`, `Saved`, `Cancelled`, and `Applied`.
+Critical meaning appears in text such as `(current)`, `Review needed`, `No startup transfer`, `Warning`, `Invalid`, `Saved`, `Cancelled`, and `Applied`.
 Color is supplementary, and the attention widget is informational rather than interactive.
 
 ## 🗂️ Package layout
 
 ```text
 packages/pi-sync/
-├── dist/                    # Generated split TypeScript runtime loaded through Pi's Jiti loader
-├── scripts/
-│   └── build-runtime.mjs    # Deterministic bundler and eager-boundary validator
 ├── src/
-│   ├── index.ts
-│   ├── sync-extension.ts      # Lightweight Pi entry runtime and cached lazy loaders
-│   ├── sync.ts                # Compatibility barrel for package-local helpers
-│   ├── sync-errors.ts         # Lightweight setup/decision error contracts
-│   ├── config.ts
-│   ├── config-file.ts
-│   ├── state-directory.ts
-│   ├── settings-management.ts
-│   ├── manager-ui.ts
-│   ├── manager-state.ts
-│   ├── manager-recovery.ts
-│   ├── operation-availability.ts
-│   ├── manager-attention.ts
-│   ├── sync-attention.ts
-│   ├── storage-connections-ui.ts
-│   ├── sync-setups-ui.ts
-│   ├── file-selection.ts
-│   ├── remote-selection-ui.ts
-│   ├── remote-snapshot.ts
-│   ├── sync-operations.ts
-│   ├── sync-backend.ts
-│   ├── backend-factory.ts      # lazy selected-backend loader
-│   ├── s3-backend.ts
-│   ├── webdav-backend.ts
-│   ├── git-backend.ts
-│   ├── snapshot-paths.ts      # Eager recovery-safe session path helpers
-│   ├── snapshot.ts            # Loaded only for snapshot operations/session push
-│   └── *.ts
-├── test/
-├── README.md
-├── LICENSE
-└── package.json
+│   ├── index.ts                       # Thin Pi entrypoint
+│   ├── sync-extension.ts              # Registration and session lifecycle ownership
+│   ├── commands/                      # Parsing, execution, and attention dispatch
+│   ├── settings/                      # Schema, validation, resolution, and persistence
+│   ├── sync/                          # Queries, mutations, policy, and lazy loaders
+│   ├── snapshot/                      # Collection, session paths, apply, and recovery
+│   ├── backends/                      # Contract and Git, S3, and WebDAV transports
+│   ├── state/                         # Sync-state persistence, locks, and migration
+│   └── ui/                            # Manager, settings, reviews, and setup flows
+├── dist/                              # Generated Jiti runtime
+├── scripts/build-runtime.mjs          # Runtime builder
+├── docs/                              # Published reference documentation
+└── test/                              # Behavior and lifecycle coverage
 ```
+
+The generated runtime is built from `src/index.ts` and does not import back into `src`.
+Internal modules use direct imports from their owners; `src/sync.ts` and `src/types.ts` retain compatibility exports.
+Backend transports do not depend on UI, and first-use operation and setup implementations remain lazy.
 
 ## 🔎 Keywords
 

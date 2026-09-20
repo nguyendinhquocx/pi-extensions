@@ -1,5 +1,49 @@
 # @narumitw/pi-tui-kit
 
+## 0.65.0
+
+### Minor Changes
+
+- 9ad07cf: Add focused interaction subpaths and standalone document-review and multi-select runners with lifecycle-safe TUI and RPC adaptation.
+
+## 0.64.0
+
+### Minor Changes
+
+- 9df8964: Expose lazy Mermaid Markdown renderer preparation and a synchronous final-message transformer from the package root and the focused `/markdown` subpath.
+
+## 0.63.1
+
+### Patch Changes
+
+- d365daa: Publish and document Diff 9 as the runtime dependency used for text comparisons.
+
+## 0.63.0
+
+### Minor Changes
+
+- 393783f: Add standard-screen mouse routing, compatible thinking-selector save bindings, bounded intraline diff emphasis, searchable live choices, editable input prefill, and a TUI-only masked secret interaction.
+
+### Patch Changes
+
+- 845bb04: Keep optimistic setting values stable when an older rejected save requests the same value as a newer queued change.
+
+## 0.62.0
+
+### Minor Changes
+
+- 6b1e009: Add searchable default-aware selectors with current/default markers and effective Ctrl+S save-default actions.
+
+### Patch Changes
+
+- 4485b49: Fix forwarded selector submissions, accurate shortcut hints across legacy and extended keyboard protocols, and thinking-level descriptions.
+
+## 0.61.0
+
+### Minor Changes
+
+- 317f7bd: Expose a stateless bounded-frame renderer with caller-owned row priorities, and reuse it in standard menus without changing their input or save lifecycle.
+
 ## 0.60.0
 
 ### Minor Changes
