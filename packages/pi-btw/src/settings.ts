@@ -7,8 +7,14 @@ import { BTW_SHORTCUT_ACTIONS, type BtwKeybindingOverrides, normalizeBtwKey } fr
 import { BTW_THINKING_LEVELS, type BtwThinkingLevel } from "./side-thread.js";
 
 export const BTW_SETTINGS_FILE = "pi-btw.json";
+export const BTW_LAYOUTS = ["fullscreen", "left-pane", "right-pane"] as const;
+export type BtwLayout = (typeof BTW_LAYOUTS)[number];
+export const DEFAULT_BTW_LAYOUT: BtwLayout = "fullscreen";
 export const DEFAULT_FULLSCREEN_COPY_ON_SELECT = true;
 export const DEFAULT_REMEMBER_THINKING_LEVEL_CHANGES = true;
+export const DEFAULT_BTW_SIDE_PANE_RATIO = 0.5;
+export const MIN_BTW_SIDE_PANE_RATIO = 0.2;
+export const MAX_BTW_SIDE_PANE_RATIO = 0.8;
 const MAX_SETTINGS_BYTES = 64 * 1024;
 
 export interface BtwSettings {
@@ -17,6 +23,8 @@ export interface BtwSettings {
   thinkingLevel?: BtwThinkingLevel;
   rememberThinkingLevelChanges?: boolean;
   fullscreenCopyOnSelect?: boolean;
+  layout?: BtwLayout;
+  sidePaneRatio?: number;
 }
 
 export type BtwSettingsLoadResult =
@@ -30,6 +38,8 @@ export interface BtwSettingsPatch {
   thinkingLevel?: BtwThinkingLevel;
   rememberThinkingLevelChanges?: boolean;
   fullscreenCopyOnSelect?: boolean;
+  layout?: BtwLayout;
+  sidePaneRatio?: number;
 }
 
 export interface UpdateBtwSettingsOptions {
@@ -83,6 +93,16 @@ export function normalizeBtwSettings(value: unknown): BtwSettings | undefined {
     if (typeof copyOnSelect !== "boolean") return undefined;
     settings.fullscreenCopyOnSelect = copyOnSelect;
   }
+  if (Object.hasOwn(value, "layout")) {
+    const layout = Reflect.get(value, "layout");
+    if (!isBtwLayout(layout)) return undefined;
+    settings.layout = layout;
+  }
+  if (Object.hasOwn(value, "sidePaneRatio")) {
+    const sidePaneRatio = Reflect.get(value, "sidePaneRatio");
+    if (!isBtwSidePaneRatio(sidePaneRatio)) return undefined;
+    settings.sidePaneRatio = sidePaneRatio;
+  }
   return settings;
 }
 
@@ -93,12 +113,20 @@ export function parseBtwModelReference(reference: string): { provider: string; m
   return { provider: reference.slice(0, separator), modelId: reference.slice(separator + 1) };
 }
 
+export function effectiveBtwLayout(settings: BtwSettings): BtwLayout {
+  return settings.layout ?? DEFAULT_BTW_LAYOUT;
+}
+
 export function effectiveFullscreenCopyOnSelect(settings: BtwSettings): boolean {
   return settings.fullscreenCopyOnSelect ?? DEFAULT_FULLSCREEN_COPY_ON_SELECT;
 }
 
 export function effectiveRememberThinkingLevelChanges(settings: BtwSettings): boolean {
   return settings.rememberThinkingLevelChanges ?? DEFAULT_REMEMBER_THINKING_LEVEL_CHANGES;
+}
+
+export function effectiveBtwSidePaneRatio(settings: BtwSettings): number {
+  return isBtwSidePaneRatio(settings.sidePaneRatio) ? settings.sidePaneRatio : DEFAULT_BTW_SIDE_PANE_RATIO;
 }
 
 export async function readBtwSettings(settingsPath = btwSettingsPath()): Promise<BtwSettingsLoadResult> {
@@ -270,6 +298,14 @@ function applyBtwSettingsPatch(current: SettingsDocument, patch: BtwSettingsPatc
     if (patch.fullscreenCopyOnSelect === undefined) delete updated.fullscreenCopyOnSelect;
     else updated.fullscreenCopyOnSelect = patch.fullscreenCopyOnSelect;
   }
+  if (Object.hasOwn(patch, "layout")) {
+    if (patch.layout === undefined) delete updated.layout;
+    else updated.layout = patch.layout;
+  }
+  if (Object.hasOwn(patch, "sidePaneRatio")) {
+    if (patch.sidePaneRatio === undefined) delete updated.sidePaneRatio;
+    else updated.sidePaneRatio = patch.sidePaneRatio;
+  }
   return updated;
 }
 
@@ -279,6 +315,19 @@ function isSettingsDocument(value: unknown): value is SettingsDocument {
 
 function isBtwThinkingLevel(value: unknown): value is BtwThinkingLevel {
   return BTW_THINKING_LEVELS.includes(value as BtwThinkingLevel);
+}
+
+function isBtwLayout(value: unknown): value is BtwLayout {
+  return BTW_LAYOUTS.includes(value as BtwLayout);
+}
+
+function isBtwSidePaneRatio(value: unknown): value is number {
+  return (
+    typeof value === "number" &&
+    Number.isFinite(value) &&
+    value >= MIN_BTW_SIDE_PANE_RATIO &&
+    value <= MAX_BTW_SIDE_PANE_RATIO
+  );
 }
 
 function invalidSettingsError(settingsPath: string, reason: string): Error {

@@ -267,6 +267,8 @@ test("btw command routes no arguments through the menu and preserves direct ques
   const menuCalls: string[] = [];
   let fullscreenRuns = 0;
   const fullscreenCopyModes: Array<boolean | undefined> = [];
+  const fullscreenLayouts: Array<string | undefined> = [];
+  const fullscreenRatios: Array<number | undefined> = [];
   const threadStarts: Array<{
     initialQuestion?: string;
     thinkingLevel: string;
@@ -282,6 +284,8 @@ test("btw command routes no arguments through the menu and preserves direct ques
     runFullscreen: async (ctx, run, options) => {
       fullscreenRuns += 1;
       fullscreenCopyModes.push(options?.copyOnSelect);
+      fullscreenLayouts.push(options?.layout);
+      fullscreenRatios.push(options?.sidePaneRatio);
       return run(ctx);
     },
     runThread: async (options) => {
@@ -310,6 +314,8 @@ test("btw command routes no arguments through the menu and preserves direct ques
   assert.deepEqual(menuCalls, ["menu"]);
   assert.equal(fullscreenRuns, 2);
   assert.deepEqual(fullscreenCopyModes, [true, true]);
+  assert.deepEqual(fullscreenLayouts, ["fullscreen", "fullscreen"]);
+  assert.deepEqual(fullscreenRatios, [0.5, 0.5]);
   assert.equal(idleWaits, 0);
   assert.deepEqual(threadStarts, [
     {
@@ -334,10 +340,17 @@ test("btw resolves copying and shortcut overrides from each invocation's loaded 
   };
   const loaded = [
     {},
-    { keybindings: { exit: "ctrl+q" } },
-    { fullscreenCopyOnSelect: false, keybindings: { cycleThinkingLevel: "f6", bringToMain: "f7" } },
+    { layout: "left-pane", sidePaneRatio: 0.3, keybindings: { exit: "ctrl+q" } },
+    {
+      fullscreenCopyOnSelect: false,
+      layout: "right-pane",
+      sidePaneRatio: 0.7,
+      keybindings: { cycleThinkingLevel: "f6", bringToMain: "f7" },
+    },
   ] as const;
   const copyModes: Array<boolean | undefined> = [];
+  const layouts: Array<string | undefined> = [];
+  const sidePaneRatios: Array<number | undefined> = [];
   const shortcutOverrides: unknown[] = [];
   let settingsReads = 0;
   btw(mock.pi, {
@@ -345,6 +358,8 @@ test("btw resolves copying and shortcut overrides from each invocation's loaded 
     resolveModel: async () => ({ kind: "selected", selected }),
     runFullscreen: async (ctx, run, options) => {
       copyModes.push(options?.copyOnSelect);
+      layouts.push(options?.layout);
+      sidePaneRatios.push(options?.sidePaneRatio);
       shortcutOverrides.push(options?.keybindings);
       return run(ctx);
     },
@@ -360,6 +375,8 @@ test("btw resolves copying and shortcut overrides from each invocation's loaded 
 
   assert.equal(settingsReads, 3);
   assert.deepEqual(copyModes, [true, true, false]);
+  assert.deepEqual(layouts, ["fullscreen", "left-pane", "right-pane"]);
+  assert.deepEqual(sidePaneRatios, [0.5, 0.3, 0.7]);
   assert.deepEqual(shortcutOverrides, [undefined, { exit: "ctrl+q" }, { cycleThinkingLevel: "f6", bringToMain: "f7" }]);
 });
 

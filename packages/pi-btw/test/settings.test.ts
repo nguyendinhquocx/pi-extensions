@@ -5,8 +5,12 @@ import { join } from "node:path";
 import { test } from "vitest";
 import {
   BTW_SETTINGS_FILE,
+  DEFAULT_BTW_LAYOUT,
+  DEFAULT_BTW_SIDE_PANE_RATIO,
   DEFAULT_FULLSCREEN_COPY_ON_SELECT,
   DEFAULT_REMEMBER_THINKING_LEVEL_CHANGES,
+  effectiveBtwLayout,
+  effectiveBtwSidePaneRatio,
   effectiveFullscreenCopyOnSelect,
   effectiveRememberThinkingLevelChanges,
   normalizeBtwSettings,
@@ -25,33 +29,57 @@ async function withTempSettings(run: (settingsPath: string) => Promise<void>): P
 
 test("btw settings defaults remain side-effect free when the file is missing", async () => {
   await withTempSettings(async (settingsPath) => {
+    assert.equal(DEFAULT_BTW_LAYOUT, "fullscreen");
     assert.equal(DEFAULT_FULLSCREEN_COPY_ON_SELECT, true);
     assert.equal(DEFAULT_REMEMBER_THINKING_LEVEL_CHANGES, true);
+    assert.equal(DEFAULT_BTW_SIDE_PANE_RATIO, 0.5);
     assert.deepEqual(await readBtwSettings(settingsPath), { kind: "missing" });
+    assert.equal(effectiveBtwLayout({}), "fullscreen");
     assert.equal(effectiveFullscreenCopyOnSelect({}), true);
     assert.equal(effectiveRememberThinkingLevelChanges({}), true);
+    assert.equal(effectiveBtwSidePaneRatio({}), 0.5);
     await assert.rejects(readFile(settingsPath, "utf8"), { code: "ENOENT" });
   });
 });
 
-test("btw settings validate optional boolean settings", () => {
+test("btw settings validate optional booleans, workspace layouts, and side-pane ratios", () => {
   assert.deepEqual(
     normalizeBtwSettings({
       rememberThinkingLevelChanges: true,
       fullscreenCopyOnSelect: false,
+      layout: "left-pane",
+      sidePaneRatio: 0.2,
     }),
-    { rememberThinkingLevelChanges: true, fullscreenCopyOnSelect: false },
+    {
+      rememberThinkingLevelChanges: true,
+      fullscreenCopyOnSelect: false,
+      layout: "left-pane",
+      sidePaneRatio: 0.2,
+    },
   );
   assert.deepEqual(
     normalizeBtwSettings({
       rememberThinkingLevelChanges: false,
       fullscreenCopyOnSelect: true,
+      layout: "right-pane",
+      sidePaneRatio: 0.8,
     }),
-    { rememberThinkingLevelChanges: false, fullscreenCopyOnSelect: true },
+    {
+      rememberThinkingLevelChanges: false,
+      fullscreenCopyOnSelect: true,
+      layout: "right-pane",
+      sidePaneRatio: 0.8,
+    },
   );
+  assert.equal(effectiveBtwLayout({ layout: "right-pane" }), "right-pane");
+  assert.equal(effectiveBtwSidePaneRatio({ sidePaneRatio: 0.35 }), 0.35);
   assert.equal(effectiveFullscreenCopyOnSelect({ fullscreenCopyOnSelect: false }), false);
   assert.equal(normalizeBtwSettings({ rememberThinkingLevelChanges: "yes" }), undefined);
   assert.equal(normalizeBtwSettings({ fullscreenCopyOnSelect: "no" }), undefined);
+  assert.equal(normalizeBtwSettings({ layout: "left" }), undefined);
+  for (const sidePaneRatio of [0.19, 0.81, Number.NaN, Number.POSITIVE_INFINITY, "0.5"]) {
+    assert.equal(normalizeBtwSettings({ sidePaneRatio }), undefined);
+  }
 });
 
 test("btw settings preserve omitted thinking levels for backward compatibility", async () => {
@@ -113,6 +141,8 @@ test("btw settings updates preserve unknown fields and create only on explicit s
         thinkingLevel: "low",
         rememberThinkingLevelChanges: true,
         fullscreenCopyOnSelect: false,
+        layout: "left-pane",
+        sidePaneRatio: 0.35,
       },
       { settingsPath },
     );
@@ -121,6 +151,8 @@ test("btw settings updates preserve unknown fields and create only on explicit s
       thinkingLevel: "low",
       rememberThinkingLevelChanges: true,
       fullscreenCopyOnSelect: false,
+      layout: "left-pane",
+      sidePaneRatio: 0.35,
     });
 
     await writeFile(
@@ -141,7 +173,13 @@ test("btw settings updates preserve unknown fields and create only on explicit s
 test("btw settings reject malformed or invalid documents without changing their bytes", async () => {
   await withTempSettings(async (settingsPath) => {
     await updateBtwSettings({ thinkingLevel: "low" }, { settingsPath });
-    for (const contents of ["{broken", '{"thinkingLevel":"huge"}\n', '{"fullscreenCopyOnSelect":"yes"}\n']) {
+    for (const contents of [
+      "{broken",
+      '{"thinkingLevel":"huge"}\n',
+      '{"fullscreenCopyOnSelect":"yes"}\n',
+      '{"layout":"side"}\n',
+      '{"sidePaneRatio":0.1}\n',
+    ]) {
       await writeFile(settingsPath, contents, "utf8");
       await assert.rejects(
         updateBtwSettings({ thinkingLevel: "high" }, { settingsPath }),
@@ -263,13 +301,14 @@ test("btw settings serialize rapid updates in invocation order and recover after
     );
     const second = updateBtwSettings({ thinkingLevel: "medium" }, { settingsPath });
     const third = updateBtwSettings({ fullscreenCopyOnSelect: false }, { settingsPath });
+    const fourth = updateBtwSettings({ layout: "right-pane" }, { settingsPath });
     const coordinatedRead = readBtwSettings(settingsPath);
     await firstReached;
     releaseFirst();
-    await Promise.all([first, second, third]);
+    await Promise.all([first, second, third, fourth]);
     assert.deepEqual(await coordinatedRead, {
       kind: "loaded",
-      settings: { thinkingLevel: "medium", fullscreenCopyOnSelect: false },
+      settings: { thinkingLevel: "medium", fullscreenCopyOnSelect: false, layout: "right-pane" },
     });
     assert.equal(
       (JSON.parse(await readFile(settingsPath, "utf8")) as { thinkingLevel: string }).thinkingLevel,
