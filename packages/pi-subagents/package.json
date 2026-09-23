@@ -1,6 +1,6 @@
 {
   "name": "@narumitw/pi-subagents",
-  "version": "3.0.2",
+  "version": "3.1.0",
   "description": "Subagent jobs with asynchronous main-agent messaging for Pi.",
   "type": "module",
   "license": "MIT",
@@ -51,5 +51,8 @@
     "type": "git",
     "url": "https://github.com/narumiruna/pi-extensions",
     "directory": "packages/pi-subagents"
+  },
+  "dependencies": {
+    "ignore": "^7.0.8"
   }
 }

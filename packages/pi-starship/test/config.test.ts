@@ -104,7 +104,7 @@ test("effective configuration projects every public catalog field in stable orde
 test("effective configuration normalizes custom public values without document-only data", () => {
   const loaded = validateConfigDocument(
     "/effective/pi-starship.toml",
-    `format = '$model$git_metrics$context$extension_status'\npalette = 'demo'\nfuture = 'document only'\n\n[palettes.demo]\nz = '#654321'\naccent = '#123456'\n\n[model]\nformat = '[$symbol$model]($style)'\nsymbol = 'M '\nstyle = 'bold accent'\ndisabled = false\ntruncation_length = 12\nmodel_aliases = { z = 'last', a = 'first' }\n\n[[model.style_rules]]\nprovider = 'openai'\nstyle = 'accent'\n\n[[model.style_rules]]\nstyle = 'bold blue'\n\n[git_metrics]\nadded_style = 'green'\ndeleted_style = 'red'\ndisabled = false\n\n[[context.display]]\nthreshold = 0\nstyle = 'accent'\nhidden = false\n\n[extension_status]\nseparator = ' / '\nmax_statuses = 3\nicons = { demo = 'D' }\n`,
+    `format = '$model$git_metrics$context$extension_status'\npalette = 'demo'\nfuture = 'document only'\n\n[palettes.demo]\nz = '#654321'\naccent = '#123456'\n\n[model]\nformat = '[$symbol$model]($style)'\nsymbol = 'M '\nstyle = 'bold accent'\ndisabled = false\nshorten_model = true\ntruncation_length = 12\nmodel_aliases = { z = 'last', a = 'first' }\n\n[[model.style_rules]]\nprovider = 'openai'\nstyle = 'accent'\n\n[[model.style_rules]]\nstyle = 'bold blue'\n\n[git_metrics]\nadded_style = 'green'\ndeleted_style = 'red'\ndisabled = false\n\n[[context.display]]\nthreshold = 0\nstyle = 'accent'\nhidden = false\n\n[extension_status]\nseparator = ' / '\nmax_statuses = 3\nicons = { demo = 'D' }\nstyles = { demo = 'accent', fallback = 'dimmed white' }\n`,
   );
   const serialized = serializeEffectiveConfig(loaded.config);
   const reparsed = normalizeConfig(parse(serialized));
@@ -113,6 +113,8 @@ test("effective configuration normalizes custom public values without document-o
   assert.doesNotMatch(serialized, /future|document only/u);
   assert.match(serialized, /palette = "demo"/u);
   assert.match(serialized, /max_statuses = 3/u);
+  assert.match(serialized, /demo = "accent"/u);
+  assert.match(serialized, /shorten_model = true/u);
   assert.match(serialized, /truncation_length = 12/u);
   const openaiRule = serialized.indexOf('provider = "openai"');
   assert.ok(openaiRule >= 0);
@@ -299,8 +301,9 @@ test("Starship-aligned module options normalize their public defaults", () => {
   assert.equal(valid.config.modules.hostname.options.trim_at, "");
 });
 
-test("model truncation options normalize values and reject invalid directions independently", () => {
+test("model display options normalize values and reject invalid settings independently", () => {
   assert.deepEqual(BUILT_IN_CONFIG.modules.model.options, {
+    shorten_model: false,
     truncation_length: 0,
     truncation_symbol: "…",
     truncation_direction: "end",
@@ -308,9 +311,10 @@ test("model truncation options normalize values and reject invalid directions in
   });
 
   const valid = loadFromText(
-    "[model]\ntruncation_length = 36\ntruncation_symbol = ''\ntruncation_direction = 'middle'\nmodel_aliases = { raw = 'short' }\n",
+    "[model]\nshorten_model = true\ntruncation_length = 36\ntruncation_symbol = ''\ntruncation_direction = 'middle'\nmodel_aliases = { raw = 'short' }\n",
   );
   assert.deepEqual(valid.config.modules.model.options, {
+    shorten_model: true,
     truncation_length: 36,
     truncation_symbol: "",
     truncation_direction: "middle",
@@ -319,9 +323,10 @@ test("model truncation options normalize values and reject invalid directions in
   assert.deepEqual(valid.diagnostics, []);
 
   const invalid = loadFromText(
-    "[model]\ntruncation_length = -1\ntruncation_symbol = 7\ntruncation_direction = 'left'\n",
+    "[model]\nshorten_model = 'yes'\ntruncation_length = -1\ntruncation_symbol = 7\ntruncation_direction = 'left'\n",
   );
   assert.deepEqual(invalid.config.modules.model.options, {
+    shorten_model: false,
     truncation_length: 0,
     truncation_symbol: "…",
     truncation_direction: "end",
@@ -329,7 +334,7 @@ test("model truncation options normalize values and reject invalid directions in
   });
   assert.deepEqual(
     invalid.diagnostics.map((item) => item.path),
-    ["model.truncation_length", "model.truncation_symbol", "model.truncation_direction"],
+    ["model.shorten_model", "model.truncation_length", "model.truncation_symbol", "model.truncation_direction"],
   );
 
   const oversized = loadFromText("[model]\ntruncation_length = 1001\n");
@@ -389,7 +394,7 @@ test("valid TOML loads root, palette, module, and extension status settings", ()
   try {
     writeFileSync(
       path,
-      `format = '$model$cache$cost$extension_status'\npalette = 'mine'\n\n[palettes.mine]\nblue = '#010203'\n\n[model]\nformat = '[$model]($style)'\nsymbol = 'M'\nstyle = 'bold blue'\ndisabled = true\n\n[cache]\nformat = '$read/$write/$rate'\ndisabled = false\n\n[cost]\nformat = '$cost$subscription'\n\n[extension_status]\nseparator = ' | '\nmax_statuses = 3\n\n[extension_status.icons]\ngoal = ''\n`,
+      `format = '$model$cache$cost$extension_status'\npalette = 'mine'\n\n[palettes.mine]\nblue = '#010203'\n\n[model]\nformat = '[$model]($style)'\nsymbol = 'M'\nstyle = 'bold blue'\ndisabled = true\n\n[cache]\nformat = '$read/$write/$rate'\ndisabled = false\n\n[cost]\nformat = '$cost$subscription'\n\n[extension_status]\nseparator = ' | '\nmax_statuses = 3\n\n[extension_status.icons]\ngoal = ''\n\n[extension_status.styles]\ngoal = 'bold blue'\n`,
     );
     const loaded = loadStarshipConfig(path);
     assert.equal(loaded.source, "user");
@@ -406,10 +411,36 @@ test("valid TOML loads root, palette, module, and extension status settings", ()
     assert.equal(loaded.config.extensionStatus.separator, " | ");
     assert.equal(loaded.config.extensionStatus.maxStatuses, 3);
     assert.deepEqual(loaded.config.extensionStatus.icons, { goal: "" });
+    assert.deepEqual(loaded.config.extensionStatus.styles, { goal: "bold blue" });
     assert.deepEqual(loaded.diagnostics, []);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
+});
+
+test("extension status styles validate independently against the active palette", () => {
+  const normalized = normalizeConfig({
+    palette: "custom",
+    palettes: { custom: { accent: "#123456" } },
+    extension_status: {
+      styles: { goal: "bold accent", "foo:*": "red", fallback: "not-a-color", bad: 42 },
+    },
+  });
+  assert.deepEqual(normalized.config.extensionStatus.styles, { goal: "bold accent", "foo:*": "red" });
+  assert.deepEqual(
+    normalized.diagnostics.map((item) => item.path),
+    ["extension_status.styles.fallback", "extension_status.styles.bad"],
+  );
+  const invalid = normalizeConfig({ extension_status: { styles: "red" } });
+  assert.deepEqual(invalid.config.extensionStatus.styles, {});
+  assert.deepEqual(
+    invalid.diagnostics.map((item) => item.path),
+    ["extension_status.styles"],
+  );
+  assert.deepEqual(normalizeConfig({}).config.extensionStatus.styles, {});
+  const special = normalizeConfig({ extension_status: { styles: JSON.parse('{"__proto__":"cyan"}') } });
+  assert.equal(Object.hasOwn(special.config.extensionStatus.styles, "__proto__"), true);
+  assert.equal(Object.getOwnPropertyDescriptor(special.config.extensionStatus.styles, "__proto__")?.value, "cyan");
 });
 
 test("malformed TOML reports an error and uses the full built-in config", () => {

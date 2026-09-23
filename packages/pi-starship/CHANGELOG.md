@@ -1,5 +1,17 @@
 # @narumitw/pi-starship
 
+## 0.58.0
+
+### Minor Changes
+
+- ba40826: Allow per-status colors in `extension_status.styles` using exact Pi status keys, explicit namespace wildcards, and an optional fallback style.
+
+## 0.57.0
+
+### Minor Changes
+
+- 229ebe9: Show raw Pi model IDs by default. Add `model.shorten_model = true` to opt in to shortening, without changing `gpt-` to `gpt `.
+
 ## 0.56.3
 
 ### Patch Changes
