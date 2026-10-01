@@ -18,6 +18,7 @@ import {
   latestCheckpoint,
   projectCheckpointContext,
 } from "./checkpoint.js";
+import { compactionFailureMessage } from "./compaction-failure.js";
 import { type CompactionRoute, resolveCompactionRoute } from "./model-api.js";
 import { hasCheckpointMarker, rewriteCheckpointMarker } from "./protocol.js";
 import { requestRemoteCompaction } from "./remote.js";
@@ -99,10 +100,14 @@ function projectedCurrentMessages(
   return { messages: projected, prior: prior.details };
 }
 
-function notifyFailure(ctx: ExtensionContext, error: unknown, settings: CodexCompactSettings): void {
+function notifyFailure(
+  ctx: ExtensionContext,
+  error: unknown,
+  settings: CodexCompactSettings,
+  requestValues: readonly string[],
+): void {
   if (!ctx.hasUI || !settings.notifyOnFallback) return;
-  const message = terminalText(error instanceof Error ? error.message : String(error));
-  ctx.ui.notify(`Responses compaction failed; using Pi compaction. ${message}`, "warning");
+  ctx.ui.notify(compactionFailureMessage(error, requestValues), "warning");
 }
 
 function sessionStillOwned(ctx: ExtensionContext, sessionId: string, signal: AbortSignal): boolean {
@@ -123,11 +128,16 @@ async function compactRemotely(
   const signal = AbortSignal.any([event.signal, ownerSignal]);
   if (signal.aborted) return { cancel: true };
   const sessionId = ctx.sessionManager.getSessionId();
+  let requestValues: string[] = [];
   ctx.ui.setStatus(STATUS_KEY, route.protocol === "remote-v2" ? "Responses Remote V2…" : "Responses Compact API…");
   try {
     const auth = await ctx.modelRegistry.getApiKeyAndHeaders(model);
     if (!sessionStillOwned(ctx, sessionId, signal)) return { cancel: true };
     if (!auth.ok) throw new Error(auth.error);
+    // Keep resolved request values local and redact them if the provider echoes them in an error.
+    requestValues = [auth.apiKey, ...Object.values(auth.headers ?? {}), ...Object.values(auth.env ?? {})].filter(
+      (value): value is string => typeof value === "string" && value.length > 0,
+    );
     const provider = ctx.modelRegistry.getProvider(model.provider);
     if (!provider) throw new Error("The active Responses provider is unavailable");
     const current = projectedCurrentMessages(event, model, route);
@@ -184,7 +194,7 @@ async function compactRemotely(
     if (signal.aborted || ctx.sessionManager.getSessionId() !== sessionId) {
       return { cancel: true };
     }
-    notifyFailure(ctx, error, settings);
+    notifyFailure(ctx, error, settings, requestValues);
     return undefined;
   } finally {
     if (ctx.sessionManager.getSessionId() === sessionId) ctx.ui.setStatus(STATUS_KEY, undefined);

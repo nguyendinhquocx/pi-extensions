@@ -52,7 +52,8 @@ Review third-party extension source before installing it.
 3. Work normally; Pi's automatic compaction and built-in `/compact` continue to operate.
 
 Run `/codex-compact` when you want to inspect the effective route or choose **Compact now**.
-After compaction, compatible requests replay the opaque checkpoint automatically.
+After successful remote compaction, compatible requests replay the opaque checkpoint automatically.
+Signing in does not guarantee compaction permission; see [ChatGPT OAuth rejection](#chatgpt-oauth-rejection) if the backend refuses the operation.
 
 With the default `auto` protocol, Codex Responses uses Remote V2 while OpenAI and Azure OpenAI Responses use unary `responses/compact`.
 When the active model uses another API, compaction remains entirely Pi-native.
@@ -146,6 +147,29 @@ The extension does not send a separate capability probe or automatically retry a
 A failed remote attempt falls back to Pi native, but an ordinary request cannot transparently recover after an incompatible provider has already received an existing opaque checkpoint.
 Provider provenance is stored for diagnosis but is not a replay gate.
 Switching providers can replay a checkpoint only when the API label, compatibility profile, and exact model ID still match. Custom API checkpoints also require a current matching `apiProfiles` entry; removing or changing it leaves Pi's visible fallback marker plus retained recent messages in context.
+
+### ChatGPT OAuth rejection
+
+Pi's **OpenAI → Sign in with ChatGPT** uses official OAuth with `openai-responses` at `api.openai.com`.
+This is distinct from the legacy **OpenAI Codex** provider using `openai-codex-responses` at `chatgpt.com/backend-api/codex`; permission on one route does not establish permission on the other.
+API-key, Azure, and custom-provider routes retain their existing behavior and backend-specific requirements.
+
+OpenAI documents [streaming Responses inference](https://developers.openai.com/siwc/token-sharing-open-source/models-and-inference) for ChatGPT plan usage, not authorization for unary `responses/compact` or this extension's undocumented Remote V2 contract.
+The backend can reject a compaction operation with:
+
+```text
+code=hardened_oauth_rule_missing
+type=rejected_by_hardened_oauth_boundary
+message=This ChatPass credential is not authorized for the requested operation.
+```
+
+The extension reports this operation-specific rejection and returns control to Pi-native compaction without publishing a new checkpoint or switching credentials, providers, or protocols.
+This does not prove the account is broken or ordinary chat is unavailable, and upgrading Pi alone is not a guaranteed fix.
+See OpenAI's [errors and recovery](https://developers.openai.com/siwc/token-sharing-open-source/errors-and-recovery) for route and grant checks; re-login is not a guaranteed remedy for an endpoint permission rejection.
+
+For sessions without an existing opaque checkpoint, turn **Remote compaction** off in `/codex-compact` → **Settings**, or set `"enabled": false` in the documented global settings file and reload Pi, to use native compaction directly.
+**Disabling remote compaction also disables opaque checkpoint replay.** If a session already contains a checkpoint, leave the extension enabled to preserve compatible replay and allow native fallback on rejected attempts; disabling it exposes only the fallback marker and retained recent messages.
+The selected route shown in the menu is not an entitlement check, and forcing Remote V2 is not a verified workaround for this rejection.
 
 ## 🔄 How it works
 

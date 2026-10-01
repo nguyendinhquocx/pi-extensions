@@ -12,6 +12,11 @@ import { normalizeGitHubCopilotUsagePayload } from "./providers/github-copilot.j
 import { normalizeKimiCodingUsagePayload } from "./providers/kimi-coding.js";
 import { type MiniMaxProviderId, miniMaxUsageKind, normalizeMiniMaxUsagePayload } from "./providers/minimax.js";
 import { normalizeMoonshotBalancePayload } from "./providers/moonshot.js";
+import {
+  OPENAI_CHATGPT_ADAPTER,
+  resolveOpenAIChatGPTAuth,
+  UnsupportedOpenAIUsageAuthError,
+} from "./providers/openai-chatgpt.js";
 import { normalizeOpenCodeZenPayload } from "./providers/opencode-zen.js";
 import { normalizeOpenRouterKeyPayload } from "./providers/openrouter.js";
 import { normalizeVercelAIGatewayCreditsPayload } from "./providers/vercel-ai-gateway.js";
@@ -95,6 +100,7 @@ export const SUPPORTED_ADAPTERS: readonly UsageProviderAdapter[] = [
       return normalizeBasetenBillingUsagePayload(payload, Date.now());
     },
   },
+  OPENAI_CHATGPT_ADAPTER,
   {
     id: "openai-codex",
     displayName: "OpenAI Codex",
@@ -344,7 +350,7 @@ export async function resolveUsageAuth(
   const model = candidateModels(ctx, adapter.id).find((candidate) => hasOfficialOrigin(candidate, adapter.id));
   if (!model) return undefined;
   if (
-    ["github-copilot", "xai"].includes(adapter.id) &&
+    ["github-copilot", "openai", "xai"].includes(adapter.id) &&
     candidateReader?.waitUntilReady &&
     !(await candidateReader.waitUntilReady(ctx, adapter.id))
   ) {
@@ -364,9 +370,11 @@ export async function resolveUsageAuth(
     if (!currentModel || typeof registry.getApiKeyAndHeaders !== "function") return undefined;
     const result = await registry.getApiKeyAndHeaders(currentModel);
     if (!result.ok) throw new Error(redactUsageError(result.error));
-    return authorizationFrom(result) ? result : undefined;
+    // Native plan status must inspect explicit empty/null Authorization overrides, not fall
+    // back to provider OAuth when the selected model removes or replaces its authorization.
+    return adapter.id === "openai" || authorizationFrom(result) ? result : undefined;
   };
-  const resolveSelectedAuthLast = ["deepseek", "minimax", "minimax-cn"].includes(adapter.id);
+  const resolveSelectedAuthLast = ["deepseek", "minimax", "minimax-cn", "openai"].includes(adapter.id);
   if (!resolveSelectedAuthLast) modelAuth = await resolveCurrentModelAuth();
   if (typeof registry.getProviderAuth !== "function") {
     throw new Error("pi-usage requires Pi 0.81.0 or newer to validate resolved provider auth.");
@@ -421,6 +429,18 @@ export async function resolveUsageAuth(
       ),
     };
   };
+  if (adapter.id === "openai") {
+    // Pi can return empty compatibility model auth without any provider credential.
+    if (!providerResult) return undefined;
+    if (providerResult.source !== "OAuth") throw new UnsupportedOpenAIUsageAuthError();
+    const offered = candidateReader
+      ? await candidateReader(ctx, adapter.id)
+      : fallbackOAuthCredentialCandidates(adapter.id, credentialReader);
+    if (!offered.ok) throw new Error("OpenAI OAuth credential discovery failed closed.");
+    return finalize(
+      resolveOpenAIChatGPTAuth(auth, providerResult.auth, providerResult.source, model, offered.candidates),
+    );
+  }
   if (adapter.id === "github-copilot") {
     const offered = candidateReader
       ? await candidateReader(ctx, adapter.id)
@@ -897,6 +917,7 @@ function hasOfficialUrlOrigin(value: string, providerId: string): boolean {
     if (providerId === "baseten") {
       return ["https://inference.baseten.co", "https://api.baseten.co"].includes(url.origin);
     }
+    if (providerId === "openai") return url.origin === "https://api.openai.com";
     if (providerId === "openai-codex") return url.origin === "https://chatgpt.com";
     if (providerId === "deepseek") return url.origin === "https://api.deepseek.com";
     if (providerId === "fireworks") return url.origin === "https://api.fireworks.ai";

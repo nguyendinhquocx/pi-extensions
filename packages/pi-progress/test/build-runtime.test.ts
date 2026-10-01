@@ -1,7 +1,12 @@
 import assert from "node:assert/strict";
 import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { join } from "node:path";
-import { DefaultResourceLoader, type ExtensionContext, SettingsManager } from "@earendil-works/pi-coding-agent";
+import {
+  DefaultResourceLoader,
+  type ExtensionContext,
+  ExtensionRunner,
+  SettingsManager,
+} from "@earendil-works/pi-coding-agent";
 import { test } from "vitest";
 import { registerRuntimeBuilderContract } from "../../../test/runtime-builder-contract.js";
 
@@ -59,6 +64,8 @@ test("generated runtime is loadable by Pi's Jiti resource loader", async () => {
     assert.deepEqual(widgets.at(-1), { key: "progress", content: undefined });
     assert.deepEqual(notifications, []);
 
+    const runner = new ExtensionRunner(loaded.extensions, loaded.runtime, root, sessionManager as never, {} as never);
+    runner.setUIContext(ctx.ui, "tui");
     const tool = extension.tools.get("update_progress");
     assert.ok(tool);
     const updated = await tool.definition.execute(
@@ -66,14 +73,20 @@ test("generated runtime is loadable by Pi's Jiti resource loader", async () => {
       { steps: [{ text: "Verify generated runtime", status: "in_progress" }] },
       undefined,
       undefined,
-      ctx,
+      runner.createToolContext("generated-progress", undefined),
     );
     assert.deepEqual(updated.details, {
       version: 4,
       steps: [{ text: "Verify generated runtime", status: "in_progress" }],
     });
     assert.equal(typeof widgets.at(-1)?.content, "function");
-    const cleared = await tool.definition.execute("generated-progress-clear", { steps: [] }, undefined, undefined, ctx);
+    const cleared = await tool.definition.execute(
+      "generated-progress-clear",
+      { steps: [] },
+      undefined,
+      undefined,
+      runner.createToolContext("generated-progress-clear", undefined),
+    );
     assert.deepEqual(cleared.details, { version: 4, steps: [] });
     assert.deepEqual(widgets.at(-1), { key: "progress", content: undefined });
 

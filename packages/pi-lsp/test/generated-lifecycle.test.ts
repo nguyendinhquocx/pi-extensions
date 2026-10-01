@@ -54,7 +54,7 @@ for (const kind of ["diagnostics", "fix"] as const) {
         errors.push(error);
       });
       await runner.emit({ type: "session_start", reason: "startup" });
-      const ctx = runner.createContext();
+      const ctx = runner.createToolContext("test", f.controller.signal);
       const tool = runner.getToolDefinition(`lsp_${kind}`);
       assert.ok(tool);
       const task = f.track(

@@ -21,7 +21,9 @@ export function formatUsageReport(report: UsageReport, displayState: UsageDispla
                 ? report.source === "minimax-account-balance"
                   ? `${report.providerName} API Balance`
                   : `${report.providerName} Token Plan`
-                : `${report.providerName} Usage`;
+                : report.source === "openai-chatgpt-auth"
+                  ? `${report.providerName} ChatGPT Plan Status`
+                  : `${report.providerName} Usage`;
   const lines = [`${title} · ${stateLabel}`];
   if (report.accountLabel) lines.push(`Account: ${report.accountLabel}`);
   lines.push(`Semantics: ${report.semantics.label}`, "");
@@ -57,6 +59,7 @@ export function formatUsageStatusline(
   showCodexResetCountdown = true,
   codexStatusPercentage: CodexStatusPercentage = "remaining",
 ): string | undefined {
+  if (report.providerId === "openai" && report.source === "openai-chatgpt-auth") return "chatgpt usage: web only";
   if (report.providerId === "baseten") return formatBasetenStatusline(report);
   if (report.providerId === "openai-codex") {
     return formatCodexStatusline(report, model, now, showCodexResetCountdown, codexStatusPercentage);

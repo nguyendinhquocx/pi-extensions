@@ -4,11 +4,13 @@
 
 Inspect usage and DeepSeek API balance for Pi's active provider account, query other configured providers, and toggle Fast mode for supported OpenAI Codex models.
 The extension keeps each provider's native quota, allowance, and spending semantics instead of treating unlike values as equivalent.
+Native `openai` ChatGPT OAuth shows verified authentication status and a usage-settings link, not numerical quotas or reset times.
 xAI OAuth subscription reporting follows the reviewed Grok Build contract and runs only after an explicit `/usage` action.
 
 ## ✨ Features
 
 - Shows active-account usage and next actions through `/usage`.
+- Recognizes native `/login openai` ChatGPT OAuth separately from unsupported OpenAI API-key usage reporting.
 - Reports subscription allowances, API balances, and spending for the supported providers listed below without mixing their billing semantics.
 - Toggles persistent Codex Fast routing through `/fast` or the usage menu.
 - Redeems eligible Codex resets only after fresh account matching and explicit confirmation.
@@ -48,6 +50,8 @@ The package declares `dist/index.ts`, so an unbuilt local checkout must run the 
 Run `/usage` in TUI or RPC mode to inspect the active provider, refresh its usage, or choose another configured provider.
 When a provider exposes several billing targets, `/usage` asks for one target before querying usage.
 Run `/fast` to toggle Fast mode for a supported active Codex model.
+For native `/login openai`, select an `openai` model and run `/usage` to verify ChatGPT authentication and find [ChatGPT usage settings](https://chatgpt.com/settings/usage).
+Native OpenAI Fast mode and earned reset redemption are not implemented; those actions remain specific to legacy `openai-codex`.
 
 ## 💬 Commands
 
@@ -127,7 +131,8 @@ Currencies and billing targets remain separate.
 
 | Provider | Reported data |
 | --- | --- |
-| OpenAI Codex | Subscription windows, credits, resets, and model buckets |
+| OpenAI (native ChatGPT OAuth) | Verified authentication status and usage-settings link; no numerical quota or reset data |
+| OpenAI Codex (legacy) | Subscription windows, credits, resets, and model buckets |
 | Kimi For Coding | Plan request windows and a separate booster wallet |
 | Moonshot AI Global/China | Current API balance in USD/CNY |
 | MiniMax Global/China | Token Plan windows or pay-as-you-go API balance |
@@ -169,6 +174,8 @@ MiniMax publishes Token Plan window percentages or the regional pay-as-you-go av
 Baseten publishes the exact trailing 30-day Model APIs net subtotal after credits.
 xAI is always menu-only and never starts a scheduled status refresh.
 Z.AI statusline usage refreshes every five minutes while the selected model remains on Z.AI.
+Verified native OpenAI OAuth publishes `chatgpt usage: web only`; its five-minute refresh revalidates authentication locally without calling a usage endpoint.
+OpenAI API-key auth clears this status.
 
 Queries for another provider or all providers never publish their results to the statusline.
 `@narumitw/pi-statusline` supplies the default `📊` icon; `pi-usage` publishes text-only values.
@@ -197,6 +204,9 @@ Behavior changes:
 Credential candidates are collected synchronously in memory after any compatible readiness promises settle, and are not cached, persisted, logged, formatted, or appended to the Pi session.
 The protocols carry no account name or extension identity.
 Only the selected provider's exact runtime match is used, and secrets are sent only to its validated official origin.
+Native OpenAI status requires fresh Pi OAuth resolution and a matching complete ChatGPT grant, including the direct-token scope and client ID.
+Model-level Authorization overrides cannot inherit subscription status from a stored login.
+The native status adapter sends no usage request and never forwards native tokens to legacy ChatGPT backend endpoints.
 DeepSeek balance requests require Bearer authentication, send only that resolved credential from Pi's runtime auth to `https://api.deepseek.com/user/balance`, and refuse redirects.
 Fireworks spend requests send only that resolved credential to the official `https://api.fireworks.ai` account-listing and billing-summary endpoints and refuse redirects.
 Moonshot balance requests send only the resolved Bearer credential to the matching official Global or China balance origin and refuse redirects.
@@ -210,7 +220,8 @@ An absent or incompatible peer preserves standalone fallback and fail-closed mis
 
 ## 🚧 Limitations
 
-- Only providers with a meaningful usage source and verifiable Pi runtime auth are supported.
+- Numerical usage requires a meaningful provider usage source and verifiable Pi runtime auth.
+- Native `openai` reports authentication only: numerical usage, reset times, Fast mode, and earned reset redemption are not supported, and OpenAI API-key usage reporting remains unsupported.
 - GitHub Copilot quota, Kimi managed usage, Z.AI quota, and OpenAI Codex reset redemption rely on provider-owned endpoints that may change without notice.
 - Codex reset redemption requires a current ChatGPT OAuth credential from Pi's login or a compatible credential source; Codex API keys cannot redeem earned subscription resets.
 - xAI usage supports only a uniquely matched Pi OAuth subscription credential; xAI API keys and Management API credentials are unsupported.

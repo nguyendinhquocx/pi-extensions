@@ -5,6 +5,7 @@
 This reference preserves each provider's endpoint, authentication boundary, billing semantics, and contract evidence.
 The README contains the capability overview and shared security requirements.
 
+- [OpenAI native ChatGPT OAuth](#openai-native-chatgpt-oauth)
 - [OpenAI Codex](#openai-codex)
 - [Kimi For Coding](#kimi-for-coding)
 - [Moonshot AI](#moonshot-ai-api-balance)
@@ -21,9 +22,35 @@ The README contains the capability overview and shared security requirements.
 
 ## 📋 Provider semantics
 
+### OpenAI native ChatGPT OAuth
+
+- Provider ID: `openai`
+- Semantics: verified ChatGPT plan authentication, not measured subscription usage
+- Source: Pi's fresh native OAuth resolution and an exact complete credential match; no usage HTTP endpoint
+- Displayed data: **Connected (native OAuth)**, an explicit numerical-usage/reset-time limitation, and [ChatGPT usage settings](https://chatgpt.com/settings/usage)
+- Statusline: `chatgpt usage: web only`
+
+Use `/login openai` in a Pi runtime that supports native Sign in with ChatGPT, then select an official `https://api.openai.com` model.
+Authentication requires Pi's freshly resolved provider source to be `OAuth`, matching effective model and provider authorization, and a complete matching credential with `clientId` and the `chatgpt.tokens.use.direct` scope.
+Equivalent duplicate candidates are accepted; conflicting, incomplete, or mismatched native grants fail closed.
+Stored OAuth alone and Pi's cached OAuth flag do not establish the active runtime account.
+Runtime/API-key overrides, model-level Authorization replacements or removals, and custom/proxy origins cannot inherit native subscription status.
+OpenAI API-key usage reporting remains unsupported.
+
+The report verifies authentication, not the plan tier, allowance, remaining quota, or reset time.
+Automatic refresh only revalidates auth; it does not poll a usage endpoint.
+The settings link is guidance, not an automatically opened browser or a promise that the browser is signed into Pi's account.
+Native tokens are never sent to `/backend-api/wham`, and opaque native metadata is not decoded as a legacy Codex account ID.
+Legacy Fast payload rewriting, pricing correction, reset countdowns, and earned reset redemption do not apply to native `openai`.
+Existing `openai-codex` behavior below is unchanged.
+
+The boundary is verified against Pi's [`openai-chatgpt.ts`](https://github.com/earendil-works/pi/blob/d86654abb8862e201933517d6f1fce9f88dd117f/packages/ai/src/auth/oauth/openai-chatgpt.ts) at `d86654abb8862e201933517d6f1fce9f88dd117f` and OpenAI's [models and inference](https://developers.openai.com/siwc/token-sharing-open-source/models-and-inference), [token reference](https://developers.openai.com/siwc/token-sharing-open-source/token-reference), and [UI/UX guidelines](https://developers.openai.com/siwc/ui-ux-guidelines).
+These contracts establish the public inference and authentication boundary, not a numerical usage API.
+Verification uses synthetic credentials with Pi's real auth resolver; live browser login and account-specific quota retrieval have not been verified.
+
 ### OpenAI Codex
 
-- Provider ID: `openai-codex`
+- Provider ID: `openai-codex` (legacy; not an alias for native `openai`)
 - Semantics: ChatGPT consumer subscription limits
 - Source: the Codex usage and earned-reset endpoints using Pi's resolved runtime authorization
 - Displayed data: returned duration-based windows, resets, credits, earned usage-limit resets, and additional model buckets
