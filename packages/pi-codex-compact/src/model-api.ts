@@ -10,7 +10,7 @@ export const RESPONSES_COMPACTION_APIS = [
 export type BuiltInResponsesCompactionApi = (typeof RESPONSES_COMPACTION_APIS)[number];
 export type ResponsesCompactionApi = BuiltInResponsesCompactionApi;
 export type ResponsesCompactionProfile = "codex-responses-v1" | "openai-responses-v1";
-export type RemoteCompactionProtocol = "remote-v2" | "responses-compact";
+export type RemoteCompactionProtocol = "remote-v2" | "responses-compact" | "context-management";
 export type RemoteCompactionProtocolSetting = "auto" | RemoteCompactionProtocol;
 
 export type CompactionRoute =

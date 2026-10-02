@@ -1,5 +1,11 @@
 # @narumitw/pi-lsp
 
+## 0.49.9
+
+### Patch Changes
+
+- 68c4b95: Update runtime dependencies and preserve Pi tool-context types through the LSP session lifecycle guard for compatibility with current Pi releases.
+
 ## 0.49.8
 
 ### Patch Changes

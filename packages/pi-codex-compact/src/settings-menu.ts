@@ -41,6 +41,8 @@ function protocolLabel(protocol: CodexCompactSettings["protocol"]): string {
       return "Remote V2";
     case "responses-compact":
       return "Responses Compact";
+    case "context-management":
+      return "Context Management (experimental)";
   }
 }
 
@@ -116,9 +118,9 @@ export function createCodexCompactMenu(
           {
             id: "protocol",
             label: "Protocol",
-            description: "Choose automatically or force one supported remote protocol.",
+            description: "Choose a protocol. Experimental Context Management makes a normal inference request.",
             currentValue: protocolLabel(state.settings.protocol),
-            values: ["Auto", "Remote V2", "Responses Compact"],
+            values: ["Auto", "Remote V2", "Responses Compact", "Context Management (experimental)"],
             action: "set-protocol",
           },
           {
@@ -139,8 +141,8 @@ export function createCodexCompactMenu(
           },
           {
             id: "replacementTokenBudget",
-            label: "Retained user history",
-            description: "Approximate user-message budget kept beside the opaque checkpoint.",
+            label: "Replacement text budget",
+            description: "Approximate user-history budget, or a hard limit for Context Management output.",
             currentValue: retentionLabel(state.settings.replacementTokenBudget),
             values: ["32K tokens", "64K tokens", "96K tokens", "128K tokens"],
             action: "set-retention",
@@ -178,7 +180,13 @@ export function createCodexCompactMenu(
           ctx,
           {
             protocol:
-              value === "Remote V2" ? "remote-v2" : value === "Responses Compact" ? "responses-compact" : "auto",
+              value === "Context Management (experimental)"
+                ? "context-management"
+                : value === "Remote V2"
+                  ? "remote-v2"
+                  : value === "Responses Compact"
+                    ? "responses-compact"
+                    : "auto",
           },
           signal,
         ),
@@ -242,5 +250,9 @@ export function compactMenuStatus(ctx: ExtensionCommandContext): CompactMenuStat
 function compactRoute(state: Readonly<CodexCompactSettingsState>, status: CompactMenuStatus | undefined): string {
   const route = resolveCompactionRouteForApi(status?.api, state.settings);
   if (route.kind === "native") return `Pi native (${route.reason})`;
-  return route.protocol === "remote-v2" ? "Responses Remote V2" : "Responses Compact API";
+  return route.protocol === "context-management"
+    ? "Responses Context Management (experimental)"
+    : route.protocol === "remote-v2"
+      ? "Responses Remote V2"
+      : "Responses Compact API";
 }

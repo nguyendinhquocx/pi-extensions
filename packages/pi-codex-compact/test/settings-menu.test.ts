@@ -123,6 +123,16 @@ test("settings screen exposes bounded controls and invalid files remain repairab
     ],
   );
 
+  assert.ok(screen.items.find((item) => item.id === "protocol")?.values?.includes("Context Management (experimental)"));
+  const serverState = {
+    ...current.runtime.get(),
+    settings: { ...current.runtime.get().settings, protocol: "context-management" as const },
+  };
+  const serverMenu = resolveMenuScreen(menu, "main", serverState);
+  assert.equal(serverMenu.kind, "actions");
+  if (serverMenu.kind === "actions")
+    assert.match(serverMenu.lines?.join("\n") ?? "", /Context Management \(experimental\)/);
+
   const invalid = memoryRuntime("invalid");
   const invalidMenu = createCodexCompactMenu(invalid.runtime);
   const invalidMain = resolveMenuScreen(invalidMenu, "main", invalid.runtime.get());
@@ -166,6 +176,7 @@ test("menu actions persist exact setting patches", async () => {
   });
   await menu.actions["set-enabled"](action("Off"));
   await menu.actions["set-protocol"](action("Responses Compact"));
+  await menu.actions["set-protocol"](action("Context Management (experimental)"));
   await menu.actions["set-timeout"](action("10 min"));
   await menu.actions["set-retries"](action("1"));
   await menu.actions["set-retention"](action("96K tokens"));
@@ -173,6 +184,7 @@ test("menu actions persist exact setting patches", async () => {
   assert.deepEqual(memory.patches, [
     { enabled: false },
     { protocol: "responses-compact" },
+    { protocol: "context-management" },
     { requestTimeoutMs: 600_000 },
     { maxRetries: 1 },
     { replacementTokenBudget: 96_000 },

@@ -1,6 +1,6 @@
 {
   "name": "@narumitw/pi-usage",
-  "version": "0.61.1",
+  "version": "0.61.2",
   "description": "Pi extension that shows current-account usage and DeepSeek API balance for supported providers.",
   "type": "module",
   "license": "MIT",
@@ -57,10 +57,10 @@
     "@earendil-works/pi-tui": "*"
   },
   "devDependencies": {
-    "@earendil-works/pi-ai": "0.99.1",
-    "@earendil-works/pi-coding-agent": "0.99.1",
-    "@earendil-works/pi-tui": "0.99.1",
-    "@types/node": "26.6.3",
+    "@earendil-works/pi-ai": "1.0.0",
+    "@earendil-works/pi-coding-agent": "1.0.0",
+    "@earendil-works/pi-tui": "1.0.0",
+    "@types/node": "26.6.4",
     "esbuild": "0.28.2",
     "typescript": "7.0.2"
   },

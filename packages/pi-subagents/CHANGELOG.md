@@ -1,5 +1,11 @@
 # @narumitw/pi-subagents
 
+## 3.1.1
+
+### Patch Changes
+
+- 68c4b95: Update runtime dependencies and preserve Pi tool-context types through the LSP session lifecycle guard for compatibility with current Pi releases.
+
 ## 3.1.0
 
 ### Minor Changes

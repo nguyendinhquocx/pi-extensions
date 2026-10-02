@@ -2,6 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { Api } from "@earendil-works/pi-ai";
 import type { CompactionEntry, SessionEntry } from "@earendil-works/pi-coding-agent";
+import { validateContextManagementHistory } from "./context-management.js";
 import type { RemoteCompactionProtocol, ResponsesCompactionProfile } from "./model-api.js";
 import { type JsonObject, validateCompactionItem } from "./protocol.js";
 
@@ -100,7 +101,9 @@ export function parseCheckpointDetails(value: unknown): CodexCheckpointDetails |
     value.api.length > 0 &&
     value.api.length <= MAX_API_ID_LENGTH &&
     (value.profile === "codex-responses-v1" || value.profile === "openai-responses-v1") &&
-    (value.protocol === "remote-v2" || value.protocol === "responses-compact");
+    (value.protocol === "remote-v2" ||
+      value.protocol === "responses-compact" ||
+      value.protocol === "context-management");
   if (
     value.kind !== CHECKPOINT_KIND ||
     (!isVersionOne && !isVersionTwo && !isVersionThree) ||
@@ -148,9 +151,12 @@ export function parseCheckpointDetails(value: unknown): CodexCheckpointDetails |
   ) {
     return undefined;
   }
-  const last = value.replacementHistory.at(-1);
   try {
-    validateCompactionItem(last);
+    if (value.protocol === "context-management") {
+      validateContextManagementHistory(value.replacementHistory, { byteBudget: REPLACEMENT_BYTE_BUDGET });
+    } else {
+      validateCompactionItem(value.replacementHistory.at(-1));
+    }
   } catch {
     return undefined;
   }

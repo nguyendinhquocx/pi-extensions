@@ -1,5 +1,11 @@
 # @narumitw/pi-sync
 
+## 0.51.1
+
+### Patch Changes
+
+- 68c4b95: Update runtime dependencies and preserve Pi tool-context types through the LSP session lifecycle guard for compatibility with current Pi releases.
+
 ## 0.51.0
 
 ### Minor Changes

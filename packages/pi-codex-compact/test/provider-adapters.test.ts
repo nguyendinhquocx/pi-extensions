@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import * as zlib from "node:zlib";
 import {
   type Api,
   type AssistantMessageEventStream,
@@ -8,6 +9,7 @@ import {
   type Usage,
 } from "@earendil-works/pi-ai";
 import { describe, test } from "vitest";
+import { requestRemoteCompaction } from "../src/remote.js";
 
 const PROVIDER_MODULES = {
   "openai-responses": {
@@ -257,6 +259,89 @@ for (const api of Object.keys(PROVIDER_MODULES) as SupportedApi[]) {
       assert.equal(usage.cacheRead, 3);
       assert.equal(usage.output, 2);
     });
+
+    for (const signature of ["signed-reasoning", undefined, null, ""]) {
+      test(`observes stream-only checkpoints and backfills ${String(signature)} reasoning through the public event hook`, async () => {
+        const provider = await providerFor(api);
+        const model = modelFor(api);
+        let payload: Record<string, unknown> | undefined;
+        const suffix = { type: "reasoning", id: "rs_server", summary: [], encrypted_content: "signed-reasoning" };
+        const pending = { ...suffix, encrypted_content: signature };
+        const result = await requestRemoteCompaction({
+          provider,
+          model,
+          context: context(),
+          protocol: "context-management",
+          profile: api === "openai-codex-responses" ? "codex-responses-v1" : "openai-responses-v1",
+          apiKey: apiKey(api),
+          signal: new AbortController().signal,
+          maxRetries: 0,
+          fetch: async (input, init) => {
+            assert.equal(String(input), PROVIDER_MODULES[api].expectedUrl);
+            const body = init?.body;
+            payload = JSON.parse(
+              typeof body === "string" ? body : zlib.zstdDecompressSync(body as Uint8Array).toString("utf8"),
+            );
+            assert.deepEqual(payload?.context_management, [{ type: "compaction", compact_threshold: 1024 }]);
+            assert.equal(payload?.tool_choice, "none");
+            assert.equal(payload?.reasoning && (payload.reasoning as Record<string, unknown>).summary, undefined);
+            const events = [
+              {
+                type: "response.output_item.done",
+                item: { ...COMPACTION_ITEM, id: "cmp_old", encrypted_content: "old" },
+              },
+              { type: "response.output_item.done", item: COMPACTION_ITEM },
+              { type: "response.output_item.done", item: pending },
+              {
+                type: api === "openai-codex-responses" ? "response.done" : "response.completed",
+                response: responseObject([suffix]),
+              },
+            ];
+            return new Response(events.map((value) => `data: ${JSON.stringify(value)}\n\n`).join(""), {
+              headers: { "content-type": "text/event-stream" },
+            });
+          },
+        });
+        assert.deepEqual(result.replacementHistory, [COMPACTION_ITEM, suffix]);
+        assert.equal(result.usage.totalTokens, 12);
+        assert.equal(
+          (payload?.include as string[] | undefined)?.filter((item) => item === "reasoning.encrypted_content").length,
+          1,
+        );
+      });
+    }
+
+    for (const signature of [undefined, null, ""]) {
+      test(`rejects unreplayable ${String(signature)} reasoning through the installed adapter`, async () => {
+        const suffix = { type: "reasoning", id: "rs_unsigned", summary: [], encrypted_content: signature };
+        await assert.rejects(
+          requestRemoteCompaction({
+            provider: await providerFor(api),
+            model: modelFor(api),
+            context: context(),
+            protocol: "context-management",
+            profile: api === "openai-codex-responses" ? "codex-responses-v1" : "openai-responses-v1",
+            apiKey: apiKey(api),
+            signal: new AbortController().signal,
+            maxRetries: 0,
+            fetch: async () => {
+              const events = [
+                { type: "response.output_item.done", item: COMPACTION_ITEM },
+                { type: "response.output_item.done", item: suffix },
+                {
+                  type: api === "openai-codex-responses" ? "response.done" : "response.completed",
+                  response: responseObject([suffix]),
+                },
+              ];
+              return new Response(events.map((value) => `data: ${JSON.stringify(value)}\n\n`).join(""), {
+                headers: { "content-type": "text/event-stream" },
+              });
+            },
+          }),
+          /encrypted reasoning/,
+        );
+      });
+    }
 
     test("honors one bounded provider retry", async () => {
       const provider = await providerFor(api);

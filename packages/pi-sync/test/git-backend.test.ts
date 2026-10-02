@@ -499,37 +499,49 @@ test("Git backend removes private payload temporaries after cancellation", async
   }
 });
 
-test("Git backend reconciles a lost success response and reports unreachable outcomes as unknown", async () => {
+test("Git backend reconciles a lost success response", async () => {
   const committedFixture = createBareRemote();
+  let responseLost = false;
   try {
     const backend = new GitSyncBackend(gitConfig(committedFixture.remote), {
       cacheRoot: path.join(committedFixture.root, "cache"),
       allowLocalRemotes: true,
       afterPushForTest: () => {
+        responseLost = true;
         throw new Error("simulated lost response");
       },
     });
     const result = await backend.publishSnapshot(snapshot([]), { kind: "missing" });
+    assert.equal(responseLost, true);
     assert.equal(result.head.snapshotId, "snap");
   } finally {
     rmSync(committedFixture.root, { recursive: true, force: true });
   }
+});
 
+test("Git backend reports unreachable publication outcomes as unknown", async () => {
   const unknownFixture = createBareRemote();
+  const offlineRemote = path.join(unknownFixture.root, "offline.git");
+  const transportError = new Error("simulated transport loss password=top-secret Bearer bearer-secret");
   try {
     const backend = new GitSyncBackend(gitConfig(unknownFixture.remote), {
       cacheRoot: path.join(unknownFixture.root, "cache"),
       allowLocalRemotes: true,
       afterPushForTest: () => {
-        rmSync(unknownFixture.remote, { recursive: true, force: true });
-        throw new Error("simulated transport loss password=top-secret Bearer bearer-secret");
+        // Make the remote unreachable atomically; a recursive-removal error can be
+        // caught as a lost push response while leaving reconciliation reachable.
+        renameSync(unknownFixture.remote, offlineRemote);
+        throw transportError;
       },
     });
     await assert.rejects(backend.publishSnapshot(snapshot([]), { kind: "missing" }), (error: unknown) => {
       assert.ok(error instanceof SyncBackendPublicationOutcomeUnknownError);
+      assert.equal(error.cause, transportError);
       assert.doesNotMatch(error.message, /top-secret|bearer-secret/);
       return true;
     });
+    assert.equal(existsSync(unknownFixture.remote), false);
+    assert.equal(existsSync(offlineRemote), true);
   } finally {
     rmSync(unknownFixture.root, { recursive: true, force: true });
   }

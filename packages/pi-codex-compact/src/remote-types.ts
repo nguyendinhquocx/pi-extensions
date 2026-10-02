@@ -27,6 +27,7 @@ export interface RemoteCompactionResponse {
   item: JsonObject;
   promptInput: JsonObject[];
   compactedOutput?: JsonObject[];
+  replacementHistory?: JsonObject[];
   usage: Usage;
 }
 

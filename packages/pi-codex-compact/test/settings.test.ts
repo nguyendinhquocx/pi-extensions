@@ -100,12 +100,18 @@ test("serialized updates reread latest content, preserve unknown fields, and pub
   const runtime = createCodexCompactSettingsRuntime(path);
   await runtime.reload();
   await writeFile(path, '{"enabled":true,"external":"newer"}\n');
-  await Promise.all([runtime.update({ enabled: false }), runtime.update({ maxRetries: 0 })]);
+  await Promise.all([
+    runtime.update({ enabled: false }),
+    runtime.update({ maxRetries: 0 }),
+    runtime.update({ protocol: "context-management" }),
+  ]);
   await runtime.flush();
   const document = JSON.parse(await readFile(path, "utf8"));
   assert.equal(document.enabled, false);
   assert.equal(document.maxRetries, 0);
   assert.equal(document.external, "newer");
+  assert.equal(document.protocol, "context-management");
+  assert.equal((await runtime.reload()).settings.protocol, "context-management");
   assert.deepEqual(
     (await readdir(join(path, ".."))).filter((name) => name.endsWith(".tmp")),
     [],

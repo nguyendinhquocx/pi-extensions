@@ -77,6 +77,31 @@ describe("Responses compaction route selection", () => {
     }
   });
 
+  test("server compaction requires explicit selection and retains API/profile eligibility", () => {
+    for (const api of [
+      "openai-responses",
+      "azure-openai-responses",
+      "openai-codex-responses",
+      "custom-responses",
+    ] as Api[]) {
+      const route = resolveCompactionRoute(model(api), {
+        enabled: true,
+        protocol: "context-management",
+        apiProfiles: { "custom-responses": "codex-responses-v1" },
+      });
+      assert.equal(route.kind, "remote");
+      if (route.kind === "remote") assert.equal(route.protocol, "context-management");
+    }
+    assert.equal(
+      resolveCompactionRoute(model("anthropic-messages"), { enabled: true, protocol: "context-management" }).kind,
+      "native",
+    );
+    assert.equal(
+      resolveCompactionRoute(model("openai-responses"), { enabled: false, protocol: "context-management" }).kind,
+      "native",
+    );
+  });
+
   test("disabled, missing, and unsupported models stay Pi native", () => {
     assert.deepEqual(
       resolveCompactionRoute(model("openai-responses"), {

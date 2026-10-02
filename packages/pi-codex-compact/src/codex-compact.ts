@@ -17,8 +17,10 @@ import {
   fallbackSummary,
   latestCheckpoint,
   projectCheckpointContext,
+  REPLACEMENT_BYTE_BUDGET,
 } from "./checkpoint.js";
 import { compactionFailureMessage } from "./compaction-failure.js";
+import { validateContextManagementHistory } from "./context-management.js";
 import { type CompactionRoute, resolveCompactionRoute } from "./model-api.js";
 import { hasCheckpointMarker, rewriteCheckpointMarker } from "./protocol.js";
 import { requestRemoteCompaction } from "./remote.js";
@@ -129,7 +131,14 @@ async function compactRemotely(
   if (signal.aborted) return { cancel: true };
   const sessionId = ctx.sessionManager.getSessionId();
   let requestValues: string[] = [];
-  ctx.ui.setStatus(STATUS_KEY, route.protocol === "remote-v2" ? "Responses Remote V2…" : "Responses Compact API…");
+  ctx.ui.setStatus(
+    STATUS_KEY,
+    route.protocol === "context-management"
+      ? "Responses Context Management…"
+      : route.protocol === "remote-v2"
+        ? "Responses Remote V2…"
+        : "Responses Compact API…",
+  );
   try {
     const auth = await ctx.modelRegistry.getApiKeyAndHeaders(model);
     if (!sessionStillOwned(ctx, sessionId, signal)) return { cancel: true };
@@ -167,11 +176,15 @@ async function compactRemotely(
       fetch,
     });
     if (!sessionStillOwned(ctx, sessionId, signal)) return { cancel: true };
-    const replacementHistory = buildReplacementHistory(
-      response.compactedOutput?.slice(0, -1) ?? response.promptInput,
-      response.item,
-      { tokenBudget: settings.replacementTokenBudget },
-    );
+    const replacementHistory =
+      route.protocol === "context-management"
+        ? validateContextManagementHistory(response.replacementHistory ?? [], {
+            byteBudget: REPLACEMENT_BYTE_BUDGET,
+            tokenBudget: settings.replacementTokenBudget,
+          })
+        : buildReplacementHistory(response.compactedOutput?.slice(0, -1) ?? response.promptInput, response.item, {
+            tokenBudget: settings.replacementTokenBudget,
+          });
     const details = createCheckpointDetails({
       provider: model.provider,
       api: route.api,
@@ -197,7 +210,9 @@ async function compactRemotely(
     notifyFailure(ctx, error, settings, requestValues);
     return undefined;
   } finally {
-    if (ctx.sessionManager.getSessionId() === sessionId) ctx.ui.setStatus(STATUS_KEY, undefined);
+    if (!ownerSignal.aborted && ctx.sessionManager.getSessionId() === sessionId) {
+      ctx.ui.setStatus(STATUS_KEY, undefined);
+    }
   }
 }
 
@@ -227,6 +242,7 @@ export function createCodexCompactExtension(
 
     pi.on("session_start", async (_event, ctx) => {
       sessionController.abort();
+      ctx.ui.setStatus(STATUS_KEY, undefined);
       sessionController = new AbortController();
       generation += 1;
       const ownerGeneration = generation;

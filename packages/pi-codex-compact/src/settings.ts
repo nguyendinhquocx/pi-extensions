@@ -112,7 +112,8 @@ export function normalizeCodexCompactSettings(value: unknown): CodexCompactSetti
     Object.hasOwn(value, "protocol") &&
     value.protocol !== "auto" &&
     value.protocol !== "remote-v2" &&
-    value.protocol !== "responses-compact"
+    value.protocol !== "responses-compact" &&
+    value.protocol !== "context-management"
   ) {
     return undefined;
   }
@@ -131,7 +132,9 @@ export function normalizeCodexCompactSettings(value: unknown): CodexCompactSetti
   return {
     enabled: typeof value.enabled === "boolean" ? value.enabled : DEFAULT_CODEX_COMPACT_SETTINGS.enabled,
     protocol:
-      value.protocol === "remote-v2" || value.protocol === "responses-compact"
+      value.protocol === "remote-v2" ||
+      value.protocol === "responses-compact" ||
+      value.protocol === "context-management"
         ? value.protocol
         : DEFAULT_CODEX_COMPACT_SETTINGS.protocol,
     apiProfiles: normalizeApiProfiles(value.apiProfiles) ?? structuredClone(DEFAULT_CODEX_COMPACT_SETTINGS.apiProfiles),
