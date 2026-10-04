@@ -330,8 +330,7 @@ export class LspClient {
     try {
       this.#child.stdin.write(`Content-Length: ${Buffer.byteLength(body)}\r\n\r\n${body}`);
     } catch (error) {
-      const errorMessage =
-        `${this.#adapter.name} LSP stdin write failed: ${formatErrorMessage(error)}.` + this.#formatStderr();
+      const errorMessage = `${this.#adapter.name} LSP stdin write failed: ${formatErrorMessage(error)}.${this.#formatStderr()}`;
       this.#fail(errorMessage);
       throw new Error(errorMessage);
     }

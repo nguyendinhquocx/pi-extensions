@@ -343,7 +343,7 @@ function appendTaskState({ candidates, epoch, indexes, messages, seed }) {
     candidates.push({
       category: "task_continuation",
       epoch,
-      question: `What is the exact current checkpoint for ${task}? ` + "Return STATE|receipt=VALUE|next=VALUE.",
+      question: `What is the exact current checkpoint for ${task}? Return STATE|receipt=VALUE|next=VALUE.`,
       expected,
     });
     return `${task}:${expected}`;
