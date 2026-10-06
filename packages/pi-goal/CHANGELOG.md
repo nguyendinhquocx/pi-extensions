@@ -1,5 +1,11 @@
 # @narumitw/pi-goal
 
+## 0.54.9
+
+### Patch Changes
+
+- c40dd4c: Preserve `goal_wait` deadline wake-ups after backward wall-clock corrections by re-arming early timers against their original absolute deadline. Apply the same protection to the bounded deadline-delivery retry while preserving cancellation and settled-idle continuation gates.
+
 ## 0.54.8
 
 ### Patch Changes

@@ -239,6 +239,7 @@ async function showSelectionDifference(
             setupName: state.decision.setupName,
             include: [...state.decision.remoteInclude],
             automatic: review.config.automatic,
+            automaticTransfer: review.config.automaticTransfer,
             onSwitch: review.config.onSwitch,
             showStatus: review.config.showStatus,
           };

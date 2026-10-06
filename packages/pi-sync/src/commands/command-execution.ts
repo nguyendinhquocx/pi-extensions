@@ -13,6 +13,7 @@ import { RemoteSelectionMismatchError } from "../sync/sync-policy.js";
 import { automaticSyncSummary } from "../ui/automatic-sync-summary.js";
 import type { RunRouteResult } from "../ui/cancellable-operation.js";
 import { setSyncStatus } from "../ui/sync-status.js";
+import { safeTerminalText } from "../ui/terminal-text.js";
 import { parseOptions, resolveSyncCommand, splitArgs, usage, validateCommandOptions } from "./command.js";
 import type { CommandOptions } from "./command-types.js";
 
@@ -122,6 +123,12 @@ export async function executeCommand(
         const operations = await loaders.operations();
         throwIfAborted(options.signal);
         await operations.diff(ctx, options);
+        return { kind: "completed" };
+      }
+      case "conflicts": {
+        const { showConflicts } = await import("../sync/conflict-review.js");
+        throwIfAborted(options.signal);
+        await withLock("sync", () => showConflicts(ctx, options));
         return { kind: "completed" };
       }
       case "doctor": {
@@ -244,6 +251,9 @@ async function showConfig(ctx: ExtensionCommandContext, options: CommandOptions)
       ...storageLines,
       `storage path: ${config.storagePath}`,
       `automatic sync: ${automaticSyncSummary(config.automatic)}`,
+      `settings field merge: ${config.mergeSettings ? "On (experimental)" : "Off"}`,
+      `machine-local settings.json fields: ${(config.localFields ?? []).map(safeTerminalText).join(", ") || "none"}`,
+      `automatic transfer at startup: ${config.automaticTransfer ? "On — selected-file upload/replace/delete; no reload" : "Off"}`,
       `included content: ${config.include.join(", ") || "none"}`,
       `sessions: ${config.include.includes("sessions") ? "included" : "not included"}`,
       `settings file: ${localConfigPath()}`,

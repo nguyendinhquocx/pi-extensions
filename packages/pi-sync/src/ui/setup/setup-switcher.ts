@@ -78,7 +78,7 @@ export async function showSetupSwitcher(
 ) {
   const raw = await readLocalConfigObject();
   if (signal?.aborted) return false;
-  if (raw?.version !== 3) {
+  if (raw?.version !== 3 && raw?.version !== 4 && raw?.version !== 5) {
     ctx.ui.notify("Add a second sync setup before switching setups.", "info");
     return false;
   }
@@ -128,6 +128,7 @@ export async function showSetupSwitcher(
       `Storage: ${backendStorageDescription(config)}`,
       `Included content: ${config.include.length} paths`,
       `Automatic sync: ${automaticSyncSummary(config.automatic)} · Sessions: ${config.include.includes("sessions") ? "On" : "Off"}`,
+      `Automatic transfer at startup: ${config.automaticTransfer ? "On — may upload, replace, or delete selected files; no reload" : "Off"}`,
       "",
       switchEffect,
     ].join("\n"),

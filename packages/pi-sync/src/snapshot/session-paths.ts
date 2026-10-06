@@ -3,6 +3,7 @@ import path from "node:path";
 import { type ExtensionCommandContext, type ExtensionContext, getAgentDir } from "@earendil-works/pi-coding-agent";
 import type { AnySyncConfig } from "../settings/settings-types.js";
 import { readJsonIfExists } from "../state/json-file.js";
+import { sessionStorageRoot } from "./snapshot-paths.js";
 import type { Snapshot, SnapshotOptions } from "./snapshot-types.js";
 
 export function sessionDirFromContext(ctx: ExtensionCommandContext | ExtensionContext) {
@@ -19,7 +20,11 @@ export function sessionDirFromContext(ctx: ExtensionCommandContext | ExtensionCo
 
 export async function configuredSessionDir() {
   const settings = await readJsonIfExists<{ sessionDir?: string }>(path.join(agentDir(), "settings.json"));
-  return settings?.sessionDir ? expandHome(settings.sessionDir) : undefined;
+  return settings?.sessionDir ? expandSessionDir(settings.sessionDir) : undefined;
+}
+
+export async function effectiveSessionRoot(ctx: ExtensionCommandContext | ExtensionContext) {
+  return path.resolve(sessionStorageRoot(agentDir(), sessionDirFromContext(ctx) ?? (await configuredSessionDir())));
 }
 
 export async function sessionDirForApply(ctx: ExtensionCommandContext | ExtensionContext, snapshot: Snapshot) {
@@ -31,17 +36,39 @@ export async function sessionDirForApply(ctx: ExtensionCommandContext | Extensio
   return sessionDirFromSnapshot(snapshot) ?? contextSessionDir;
 }
 
+/** Hash-only merge plans cannot describe installation into a different session root. */
+export function requireStableMergeSessionRoot(before: Snapshot, after: Snapshot) {
+  const root = agentDir();
+  if (
+    path.resolve(sessionStorageRoot(root, sessionDirFromSnapshot(before))) !==
+    path.resolve(sessionStorageRoot(root, sessionDirFromSnapshot(after)))
+  ) {
+    throw new Error(
+      "Merged transfer changes the session root; no local apply or baseline acceptance is allowed. Review /sync diff and choose an explicit push or pull direction.",
+    );
+  }
+}
+
 function sessionDirFromSnapshot(snapshot: Snapshot) {
   const settingsFile = snapshot.files.find((file) => file.path === "settings.json");
   if (!settingsFile) return undefined;
+  let settings: unknown;
   try {
-    const settings = JSON.parse(decodeBase64Strict(settingsFile.contentBase64, settingsFile.path).toString("utf8")) as {
-      sessionDir?: string;
-    };
-    return settings.sessionDir ? expandHome(settings.sessionDir) : undefined;
+    settings = JSON.parse(
+      new TextDecoder("utf-8", { fatal: true }).decode(
+        decodeBase64Strict(settingsFile.contentBase64, settingsFile.path),
+      ),
+    );
   } catch {
-    return undefined;
+    // JSON parser errors can quote private settings values; never surface their payload.
+    throw new Error("Merged settings cannot be parsed; review a directional recovery.");
   }
+  if (!settings || typeof settings !== "object" || Array.isArray(settings))
+    throw new Error("Merged settings must be a JSON object; review a directional recovery.");
+  const sessionDir = (settings as { sessionDir?: unknown }).sessionDir;
+  if (sessionDir !== undefined && typeof sessionDir !== "string")
+    throw new Error("Merged sessionDir must be a string; review a directional recovery.");
+  return sessionDir ? expandSessionDir(sessionDir) : undefined;
 }
 
 function decodeBase64Strict(value: string, filePath: string) {
@@ -55,7 +82,7 @@ export function agentDir() {
   return getAgentDir();
 }
 
-function expandHome(value: string) {
+export function expandSessionDir(value: string) {
   return value === "~" || value.startsWith("~/") ? path.join(os.homedir(), value.slice(2)) : value;
 }
 

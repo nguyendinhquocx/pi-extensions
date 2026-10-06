@@ -1,5 +1,11 @@
 # @narumitw/pi-accounts
 
+## 0.53.1
+
+### Patch Changes
+
+- 2a339f6: Fix OpenAI account login failing with "Sign in with ChatGPT requires a device ID (UUID) for this installation". Pass Pi's stable installation device ID to provider login flows, as Pi's `/login` does, in TUI and RPC modes.
+
 ## 0.53.0
 
 ### Minor Changes

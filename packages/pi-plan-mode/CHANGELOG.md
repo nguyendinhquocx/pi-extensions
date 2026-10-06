@@ -1,5 +1,23 @@
 # @narumitw/pi-plan-mode
 
+## 0.59.1
+
+### Patch Changes
+
+- 000bd50: Use Pi's publicly configured custom editor factory for TUI questionnaire answers and notes. Custom editors own editing and submission keys, while Ctrl+C remains hard cancellation and the main prompt editor stays untouched. Preserve raw expanded drafts, fragmented paste safety, default-editor and non-TUI behavior, and release questionnaire-owned editor instances when the interaction ends.
+  
+  Honor custom editor submission values without replacing intentional normalization with the original draft, and retain editor-owned key-release cycles across answer and note transitions.
+- Updated dependencies [000bd50]
+  - @narumitw/pi-tui-kit@0.65.2
+
+## 0.59.0
+
+### Minor Changes
+
+- 51d8c21: Restrict `safeSubcommands` trust to individual parsed Bash and PowerShell segments. A matching prefix no longer exempts trailing commands or bypasses the shell parser: every segment must pass its own policy, and unsupported syntax such as redirects and multiline input remains blocked.
+  
+  This is a compatibility change from full-command trust. Simple configured commands and trusted arguments remain supported, but chains require each additional segment to be independently permitted. Run workflows requiring parser-unsupported syntax outside Plan mode after review. The settings schema is unchanged, and explicitly trusted commands and their arguments can still mutate data or execute code; this setting is not a read-only guarantee or sandbox.
+
 ## 0.58.4
 
 ### Patch Changes

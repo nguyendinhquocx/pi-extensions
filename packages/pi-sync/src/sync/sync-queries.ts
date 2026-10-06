@@ -10,6 +10,7 @@ import { inspectLock, isLockGuardHeld, isStaleLock, withLock } from "../state/lo
 import { formatDiff, formatSnapshotOnlyDiff, publicationCapabilityDescription } from "../ui/sync-format.js";
 import { setSyncStatus } from "../ui/sync-status.js";
 import { safeTerminalText } from "../ui/terminal-text.js";
+import { portableSnapshot } from "./local-fields.js";
 import { formatRemoteSelectionStatus, readRemoteSnapshot } from "./remote-snapshot.js";
 import { throwIfAborted } from "./signals.js";
 import { errorMessage } from "./sync-errors.js";
@@ -65,7 +66,10 @@ export async function diff(
   throwIfAborted(options.signal);
   setSyncStatus(ctx, `checking ${config.setupName}`);
   const backend = await factory(config);
-  const local = await createSnapshot(config.snapshotIdentity, snapshotOptionsForContext(ctx, config));
+  const local = portableSnapshot(
+    await createSnapshot(config.snapshotIdentity, snapshotOptionsForContext(ctx, config)),
+    config.localFields,
+  );
   throwIfAborted(options.signal);
   const { snapshot: remote, selectionState } = await readRemoteSnapshot(backend, config, options.signal, {
     allowSelectionDifference: true,
@@ -89,7 +93,7 @@ export async function diff(
     return;
   }
 
-  ctx.ui.notify(`${header}\n\n${formatDiff(local, remote)}`, level);
+  ctx.ui.notify(`${header}\n\n${formatDiff(local, portableSnapshot(remote, remote.localFields))}`, level);
 }
 
 export async function doctor(

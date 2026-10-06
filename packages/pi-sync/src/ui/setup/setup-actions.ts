@@ -40,7 +40,7 @@ async function showAddTarget(ctx: ExtensionCommandContext, signal?: AbortSignal)
   let raw = await readLocalConfigObject();
   if (signal?.aborted) return;
   if (!raw) return void ctx.ui.notify("Set up the first sync setup before adding another.", "info");
-  if (raw.version !== 3) {
+  if (raw.version !== 3 && raw.version !== 4 && raw.version !== 5) {
     ctx.ui.notify("Version 1 and version 2 settings are unsupported and are never migrated.", "error");
     return;
   }
@@ -88,7 +88,7 @@ async function showEditTarget(ctx: ExtensionCommandContext, name: string, signal
   const partial = await loadPartialConfig(name);
   if (signal?.aborted) return;
   if (!partial.setupName) {
-    ctx.ui.notify("Create version 3 settings before editing a named sync setup.", "info");
+    ctx.ui.notify("Create supported pi-sync settings before editing a named sync setup.", "info");
     return;
   }
   if (partial.storageKind === "webdav") {

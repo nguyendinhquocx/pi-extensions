@@ -75,6 +75,14 @@ export default function sync(pi: ExtensionAPI, dependencies: Partial<SyncDepende
     if (ready && !signal.aborted) check.start(ctx, signal, ready);
   });
 
+  pi.on("agent_start", async (_event, ctx) => {
+    await check.interrupt(ctx);
+  });
+
+  pi.on("agent_settled", (_event, ctx) => {
+    if (!sessionAbort.signal.aborted) check.settled(ctx);
+  });
+
   pi.on("session_shutdown", async (event, ctx) => {
     sessionAbort.abort(new DOMException("Session shut down", "AbortError"));
     attention.reset(ctx);

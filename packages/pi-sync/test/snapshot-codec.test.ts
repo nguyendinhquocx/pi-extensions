@@ -21,6 +21,21 @@ test("snapshot codec preserves portable selection intent and rejects malformed p
   );
 });
 
+test("snapshot codec preserves policy presence and refuses implicit portable metadata", async () => {
+  for (const localFields of [[], ["machine"]]) {
+    const portable = { ...snapshot([]), version: 2, localFields };
+    assert.deepEqual(await decodeSnapshot(await encodeSnapshot(portable)), portable);
+  }
+  for (const malformed of [
+    { ...snapshot([]), version: 2 },
+    { ...snapshot([]), localFields: [] },
+  ]) {
+    await assert.rejects(decodeSnapshot(gzipSync(Buffer.from(JSON.stringify(malformed)))), /localFields|version 2/);
+  }
+  const legacy = snapshot([]);
+  assert.equal((await decodeSnapshot(await encodeSnapshot(legacy))).localFields, undefined);
+});
+
 test("snapshot decoding bounds decompressed output and honors cancellation", async () => {
   const encoded = gzipSync(
     Buffer.from(JSON.stringify(snapshot([{ path: "settings.json", content: Buffer.from("x".repeat(4096)) }]))),

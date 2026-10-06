@@ -5,7 +5,7 @@ import { loadConfig, loadPartialConfig } from "../settings/config.js";
 import { isMissingConfigError } from "../settings/config-errors.js";
 import { consumeLocalConfigMigrationNotice } from "../settings/config-file.js";
 import { readLocalConfigObject } from "../settings/settings-store.js";
-import { snapshotOptionsForContext } from "../snapshot/session-paths.js";
+import { sessionDirFromContext, snapshotOptionsForContext } from "../snapshot/session-paths.js";
 import { recoverSnapshotTransactionsOnStartup } from "../snapshot/snapshot-transaction.js";
 import { withLock } from "../state/lock.js";
 import { stateDirectoryMigrationNotice } from "../state/state-directory.js";
@@ -15,6 +15,7 @@ import { safeTerminalText } from "../ui/terminal-text.js";
 import { throwIfAborted } from "./signals.js";
 import { errorMessage } from "./sync-errors.js";
 import type { SyncLoaders } from "./sync-loaders.js";
+import { captureMutationOwner } from "./sync-local.js";
 
 const AUTO_SYNC_OPTIONS: CommandOptions = {
   yes: true,
@@ -32,7 +33,14 @@ export async function startSession(ctx: ExtensionContext, signal: AbortSignal) {
   if (stateNotice && ctx.hasUI) ctx.ui.notify(stateNotice, "warning");
   // Recovery can restore managed files: finish it before Pi accepts user edits.
   // Unlike remote inspection, it must never be detached behind startup.
-  await recoverSnapshotTransactionsOnStartup();
+  const validateMutation = captureMutationOwner(ctx, signal);
+  const currentFile = ctx.sessionManager.getSessionFile?.();
+  await recoverSnapshotTransactionsOnStartup({
+    signal,
+    sessionDir: sessionDirFromContext(ctx),
+    protectedTargets: currentFile ? [currentFile] : [],
+    validateMutation,
+  });
   throwIfAborted(signal);
   try {
     const settings = await readLocalConfigObject();
@@ -52,7 +60,7 @@ export async function startSession(ctx: ExtensionContext, signal: AbortSignal) {
     const config = await loadConfig();
     throwIfAborted(signal);
     configureSyncStatus(ctx, config.showStatus);
-    return config.automatic ? config : undefined;
+    return config.automatic || config.automaticTransfer ? config : undefined;
   } catch (error) {
     throwIfAborted(signal);
     if (!isMissingConfigError(error)) {

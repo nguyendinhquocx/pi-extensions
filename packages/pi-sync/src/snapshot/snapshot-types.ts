@@ -19,11 +19,16 @@ export interface Snapshot {
   syncSessions?: boolean;
   /** Portable, credential-free included-content intent. Absent on legacy snapshots. */
   selection?: SnapshotSelection;
+  localFields?: string[];
   files: SnapshotFile[];
 }
 
 export interface SnapshotOptions {
   signal?: AbortSignal;
+  /** Caller-owned session/generation guard, rechecked at file-mutation boundaries. */
+  validateMutation?: () => void;
+  /** Reviewed regular-file preimages; null means the path was absent. Checked under mutation queues. */
+  expectedFileHashes?: Readonly<Record<string, string | null>>;
   include?: string[];
   sessionDir?: string;
   /** Temporary internal projections while snapshot storage remains wire-compatible. */

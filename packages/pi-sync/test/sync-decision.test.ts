@@ -178,7 +178,10 @@ test("push reports a structured remote-or-policy decision without mutation", asy
 test("pull and Sync now report structured both-changed decisions without mutation", async () => {
   await withInitializedSync(async ({ agentDir, backend }) => {
     writeFileSync(path.join(agentDir, "settings.json"), '{"local":"changed"}\n');
-    const remote = namedSnapshot("remote-change", '{"remote":"changed"}\n');
+    const remote = {
+      ...namedSnapshot("remote-change", '{"remote":"changed"}\n'),
+      selection: { version: 1 as const, include: ["settings.json"] },
+    };
     await backend.publishSnapshot(remote, expectedRemoteHead(await backend.readHead()));
     const { ctx } = createMockContext({ hasUI: true, mode: "tui" });
     for (const operation of [pull, syncBoth]) {

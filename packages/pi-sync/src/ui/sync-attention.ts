@@ -153,6 +153,8 @@ export function observationSummary(observation: StartupObservation) {
   if (result.firstSync)
     return result.head ? "No sync baseline; review remote and local content" : "Remote empty; no sync baseline";
   if (!result.head) return "Remote snapshot missing; review needed";
+  if (observation.automaticTransfer && result.selectionState?.kind === "legacy")
+    return "Legacy remote has no authoritative content list; review /sync and choose an explicit direction to adopt policy";
   if (result.localChanged && result.remoteChanged) return "Local and remote changed since last sync; review needed";
   if (result.remoteChanged) return "Remote changed since last sync";
   if (result.localChanged) return "Local content changed since last sync";
@@ -171,6 +173,7 @@ export function classifyObservation(observation: StartupObservation): Observatio
   if (result.selectionState?.kind === "different") return "review";
   if (result.firstSync) return result.head ? "review" : "guidance";
   if (!result.head || (result.localChanged && result.remoteChanged)) return "review";
+  if (observation.automaticTransfer && result.selectionState?.kind === "legacy") return "review";
   if (result.localChanged || result.remoteChanged) return "status";
   // Legacy metadata alone requires no scope confirmation in transfer operations.
   return "none";

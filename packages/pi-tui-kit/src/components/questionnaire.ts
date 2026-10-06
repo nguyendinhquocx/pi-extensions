@@ -1,12 +1,17 @@
 import { stripVTControlCharacters } from "node:util";
-import type { KeybindingsManager, Theme } from "@earendil-works/pi-coding-agent";
+import type { ExtensionUIContext, KeybindingsManager, Theme } from "@earendil-works/pi-coding-agent";
 import {
   type Component,
   Editor,
+  type EditorComponent,
   type EditorTheme,
   type Focusable,
+  isFocusable,
+  isKeyRelease,
+  isKeyRepeat,
   Key,
   matchesKey,
+  parseKey,
   sliceByColumn,
   type TUI,
   type TuiMouseEvent,
@@ -17,6 +22,8 @@ import {
 import { HorizontalRule } from "../horizontal-rule.js";
 import type { QuestionnaireAnswer, QuestionnaireLabels, QuestionnaireQuestion } from "../questionnaire.js";
 import type { MenuCloseReason } from "../types.js";
+
+type EditorFactory = NonNullable<ReturnType<ExtensionUIContext["getEditorComponent"]>>;
 
 const BRACKETED_PASTE_START = "\u001b[200~";
 const BRACKETED_PASTE_END = "\u001b[201~";
@@ -34,6 +41,7 @@ export interface QuestionnaireComponentOptions<QuestionId extends string> {
   tui: TUI;
   theme: Theme;
   keybindings: KeybindingsManager;
+  editorFactory?: EditorFactory;
   isCurrent(): boolean;
   onDone(value: QuestionnaireInteractionValue<QuestionId>): void;
 }
@@ -46,8 +54,10 @@ export class QuestionnaireComponent<QuestionId extends string> implements Compon
   private readonly selectedOptions: number[];
   private page = 0;
   private editorKind: "answer" | "note" | undefined;
+  private readonly editorOwnedKeys = new Set<string>();
   private message: string | undefined;
   private finished = false;
+  private disposed = false;
   private _focused = false;
   private localOptionRows = new Map<number, number>();
   private optionByFrameRow = new Map<number, number>();
@@ -73,11 +83,15 @@ export class QuestionnaireComponent<QuestionId extends string> implements Compon
         noMatch: (text) => options.theme.fg("warning", text),
       },
     };
-    this.editor = new RawPreservingEditor(options.tui, editorTheme);
+    this.editor = new RawPreservingEditor(options.tui, editorTheme, options.keybindings, options.editorFactory);
     this.editor.onChange = () => {
       this.message = undefined;
     };
     this.editor.onSubmit = (text) => this.submitEditor(text);
+  }
+
+  get wantsKeyRelease(): boolean | undefined {
+    return this.editor.wantsKeyRelease || this.editorOwnedKeys.size > 0 || undefined;
   }
 
   get focused(): boolean {
@@ -128,11 +142,37 @@ export class QuestionnaireComponent<QuestionId extends string> implements Compon
       this.finish({ kind: "closed", reason: "back" });
       return;
     }
+    // A fragmented paste is text, even when one chunk looks like a cancellation or submission key.
+    if (this.editorKind && (this.editor.isPasting || data.includes(BRACKETED_PASTE_START))) {
+      this.editor.handleInput(data);
+      this.options.tui.requestRender();
+      return;
+    }
+    const key = editorKeyIdentity(data);
+    const release = key !== undefined && isKeyRelease(data);
+    if (
+      release ||
+      (key !== undefined &&
+        isKeyRepeat(data) &&
+        (this.editorOwnedKeys.has(key) || (this.editorKind && this.editor.wantsKeyRelease)))
+    ) {
+      // A key cycle stays with the editor that received its press, even after submission.
+      // Selector-owned opening releases/repeats never become editor input.
+      if (key !== undefined && this.editorOwnedKeys.has(key)) {
+        if (release) this.editorOwnedKeys.delete(key);
+        this.editor.handleInput(data);
+        this.options.tui.requestRender();
+      }
+      return;
+    }
     if (matchesKey(data, Key.ctrl("c"))) {
       this.finish({ kind: "closed", reason: "close" });
       return;
     }
-    if (this.options.keybindings.matches(data, "tui.select.cancel")) {
+    if (
+      !(this.editorKind && this.options.editorFactory) &&
+      this.options.keybindings.matches(data, "tui.select.cancel")
+    ) {
       this.finish({ kind: "closed", reason: "back" });
       return;
     }
@@ -191,13 +231,22 @@ export class QuestionnaireComponent<QuestionId extends string> implements Compon
   }
 
   dispose(): void {
-    if (this.finished) return;
+    if (this.disposed) return;
+    this.disposed = true;
     this.finished = true;
     this.clearMouseLayout();
-    this.editor.focused = false;
+    this.editorOwnedKeys.clear();
+    this.editor.dispose();
   }
 
   private handleEditorInput(data: string): void {
+    if (this.options.editorFactory) {
+      // Custom editors own their editing and submission semantics; only hard Close is intercepted.
+      const key = editorKeyIdentity(data);
+      if (this.editor.wantsKeyRelease && key !== undefined) this.editorOwnedKeys.add(key);
+      this.editor.handleInput(data);
+      return;
+    }
     const keybindings = this.options.keybindings;
     if (keybindings.matches(data, "tui.input.newLine")) {
       this.editor.handleInput(data);
@@ -252,6 +301,9 @@ export class QuestionnaireComponent<QuestionId extends string> implements Compon
     const { keybindings, theme } = this.options;
     const cancel = cancelHint(theme, keybindings);
     if (this.editorKind) {
+      if (this.options.editorFactory) {
+        return [theme.fg("muted", "Use editor keybindings"), rawKeyHint(theme, "Ctrl+C", "cancel")];
+      }
       return [
         keybindingHint(
           theme,
@@ -483,6 +535,11 @@ export class QuestionnaireComponent<QuestionId extends string> implements Compon
   }
 
   private submitEditor(value: string): void {
+    if (this.finished || !this.editorKind) return;
+    if (!this.options.isCurrent()) {
+      this.finish({ kind: "closed", reason: "back" });
+      return;
+    }
     if (this.options.maxTextLength !== undefined && value.length > this.options.maxTextLength) {
       this.editor.setText(value);
       this.message = `${this.editorKind === "answer" ? "Answer" : "Note"} must be ${formatLimit(
@@ -561,22 +618,54 @@ export class QuestionnaireComponent<QuestionId extends string> implements Compon
   }
 }
 
+function editorKeyIdentity(data: string): string | undefined {
+  // Pi's parser normalizes named keys across CSI-u, legacy, arrows and functional keys.
+  // Modifier state may change before release. Preserve unnamed CSI keys by codepoint/suffix.
+  const withoutModifiers = data.replace(/;\d+(?::[123])?([u~ABCDHF])$/u, ";1$1");
+  const named = parseKey(data) ?? parseKey(withoutModifiers);
+  if (named !== undefined) return named.replace(/^(?:(?:shift|ctrl|alt|super)\+)+/u, "");
+  const csi = withoutModifiers.startsWith("\u001b[")
+    ? withoutModifiers.slice(2).match(/^(\d+)(?::\d*)?(?::(\d+))?(?:;\d+)?(?::[123])?([u~ABCDHF])$/u)
+    : undefined;
+  return csi ? `${csi[3]}:${csi[2] ?? csi[1]}` : undefined;
+}
+
 class RawPreservingEditor implements Focusable {
-  private readonly editor: Editor;
+  private readonly editor: EditorComponent & { dispose?(): void };
   private readonly rawByMarker = new Map<string, string>();
   private markerCodePoint = 0xe000;
   private pasteBuffer: string | undefined;
+  private inputDraft: string | undefined;
+  private readonly preserveDraft: boolean;
 
-  constructor(tui: TUI, theme: EditorTheme) {
-    this.editor = new Editor(tui, theme, { paddingX: 0 });
+  constructor(tui: TUI, theme: EditorTheme, keybindings: KeybindingsManager, factory?: EditorFactory) {
+    this.preserveDraft = !factory;
+    this.editor = factory ? factory(tui, theme, keybindings) : new Editor(tui, theme, { paddingX: 0 });
+  }
+
+  get wantsKeyRelease(): boolean | undefined {
+    return this.editor.wantsKeyRelease;
+  }
+
+  get isPasting(): boolean {
+    return this.pasteBuffer !== undefined;
   }
 
   get focused(): boolean {
-    return this.editor.focused;
+    return isFocusable(this.editor) && this.editor.focused;
   }
 
   set focused(value: boolean) {
-    this.editor.focused = value;
+    if (isFocusable(this.editor)) this.editor.focused = value;
+  }
+
+  dispose(): void {
+    this.focused = false;
+    this.editor.onChange = undefined;
+    this.editor.onSubmit = undefined;
+    this.pasteBuffer = undefined;
+    this.rawByMarker.clear();
+    this.editor.dispose?.();
   }
 
   set onChange(handler: ((value: string) => void) | undefined) {
@@ -584,7 +673,15 @@ class RawPreservingEditor implements Focusable {
   }
 
   set onSubmit(handler: ((value: string) => void) | undefined) {
-    this.editor.onSubmit = handler ? (value) => handler(this.decode(value)) : undefined;
+    this.editor.onSubmit = handler
+      ? (value) => {
+          // Only the questionnaire's default Editor needs trim/clear compensation.
+          // A custom editor's onSubmit value is authoritative, even when it equals draft.trim().
+          handler(
+            this.decode(this.inputDraft !== undefined && value === this.inputDraft.trim() ? this.inputDraft : value),
+          );
+        }
+      : undefined;
   }
 
   handleInput(data: string): void {
@@ -594,25 +691,34 @@ class RawPreservingEditor implements Focusable {
       return;
     }
     if (matchesKey(data, Key.backspace)) {
-      this.editor.handleInput(data);
+      this.forwardInput(data);
       return;
     }
     const pasteStart = data.indexOf(BRACKETED_PASTE_START);
     if (pasteStart >= 0) {
-      if (pasteStart > 0) this.editor.handleInput(data.slice(0, pasteStart));
+      if (pasteStart > 0) this.forwardInput(data.slice(0, pasteStart));
       this.pasteBuffer = data.slice(pasteStart + BRACKETED_PASTE_START.length);
       this.flushPasteBuffer();
       return;
     }
     if ([...data].some((character) => isUnsafeDirectEditorCharacter(character) || this.rawByMarker.has(character))) {
-      this.editor.handleInput(this.encode(data));
+      this.forwardInput(this.encode(data));
       return;
     }
-    this.editor.handleInput(data);
+    this.forwardInput(data);
+  }
+
+  private forwardInput(data: string): void {
+    this.inputDraft = this.preserveDraft ? (this.editor.getExpandedText?.() ?? this.editor.getText()) : undefined;
+    try {
+      this.editor.handleInput(data);
+    } finally {
+      this.inputDraft = undefined;
+    }
   }
 
   handleMouse(event: TuiMouseEvent): TuiMouseEventResult | undefined {
-    return this.editor.handleMouse(event);
+    return this.editor.handleMouse?.(event);
   }
 
   render(width: number): string[] {
@@ -633,7 +739,7 @@ class RawPreservingEditor implements Focusable {
   }
 
   getExpandedText(): string {
-    return this.decode(this.editor.getExpandedText());
+    return this.decode(this.editor.getExpandedText?.() ?? this.editor.getText());
   }
 
   private flushPasteBuffer(): void {
@@ -643,12 +749,16 @@ class RawPreservingEditor implements Focusable {
     const raw = this.pasteBuffer.slice(0, pasteEnd);
     const remaining = this.pasteBuffer.slice(pasteEnd + BRACKETED_PASTE_END.length);
     this.pasteBuffer = undefined;
-    this.editor.handleInput(`${BRACKETED_PASTE_START}${this.encode(raw)}${BRACKETED_PASTE_END}`);
+    this.forwardInput(`${BRACKETED_PASTE_START}${this.encode(raw)}${BRACKETED_PASTE_END}`);
     if (remaining) this.handleInput(remaining);
   }
 
   private encode(value: string): string {
-    const forbidden = new Set([...value, ...this.editor.getExpandedText(), ...this.rawByMarker.keys()]);
+    const forbidden = new Set([
+      ...value,
+      ...(this.editor.getExpandedText?.() ?? this.editor.getText()),
+      ...this.rawByMarker.keys(),
+    ]);
     return [...value]
       .map((character) => {
         if (!isUnsafeEditorCharacter(character) && !this.rawByMarker.has(character)) {

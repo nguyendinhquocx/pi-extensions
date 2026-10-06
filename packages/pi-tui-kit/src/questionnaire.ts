@@ -121,6 +121,7 @@ async function runTuiQuestionnaire<QuestionId extends string, Context extends Me
         tui,
         theme,
         keybindings,
+        editorFactory: uiFor(ctx).getEditorComponent?.(),
         isCurrent: () => isCurrent(options),
         onDone: complete,
       }),

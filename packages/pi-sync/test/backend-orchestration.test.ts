@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import fs from "node:fs/promises";
 import path from "node:path";
-import { test } from "vitest";
+import { test, vi } from "vitest";
 import { createMockContext } from "../../../test/support.js";
 import { expectedRemoteHead } from "../src/backends/sync-backend.js";
 import type { CommandOptions } from "../src/commands/command-types.js";
@@ -140,6 +141,91 @@ test("rollback reports a typed local/remote partial failure with its backup", as
   });
 });
 
+test("push persists accepted state when cancellation arrives after remote publication", async () => {
+  await withTempHome(async (agentDir) => {
+    mkdirSync(agentDir, { recursive: true });
+    writeFileSync(path.join(agentDir, "settings.json"), '{"current":true}\n');
+    writeFileSync(localConfigPath(), JSON.stringify(requiredConfig()));
+    const backend = new MemorySyncBackend();
+    const controller = new AbortController();
+    const original = backend.publishSnapshot.bind(backend);
+    backend.publishSnapshot = async (...args) => {
+      const result = await original(...args);
+      controller.abort();
+      return result;
+    };
+    const { ctx } = createMockContext({ hasUI: true });
+    await push(ctx, { ...commandOptions(), signal: controller.signal }, undefined, () => backend);
+    const head = await backend.readHead();
+    assert.ok(head);
+    assert.equal((await readStateForConfig(await loadConfig())).lastRemoteRevision, head.revision);
+  });
+});
+
+test("pull persists accepted state when cancellation arrives after local transaction retirement", async () => {
+  await withTempHome(async (agentDir) => {
+    mkdirSync(agentDir, { recursive: true });
+    writeFileSync(path.join(agentDir, "settings.json"), '{"current":true}\n');
+    writeFileSync(localConfigPath(), JSON.stringify(requiredConfig()));
+    const backend = new MemorySyncBackend();
+    const remote = {
+      ...snapshot([{ path: "settings.json", content: Buffer.from('{"remote":true}\n') }]),
+      id: "remote",
+    };
+    const published = await backend.publishSnapshot(remote, { kind: "missing" });
+    const controller = new AbortController();
+    const original = fs.rm.bind(fs);
+    let retired = false;
+    const rm = vi.spyOn(fs, "rm").mockImplementation(async (...args) => {
+      await original(...args);
+      if (!retired && /[\\/]transactions[\\/][a-f0-9-]{36}$/u.test(String(args[0]))) {
+        retired = true;
+        controller.abort();
+      }
+    });
+    const { ctx } = createMockContext({ hasUI: true });
+    try {
+      assert.equal(await pull(ctx, { ...commandOptions(), signal: controller.signal }, () => backend), "applied");
+      assert.equal(retired, true);
+      assert.equal(readFileSync(path.join(agentDir, "settings.json"), "utf8"), '{"remote":true}\n');
+      assert.equal((await readStateForConfig(await loadConfig())).lastRemoteRevision, published.head.revision);
+    } finally {
+      rm.mockRestore();
+    }
+  });
+});
+
+test("rollback persists accepted state when cancellation arrives after remote publication", async () => {
+  await withTempHome(async (agentDir) => {
+    mkdirSync(agentDir, { recursive: true });
+    writeFileSync(path.join(agentDir, "settings.json"), '{"current":true}\n');
+    writeFileSync(localConfigPath(), JSON.stringify(requiredConfig()));
+    const backend = new MemorySyncBackend();
+    const historical = {
+      ...snapshot([{ path: "settings.json", content: Buffer.from('{"historical":true}\n') }]),
+      id: "historical",
+    };
+    await backend.publishSnapshot(historical, { kind: "missing" });
+    await backend.publishSnapshot(
+      { ...snapshot([{ path: "settings.json", content: Buffer.from('{"current":true}\n') }]), id: "current" },
+      expectedRemoteHead(await backend.readHead()),
+    );
+    const controller = new AbortController();
+    const original = backend.publishSnapshot.bind(backend);
+    backend.publishSnapshot = async (...args) => {
+      const result = await original(...args);
+      controller.abort();
+      return result;
+    };
+    const { ctx } = createMockContext({ hasUI: true });
+    await rollback(ctx, { ...commandOptions(), args: [historical.id], signal: controller.signal }, () => backend);
+    const head = await backend.readHead();
+    assert.ok(head);
+    assert.equal((await readStateForConfig(await loadConfig())).lastRemoteRevision, head.revision);
+    assert.equal(readFileSync(path.join(agentDir, "settings.json"), "utf8"), '{"historical":true}\n');
+  });
+});
+
 test("rollback rejects a remote head change that lands during confirmation", async () => {
   await withTempHome(async (agentDir) => {
     mkdirSync(agentDir, { recursive: true });
@@ -170,8 +256,9 @@ test("rollback rejects a remote head change that lands during confirmation", asy
 
     await assert.rejects(
       rollback(ctx, { ...commandOptions(), args: [historical.id], yes: false }, () => backend),
-      RollbackPublicationError,
+      /Remote changed during rollback review/,
     );
+    assert.equal(readFileSync(path.join(agentDir, "settings.json"), "utf8"), '{"current":true}\n');
     assert.equal((await backend.readHead())?.snapshotId, concurrent.id);
   });
 });

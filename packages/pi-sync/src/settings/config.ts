@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { backendIdentityCoordinates } from "../backends/backend-identity.js";
 import { normalizeGitBranch, normalizeGitDirectory, normalizeGitRemote } from "../backends/git/git-config.js";
 import { normalizeWebDavPath, normalizeWebDavUrl } from "../backends/webdav/webdav-config.js";
+import { normalizeLocalFields } from "../sync/local-fields.js";
 import { normalizeSyncInclude } from "../sync/sync-policy.js";
 import { localConfigPath, readActiveLocalConfigDocumentForRepair } from "./config-file.js";
 import { requireSettings } from "./settings-store.js";
@@ -75,6 +76,7 @@ export async function loadPartialConfig(setupName?: string): Promise<PartialConf
     ...storageReviewFromConfig(config),
     include: [...config.include],
     automatic: config.automatic,
+    automaticTransfer: config.automaticTransfer ?? false,
     onSwitch: config.onSwitch,
     showStatus: config.showStatus,
   };
@@ -109,6 +111,11 @@ export function syncConfigReviewIdentity(config: AnySyncConfig) {
     backendIdentityCoordinates(config),
     config.include,
     config.automatic,
+    config.automaticTransfer ?? false,
+    config.localFields,
+    config.mergeSettings ?? false,
+    config.mergeContent ?? false,
+    config.partialSync ?? false,
   ]);
 }
 
@@ -155,6 +162,11 @@ function resolveSyncConfig(
     snapshotIdentity: namespace,
     include,
     automatic: setup.sync.automatic,
+    automaticTransfer: setup.sync.automaticTransfer ?? false,
+    localFields: setup.sync.localFields === undefined ? undefined : normalizeLocalFields(setup.sync.localFields),
+    mergeSettings: setup.sync.mergeSettings ?? false,
+    mergeContent: setup.sync.mergeContent ?? false,
+    partialSync: setup.sync.partialSync ?? false,
     onSwitch,
     skipSecretScan,
     showStatus,

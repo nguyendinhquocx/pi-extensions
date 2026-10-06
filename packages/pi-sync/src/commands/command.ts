@@ -13,6 +13,7 @@ export const SYNC_COMMANDS = [
   { name: "files", description: "Choose included content" },
   { name: "status", description: "Show sync status" },
   { name: "diff", description: "Show local/remote diff" },
+  { name: "conflicts", description: "Review private unresolved conflict groups" },
   { name: "doctor", description: "Check config, secrets, and lock state" },
   { name: "push", description: "Upload local settings" },
   { name: "pull", description: "Apply remote settings" },
@@ -45,6 +46,7 @@ const SYNC_FLAG_COMPLETIONS: Record<string, readonly CommandArgumentCompletion[]
   files: [SETUP_FLAG_COMPLETION],
   status: [SETUP_FLAG_COMPLETION],
   diff: [SETUP_FLAG_COMPLETION],
+  conflicts: [SETUP_FLAG_COMPLETION],
   doctor: [SETUP_FLAG_COMPLETION],
   push: [
     ...YES_FLAG_COMPLETIONS,
@@ -110,6 +112,7 @@ export function validateCommandOptions(command: string, options: CommandOptions)
     "files",
     "status",
     "diff",
+    "conflicts",
     "doctor",
     "push",
     "pull",
@@ -230,6 +233,7 @@ export function usage() {
     "Usage: /sync <command>",
     `Commands: ${commands}`,
     "Automatic sync: background startup checks only; use /sync to review and transfer. At shutdown, selected content is pushed automatically only when sessions are included. Startup checks run in TUI/RPC, not print/JSON.",
+    "Automatic transfer at startup is a separate opt-in: one conflict-free established-baseline transfer at idle in TUI/RPC, with conditional/lease publication and no resource reload.",
     "Settings: use /sync init or edit storage connections and sync setups in ~/.pi/agent/pi-sync.json (or the configured Pi agent directory). Version 1 and version 2 settings are unsupported and are never rewritten.",
   ].join("\n");
 }

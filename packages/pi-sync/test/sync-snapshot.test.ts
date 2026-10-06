@@ -162,8 +162,8 @@ test("snapshot preflight validates checksums, duplicate session paths, and delet
 test("snapshot apply restores the complete prior state at every mutation boundary", async () => {
   for (const boundary of [
     { method: "rm", file: "AGENTS.md" },
-    { method: "writeFile", file: "keybindings.json" },
-    { method: "writeFile", file: "settings.json" },
+    { method: "rename", file: "keybindings.json" },
+    { method: "rename", file: "settings.json" },
   ] as const) {
     await withTempHome(async (agentDir) => {
       mkdirSync(agentDir, { recursive: true });
@@ -175,7 +175,7 @@ test("snapshot apply restores the complete prior state at every mutation boundar
         { path: "keybindings.json", content: Buffer.from('{"newKeys":true}\n') },
       ]);
       const originalRm = fs.rm;
-      const originalWriteFile = fs.writeFile;
+      const originalRename = fs.rename;
       let injected = false;
       fs.rm = (async (...args: Parameters<typeof fs.rm>) => {
         if (!injected && boundary.method === "rm" && String(args[0]) === path.join(agentDir, boundary.file)) {
@@ -184,13 +184,13 @@ test("snapshot apply restores the complete prior state at every mutation boundar
         }
         return originalRm(...args);
       }) as typeof fs.rm;
-      fs.writeFile = (async (...args: Parameters<typeof fs.writeFile>) => {
-        if (!injected && boundary.method === "writeFile" && String(args[0]) === path.join(agentDir, boundary.file)) {
+      fs.rename = (async (...args: Parameters<typeof fs.rename>) => {
+        if (!injected && boundary.method === "rename" && String(args[1]) === path.join(agentDir, boundary.file)) {
           injected = true;
           throw new Error(`injected ${boundary.method} failure at ${boundary.file}`);
         }
-        return originalWriteFile(...args);
-      }) as typeof fs.writeFile;
+        return originalRename(...args);
+      }) as typeof fs.rename;
       try {
         await assert.rejects(
           applySnapshot(remote, new Set(), {
@@ -201,7 +201,7 @@ test("snapshot apply restores the complete prior state at every mutation boundar
         );
       } finally {
         fs.rm = originalRm;
-        fs.writeFile = originalWriteFile;
+        fs.rename = originalRename;
       }
       assert.equal(injected, true);
       assert.equal(readFileSync(path.join(agentDir, "AGENTS.md"), "utf8"), "old agents\n");
@@ -242,24 +242,30 @@ test("snapshot apply replaces a configured custom file with a remote directory",
   });
 });
 
-test("snapshot apply restores a custom file when directory replacement fails", async () => {
+test("snapshot apply retains a custom-file backup when replacement outcome is ambiguous", async () => {
   await withTempHome(async (agentDir) => {
     mkdirSync(agentDir, { recursive: true });
     const customPath = path.join(agentDir, "custom");
     const childPath = path.join(customPath, "child.txt");
     writeFileSync(customPath, "local file\n");
     const remote = snapshot([{ path: "custom/child.txt", content: Buffer.from("remote child\n") }]);
-    const originalWriteFile = fs.writeFile;
-    fs.writeFile = (async (...args: Parameters<typeof fs.writeFile>) => {
-      if (String(args[0]) === childPath) throw new Error("injected custom child failure");
-      return originalWriteFile(...args);
-    }) as typeof fs.writeFile;
+    const originalRename = fs.rename;
+    fs.rename = (async (...args: Parameters<typeof fs.rename>) => {
+      if (String(args[1]) === childPath) throw new Error("injected custom child failure");
+      return originalRename(...args);
+    }) as typeof fs.rename;
     try {
-      await assert.rejects(applySnapshot(remote, new Set(), { include: ["custom"] }), /injected custom child failure/u);
+      await assert.rejects(
+        applySnapshot(remote, new Set(), { include: ["custom"] }),
+        /guarded recovery requires review/u,
+      );
     } finally {
-      fs.writeFile = originalWriteFile;
+      fs.rename = originalRename;
     }
-    assert.equal(readFileSync(customPath, "utf8"), "local file\n");
+    assert.deepEqual(await fs.readdir(customPath), []);
+    const transactions = path.join(agentDir, "pi-sync/transactions");
+    const entries = await fs.readdir(transactions);
+    assert.equal(await fs.readFile(path.join(transactions, entries[0] ?? "", "before/0"), "utf8"), "local file\n");
   });
 });
 

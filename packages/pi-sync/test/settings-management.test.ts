@@ -25,7 +25,9 @@ import {
 import { configuredSyncSetupNames, readLocalConfigObject, updateLocalConfig } from "../src/settings/settings-store.js";
 import { SetupPullRequiresUiError, useSyncSetup } from "../src/sync/setup-switch.js";
 import sync from "../src/sync.js";
+import { describeManagerState } from "../src/ui/manager-state.js";
 import { showSyncSettings } from "../src/ui/settings-ui.js";
+import { showSetupSwitcher } from "../src/ui/setup/setup-switcher.js";
 import { showSetupWizard } from "../src/ui/setup/setup-wizard.js";
 import { showStorageConnections } from "../src/ui/storage-connections-ui.js";
 import { configureSyncStatus, setSyncStatus } from "../src/ui/sync-status.js";
@@ -312,39 +314,42 @@ test("aborting the name input ignores a late answer without advancing setup", as
   });
 });
 
-test("S3 storage connection edit preserves masked credentials and reviews dependents", async () => {
-  await withTempHome(async (agentDir) => {
-    mkdirSync(agentDir, { recursive: true });
-    writeSettings();
-    const choices = [
-      "r2",
-      "Edit storage connection…",
-      "Keep current credentials",
-      "Save storage connection",
-      "Back",
-      "Back",
-    ];
-    const inputs = ["https://new.example.com", "us-east-1"];
-    const rendered: string[] = [];
-    const { ctx } = createMockContext({
-      hasUI: true,
-      mode: "tui",
-      select: async (title: string) => {
-        rendered.push(title);
-        return choices.shift();
-      },
-      input: async () => inputs.shift(),
+test.each([3, 4, 5])(
+  "S3 storage connection edit preserves masked credentials and reviews dependents (version %i)",
+  async (version) => {
+    await withTempHome(async (agentDir) => {
+      mkdirSync(agentDir, { recursive: true });
+      writeSettings({ ...v3S3Settings(), version });
+      const choices = [
+        "r2",
+        "Edit storage connection…",
+        "Keep current credentials",
+        "Save storage connection",
+        "Back",
+        "Back",
+      ];
+      const inputs = ["https://new.example.com", "us-east-1"];
+      const rendered: string[] = [];
+      const { ctx } = createMockContext({
+        hasUI: true,
+        mode: "tui",
+        select: async (title: string) => {
+          rendered.push(title);
+          return choices.shift();
+        },
+        input: async () => inputs.shift(),
+      });
+      await showStorageConnections(ctx);
+      const config = await loadConfig();
+      assert.equal(config.backend.type, "s3");
+      if (config.backend.type !== "s3") return;
+      assert.equal(config.backend.profile.endpoint, "https://new.example.com");
+      assert.equal(config.backend.profile.accessKeyId, "access-key");
+      assert.match(rendered.join("\n"), /Affected sync setups: home/u);
+      assert.doesNotMatch(rendered.join("\n"), /access-key|secret-key/u);
     });
-    await showStorageConnections(ctx);
-    const config = await loadConfig();
-    assert.equal(config.backend.type, "s3");
-    if (config.backend.type !== "s3") return;
-    assert.equal(config.backend.profile.endpoint, "https://new.example.com");
-    assert.equal(config.backend.profile.accessKeyId, "access-key");
-    assert.match(rendered.join("\n"), /Affected sync setups: home/u);
-    assert.doesNotMatch(rendered.join("\n"), /access-key|secret-key/u);
-  });
-});
+  },
+);
 
 test("replacing stored S3 credentials drops the prior session token", async () => {
   await withTempHome(async (agentDir) => {
@@ -381,45 +386,48 @@ test("replacing stored S3 credentials drops the prior session token", async () =
   });
 });
 
-test("S3 manager reuses a connection and defaults a new setup to the bucket root", async () => {
-  await withTempHome(async (agentDir) => {
-    mkdirSync(agentDir, { recursive: true });
-    writeSettings();
-    const mock = createMockPi();
-    sync(mock.pi);
-    const choices = [
-      "More…",
-      "Sync setups…",
-      "Add sync setup",
-      "r2",
-      "Same bucket as “home”",
-      "Recommended Pi settings",
-      "Keep automatic sync off",
-      "Add sync setup",
-      undefined,
-      undefined,
-    ];
-    const inputs = ["work"];
-    const rendered: string[] = [];
-    const { ctx } = createMockContext({
-      hasUI: true,
-      mode: "tui",
-      select: async (title: string) => {
-        rendered.push(title);
-        return choices.shift();
-      },
-      input: async () => inputs.shift(),
+test.each([3, 4, 5])(
+  "S3 manager reuses a connection and defaults a new setup to the bucket root (version %i)",
+  async (version) => {
+    await withTempHome(async (agentDir) => {
+      mkdirSync(agentDir, { recursive: true });
+      writeSettings({ ...v3S3Settings(), version });
+      const mock = createMockPi();
+      sync(mock.pi);
+      const choices = [
+        "More…",
+        "Sync setups…",
+        "Add sync setup",
+        "r2",
+        "Same bucket as “home”",
+        "Recommended Pi settings",
+        "Keep automatic sync off",
+        "Add sync setup",
+        undefined,
+        undefined,
+      ];
+      const inputs = ["work"];
+      const rendered: string[] = [];
+      const { ctx } = createMockContext({
+        hasUI: true,
+        mode: "tui",
+        select: async (title: string) => {
+          rendered.push(title);
+          return choices.shift();
+        },
+        input: async () => inputs.shift(),
+      });
+      await mock.commands.get("sync")?.handler("", ctx);
+      const config = await loadConfig("work");
+      assert.equal(config.connectionName, "r2");
+      assert.equal(config.storagePath, "./");
+      assert.equal((await loadConfig("home")).storagePath, "pi-sync/home");
+      assert.match(rendered.join("\n"), /Remote path: \.\//u);
+      assert.match(rendered.join("\n"), /different path or bucket for independent setups/u);
+      assert.doesNotMatch(rendered.join("\n"), /profiles\//u);
     });
-    await mock.commands.get("sync")?.handler("", ctx);
-    const config = await loadConfig("work");
-    assert.equal(config.connectionName, "r2");
-    assert.equal(config.storagePath, "./");
-    assert.equal((await loadConfig("home")).storagePath, "pi-sync/home");
-    assert.match(rendered.join("\n"), /Remote path: \.\//u);
-    assert.match(rendered.join("\n"), /different path or bucket for independent setups/u);
-    assert.doesNotMatch(rendered.join("\n"), /profiles\//u);
-  });
-});
+  },
+);
 
 test("storage connections are reusable by multiple independently named sync setups", async () => {
   await withTempHome(async (agentDir) => {
@@ -463,105 +471,123 @@ test("referenced connections and a current setup with alternatives cannot be rem
   });
 });
 
-test("removing the sole current setup clears the active reference", async () => {
+test.each([3, 4, 5])("removing the sole current setup clears the active reference (version %i)", async (version) => {
   await withTempHome(async (agentDir) => {
     mkdirSync(agentDir, { recursive: true });
-    writeSettings();
+    writeSettings({ ...v3S3Settings(), version });
     await removeSyncSetup("home");
     const settings = await readLocalConfigObject();
     assert.deepEqual(settings?.syncSetups, {});
     assert.equal(Object.hasOwn(settings ?? {}, "activeSyncSetup"), false);
     assert.ok(settings?.storageConnections.r2);
+    const manager = await describeManagerState();
+    assert.match(manager.title, /No sync setups are configured/);
+    assert.deepEqual(manager.actions, ["Sync setups…", "Storage connections…", "Help"]);
   });
 });
 
-test("storage connection and sync setup CRUD preserve unknown retained fields", async () => {
-  await withTempHome(async (agentDir) => {
-    mkdirSync(agentDir, { recursive: true });
-    const initial = v3S3Settings() as unknown as Record<string, unknown>;
-    initial.futureTop = { keep: true };
-    writeSettings(initial as ReturnType<typeof v3S3Settings>);
-    await addStorageConnection("git", {
-      type: "git",
-      remote: "git@github.com:user/pi-sync.git",
-      futureConnection: "keep",
+test.each([3, 4, 5])(
+  "storage connection and sync setup CRUD preserve unknown retained fields (version %i)",
+  async (version) => {
+    await withTempHome(async (agentDir) => {
+      mkdirSync(agentDir, { recursive: true });
+      const initial = v3S3Settings() as unknown as Record<string, unknown>;
+      initial.version = version;
+      if (version >= 4) {
+        const setups = initial.syncSetups as ReturnType<typeof v3S3Settings>["syncSetups"];
+        Object.assign(setups.home.sync, { localFields: ["machine"] });
+      }
+      initial.futureTop = { keep: true };
+      writeSettings(initial as ReturnType<typeof v3S3Settings>);
+      await addStorageConnection("git", {
+        type: "git",
+        remote: "git@github.com:user/pi-sync.git",
+        futureConnection: "keep",
+      });
+      await addSyncSetup("backup", {
+        storage: {
+          connection: "git",
+          branch: "pi-sync/backup",
+          path: "pi-sync/backup",
+          futureStorage: "keep",
+        },
+        sync: { include: [], automatic: false, futurePolicy: "keep" },
+        futureSetup: "keep",
+      });
+      await updateStorageConnection("git", (connection) => {
+        if (connection.type !== "git") throw new Error("expected Git");
+        return { ...connection, remote: "ssh://git@github.com/user/pi-sync.git" };
+      });
+      await updateSyncSetup("backup", (setup) => ({ ...setup, futureSetup: "still" }));
+      const saved = JSON.parse(readFileSync(localConfigPath(), "utf8"));
+      assert.equal(saved.version, version);
+      if (version >= 4) assert.deepEqual(saved.syncSetups.home.sync.localFields, ["machine"]);
+      assert.deepEqual(saved.futureTop, { keep: true });
+      assert.equal(saved.storageConnections.git.futureConnection, "keep");
+      assert.equal(saved.syncSetups.backup.storage.futureStorage, "keep");
+      assert.equal(saved.syncSetups.backup.sync.futurePolicy, "keep");
+      assert.equal(saved.syncSetups.backup.futureSetup, "still");
     });
-    await addSyncSetup("backup", {
-      storage: {
-        connection: "git",
-        branch: "pi-sync/backup",
-        path: "pi-sync/backup",
-        futureStorage: "keep",
-      },
-      sync: { include: [], automatic: false, futurePolicy: "keep" },
-      futureSetup: "keep",
-    });
-    await updateStorageConnection("git", (connection) => {
-      if (connection.type !== "git") throw new Error("expected Git");
-      return { ...connection, remote: "ssh://git@github.com/user/pi-sync.git" };
-    });
-    await updateSyncSetup("backup", (setup) => ({ ...setup, futureSetup: "still" }));
-    const saved = JSON.parse(readFileSync(localConfigPath(), "utf8"));
-    assert.deepEqual(saved.futureTop, { keep: true });
-    assert.equal(saved.storageConnections.git.futureConnection, "keep");
-    assert.equal(saved.syncSetups.backup.storage.futureStorage, "keep");
-    assert.equal(saved.syncSetups.backup.sync.futurePolicy, "keep");
-    assert.equal(saved.syncSetups.backup.futureSetup, "still");
-  });
-});
+  },
+);
 
-test("switching setup is atomic and follows all three onSwitch policies", async () => {
-  await withTempHome(async (agentDir) => {
-    mkdirSync(agentDir, { recursive: true });
-    writeSettings();
-    await addSyncSetup("work", {
-      storage: { connection: "r2", bucket: "pi-sync-test", path: "pi-sync/work" },
-      sync: { include: ["settings.json"], automatic: false },
+test.each([3, 4, 5])(
+  "switching setup is atomic and follows all three onSwitch policies (version %i)",
+  async (version) => {
+    await withTempHome(async (agentDir) => {
+      mkdirSync(agentDir, { recursive: true });
+      writeSettings({ ...v3S3Settings(), version });
+      await addSyncSetup("work", {
+        storage: { connection: "r2", bucket: "pi-sync-test", path: "pi-sync/work" },
+        sync: { include: ["settings.json"], automatic: false },
+      });
+      await updateLocalConfig((settings) => ({ ...settings, onSwitch: "switch-only" }));
+      const mock = createMockContext({ hasUI: true, mode: "tui" });
+      assert.equal(await showSetupSwitcher(mock.ctx, async () => ({ kind: "completed" }), "work"), "switched");
+      await useSyncSetup(mock.ctx, "home");
+      assert.deepEqual(await useSyncSetup(mock.ctx, "work"), { pullApplied: false });
+      assert.equal((await readLocalConfigObject())?.activeSyncSetup, "work");
+
+      await updateLocalConfig((settings) => ({
+        ...settings,
+        onSwitch: "ask-before-pull",
+        activeSyncSetup: "home",
+      }));
+      let pullCalls = 0;
+      const declined = createMockContext({
+        hasUI: true,
+        mode: "tui",
+        confirm: async () => false,
+      });
+      assert.deepEqual(
+        await useSyncSetup(declined.ctx, "work", async () => {
+          pullCalls += 1;
+          return "applied";
+        }),
+        { pullApplied: false },
+      );
+      assert.equal(pullCalls, 0);
+      assert.equal((await readLocalConfigObject())?.activeSyncSetup, "work");
+
+      await updateLocalConfig((settings) => ({ ...settings, onSwitch: "pull-after-switch" }));
+      const noUi = createMockContext({ hasUI: false, mode: "print" });
+      await assert.rejects(useSyncSetup(noUi.ctx, "home"), SetupPullRequiresUiError);
+      assert.equal((await readLocalConfigObject())?.activeSyncSetup, "work");
+
+      let pulled: string | undefined;
+      await assert.rejects(
+        useSyncSetup(mock.ctx, "home", async (name) => {
+          pulled = name;
+          throw new Error("pull failed");
+        }),
+        /pull failed/u,
+      );
+      assert.equal(pulled, "home");
+      assert.equal((await readLocalConfigObject())?.activeSyncSetup, "home");
+      assert.deepEqual(await useSyncSetup(mock.ctx, "home"), { pullApplied: false });
     });
-    await updateLocalConfig((settings) => ({ ...settings, onSwitch: "switch-only" }));
-    const mock = createMockContext({ hasUI: true, mode: "tui" });
-    assert.deepEqual(await useSyncSetup(mock.ctx, "work"), { pullApplied: false });
-    assert.equal((await readLocalConfigObject())?.activeSyncSetup, "work");
-
-    await updateLocalConfig((settings) => ({
-      ...settings,
-      onSwitch: "ask-before-pull",
-      activeSyncSetup: "home",
-    }));
-    let pullCalls = 0;
-    const declined = createMockContext({
-      hasUI: true,
-      mode: "tui",
-      confirm: async () => false,
-    });
-    assert.deepEqual(
-      await useSyncSetup(declined.ctx, "work", async () => {
-        pullCalls += 1;
-        return "applied";
-      }),
-      { pullApplied: false },
-    );
-    assert.equal(pullCalls, 0);
-    assert.equal((await readLocalConfigObject())?.activeSyncSetup, "work");
-
-    await updateLocalConfig((settings) => ({ ...settings, onSwitch: "pull-after-switch" }));
-    const noUi = createMockContext({ hasUI: false, mode: "print" });
-    await assert.rejects(useSyncSetup(noUi.ctx, "home"), SetupPullRequiresUiError);
-    assert.equal((await readLocalConfigObject())?.activeSyncSetup, "work");
-
-    let pulled: string | undefined;
-    await assert.rejects(
-      useSyncSetup(mock.ctx, "home", async (name) => {
-        pulled = name;
-        throw new Error("pull failed");
-      }),
-      /pull failed/u,
-    );
-    assert.equal(pulled, "home");
-    assert.equal((await readLocalConfigObject())?.activeSyncSetup, "home");
-    assert.deepEqual(await useSyncSetup(mock.ctx, "home"), { pullApplied: false });
-  });
-});
+  },
+);
 
 test("cross-process settings mutations serialize under one read-modify-write lock", async () => {
   await withTempHome(async (agentDir) => {

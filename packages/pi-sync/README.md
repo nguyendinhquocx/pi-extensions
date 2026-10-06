@@ -38,6 +38,8 @@ The package declares `dist/index.ts`, so an unbuilt checkout must run the build 
 
 Extensions run with Pi's permissions, so install only packages from sources you trust.
 
+Use a Pi runtime that satisfies this package’s declared peer floor. Installing an extension dependency does not upgrade a separately installed Pi runtime. The declared Kit floor supplies exact scrolling/paginated review and configured-keybinding support.
+
 ## 🚀 Quick start
 
 Run `/sync` and choose **Set up sync**.
@@ -102,6 +104,8 @@ After the same no-other-sync verification, `/sync unlock --stale` provides a det
 
 ### Resolve conflicts in the manager
 
+**Sync now** merges independent file additions, edits, and deletions against an established baseline. Equal concurrent edits are accepted. With experimental settings field merge enabled, supported `settings.json` fields can also merge using a verified accepted ancestor; arrays, nested objects and coupled fields remain atomic. Other divergent file edits, delete/modify conflicts, protected-session changes, selection changes, and case/file-directory collisions still require review; one unresolved path stops the entire merged transfer unless experimental partial sync is explicitly enabled. Explicit push and pull remain directional.
+
 When **Sync now**, **Pull from remote…**, or **Push to remote…** requires a direction choice, the manager opens **Resolve sync conflict**.
 The flow names the current setup and explains whether local content, remote content, or the included-content policy changed.
 
@@ -132,7 +136,7 @@ Cancelling a preparation or confirmation returns to conflict resolution with no 
 Back returns to the sync manager, and Ctrl+C closes the complete flow.
 
 Startup checks never open a dialog. While checking, TUI and RPC status show **sync ...**. With a sync baseline and no content-list mismatch, they use **sync ⇡** for local changes to push and **sync ⇣** for remote changes to pull. Review conditions use **sync ⇕**; in TUI, a persistent widget above the editor also identifies both sides changing, first sync with an existing remote snapshot, a differing content list (including order-only differences), or a missing remote snapshot despite an existing baseline. Both sides changing is a reason to review, not a confirmed file conflict.
-No selected content and first sync with an empty remote stay quiet outside `/sync`, which provides setup or initialization guidance. Legacy remote metadata without an authoritative content list does not independently trigger a widget; the baseline and change conditions still apply. An included-content mismatch puts **Review synced content (recommended)** in the manager, where a fresh review verifies the remote snapshot before offering changes.
+No selected content and first sync with an empty remote stay quiet outside `/sync`, which provides setup or initialization guidance. Legacy remote metadata without an authoritative content list does not independently trigger a widget for observation-only checks. With **Automatic transfer at startup** enabled, an established legacy remote instead shows review attention and requires an explicit direction to adopt the content policy; no automatic transfer runs. An included-content mismatch puts **Review synced content (recommended)** in the manager, where a fresh review verifies the remote snapshot before offering changes.
 Check results are advisory observations against the last sync baseline, not proof of a file conflict or current equality. Opening the manager uses local information and shows when the check completed; it does not contact remote storage. Transfer actions recheck current content.
 The widget has no expiry timer. Attention stays in memory and is invalidated by relevant settings/state changes or a foreground transfer's commit boundary, and cleared on session replacement or shutdown. A newer observation replaces the presentation, clearing the widget when only status or no reminder is needed. Cancelling a review or a failure before commit preserves a still-valid observation and its appropriate presentation.
 
@@ -157,6 +161,22 @@ Checks run once per session start, including `/reload`, new, resumed, and forked
 **Compatibility change:** the existing `sync.automatic` boolean and Off default are unchanged, but On no longer performs startup push/pull. Startup is not guaranteed to use the latest remote content. Local transaction recovery remains an awaited safety barrier and can restore interrupted file changes before use; existing legacy settings-file initialization is also retained.
 
 Shutdown behavior is unchanged: when **Automatic sync** is On and sessions are included, pi-sync can automatically push the selected content, not only session files. This also applies to headless modes; shutdown never opens a dialog, and `/reload` skips this push. Turning the setting Off disables both future startup checks and automatic shutdown pushes.
+
+### Opt-in automatic transfer
+
+**Settings → Automatic transfer at startup** controls the separate per-setup `sync.automaticTransfer` boolean, which defaults to `false`. It authorizes one conflict-free startup transfer at a validated idle boundary in TUI/RPC, including session replacement and `/reload`. Busy startup waits for `agent_settled`; foreground commands, a new agent run, replacement, and shutdown cancel and drain owned work. Changing the setting affects authorization immediately; enabling it schedules the next attempt on the next session start. There is no watcher or polling loop.
+
+A baseline and matching authoritative content list are required. First-source choice, changed selection, missing established remote, secrets, and real conflicts remain review barriers. Automatic transfer requires conditional or lease-protected publication: Git and verified WebDAV are supported; R2/S3 remains manual because its publication is read-check-write-verify. The existing **Automatic sync** setting and shutdown policy are unchanged when this new opt-in is absent.
+
+Successful transfers show one summary. They do not reload resources, activate extension code, or rewrite model context. After local resources change, reload or restart when ready; newly pulled conversations still require explicit resume. Headless print/JSON skip this new startup feature. Reviewed directional settings/session-root transitions record both roots and verified settings evidence so interrupted apply can recover before or after settings installation. Older pending journals without transition evidence retain their original root-ownership checks and may require reviewed recovery; preserve their backups rather than downgrading. See [merge safety and recovery](./docs/merge-implementation-audit.md) for journal boundaries, external-writer limits, and downgrade guidance.
+
+**Settings → Settings field merge (experimental)** controls per-setup `sync.mergeSettings`, default **Off**. It combines independent global `settings.json` fields, not arbitrary JSON or keybindings. Missing/corrupt ancestors, unsupported syntax, and incompatible fields retain whole-transfer review. Sensitive accepted content is cached privately under the denied state root; disabling does not delete evidence.
+
+**Settings → Machine-local settings fields** edits explicit `sync.localFields` root field names for global `settings.json` (default none). Excluded values and absence stay local; future portable snapshots omit them. Enabling rules opts into settings version 4 / snapshot version 2, which older clients must refuse. All receiving machines must configure compatible rules. Additions/removals require a separately confirmed force-direction migration, even with `--yes`; old remote history is **not erased**. See [settings merge and local fields](./docs/settings.md#settings-field-merge-and-machine-local-fields) for formats, compatibility and recovery.
+
+**Settings → Content / partial sync (experimental)** controls independent `sync.mergeContent` and `sync.partialSync` opt-ins, both default **Off**. Saving opts into settings version 5; partial publications use snapshot version 3, rejected by older readers. Supported Markdown/plain-text resources merge bounded independent line edits without Git or conflict markers. Diff grids and hunk comparisons share an eight-million-work-unit budget across the operation and its retries; exhausted paths remain conflicts for review. Same-session reconciliation only accepts validated complete byte-prefix extensions; divergent histories and the loaded session require review. A syntactically clean text merge is **not a semantic correctness guarantee**.
+
+Partial sync keeps each side's unresolved versions, preserves their previous accepted hashes/ancestors, and advances only independent paths. Resource/collision dependency groups are withheld together, including local-only files, never represented as deletion. **More… → History & recovery… → Review unresolved conflicts**, or `/sync conflicts`, opens exact private versions on request and resolves one freshly validated whole group. Automatic pushes, non-forced push/pull, and rollback refuse unresolved groups; use group review or an explicit manual push/pull force direction instead. Artifacts remain below the denied state root, with stable conflict identity and at most 32 proven-completed records retained; unresolved or unrecognized evidence is never automatically pruned. Failed attempts release only newly created artifacts whose inode/content ownership and lack of state/journal references are verified. See [content merge and partial recovery](./docs/content-merge-audit.md).
 
 **Settings → Show status (all setups)** defaults to **On**. Turning it Off immediately clears and suppresses pi-sync status text for background checks, transfers, and review attention; widgets and notifications remain available.
 
@@ -216,10 +236,11 @@ Read the [settings reference](./docs/settings.md) for complete S3/R2, Git, and W
 | `/sync files` | List included local files. |
 | `/sync status` | Compare local and remote snapshot state. |
 | `/sync diff` | Show local and remote differences. |
+| `/sync conflicts` | Review private unresolved dependency groups and choose local or remote group versions after fresh validation. |
 | `/sync doctor` | Check configuration, connectivity, and backend safety. |
 | `/sync push` | Publish local content to remote storage. |
 | `/sync pull` | Back up local content, then apply the remote snapshot. |
-| `/sync sync` | Choose a safe sync direction or require conflict review. |
+| `/sync sync` | Merge independent file changes, or require initial-source/policy/conflict review. |
 | `/sync history` | Browse remote snapshots and review a rollback. |
 | `/sync rollback <snapshot-id>` | Back up local content, apply a historical snapshot, and republish it remotely. |
 | `/sync migrate-state` | Migrate the legacy local state directory. |
@@ -229,9 +250,9 @@ All routes support TUI and RPC; RPC settings and included-content screens are re
 Print and JSON modes reject `/sync`.
 Unknown commands or flags, trailing values, and missing setup/snapshot values are rejected, including the former version 2 setup-addressing flag.
 
-- `--setup <name>` targets a setup without switching it on `config`, `files`, `status`, `diff`, `doctor`, `push`, `pull`, `sync`, `history`, and `rollback`.
+- `--setup <name>` targets a setup without switching it on `config`, `files`, `status`, `diff`, `conflicts`, `doctor`, `push`, `pull`, `sync`, `history`, and `rollback`.
 - `--yes` (alias: `-y`) skips confirmation on `push`, `pull`, `sync`, `rollback`, and `migrate-state`; use only after reviewing the affected content.
-- `--force` lets `push` or `pull` accept content conflicts without disabling backend concurrency protection. It is also accepted by `sync`, which still requires a direction choice for divergent content, and by `rollback`, where it has no additional effect.
+- `--force` lets `push` or `pull` accept content conflicts without disabling backend concurrency protection. It is also accepted by `sync`, which still requires a direction choice for divergent content, and by `rollback` for compatibility. Explicit forced directions can also resolve an interrupted merge after a fresh review, archiving its old journal instead of restoring old bytes.
 - `--stale` is accepted only by `unlock` and is required to remove a stale lock.
 
 Push and rollback publish data externally; pull and rollback can replace or delete local managed files.
@@ -257,8 +278,12 @@ URL credentials, query strings, fragments, unsafe redirects, weak/missing ETags,
 S3/R2 stages immutable bundles, rechecks the visible head before publication, and verifies afterward.
 Unlike Git/WebDAV, generic S3 does not provide an atomic compare-and-swap for `latest.json`; status review remains important for simultaneous writers.
 
+Snapshot recovery is guarded: new journals record before/after images, older journals are retired only when their unchanged preimages are provable, and unrecognized bytes remain untouched for manual review. Current-session targets are never restored during startup. Preserve a blocked transaction and its backup, close Pi, and review the private evidence before restoring selected paths; malformed/unsupported journals are not disposable. Pi may have loaded resources before lifecycle recovery, so reload or restart explicitly after recovery if loaded resources need to match the restored files.
+
 Before pull or rollback, pi-sync writes a backup under `<agent-dir>/pi-sync/backups/`.
-Apply preflights paths and checksums, journals all mutations, restores the prior state after failures, and recovers interrupted journals on startup.
+Apply preflights paths and checksums, journals mutations, and restores prior state only when current bytes match verified preimages or planned postimages. Unknown intermediate directory states and newer edits require review rather than a blind rollback. An interruption after replacement is armed can require manual recovery even if installation never ran; a later deletion of installed content is not treated as an unfinished remove.
+Merged transfers instead retain a private publication/apply/baseline journal and roll forward only when the active remote candidate and every changed local preimage/postimage can be verified. A crash or uncertain publication is reconciled through `/sync sync` without blind republishing. If newer local or remote changes prevent reconciliation, preserve the evidence, review `/sync diff`, and explicitly choose `push --force` or `pull --force`; the chosen direction archives the old journal. Disabling automatic transfer does not undo completed transfers. Do not downgrade while a merge or snapshot recovery journal is pending.
+
 Removing a local setup or connection never deletes remote data.
 
 The operational state root is `<agent-dir>/pi-sync/`.

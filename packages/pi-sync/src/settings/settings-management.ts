@@ -193,8 +193,8 @@ export async function removeStorageConnection(name: string, signal?: AbortSignal
 
 async function updateSettings(update: (settings: PiSyncSettingsV3) => PiSyncSettingsV3, signal?: AbortSignal) {
   return updateLocalConfig((settings) => {
-    if (settings.version !== 3) {
-      throw new Error("Storage connections and sync setups require version 3 pi-sync settings.");
+    if (settings.version !== 3 && settings.version !== 4 && settings.version !== 5) {
+      throw new Error("Storage connections and sync setups require version 3 or 4 or 5 pi-sync settings.");
     }
     return update(settings);
   }, signal);

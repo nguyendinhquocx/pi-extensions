@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { test, vi } from "vitest";
@@ -323,9 +324,18 @@ test("recovery completes before startup or foreground mutations become available
     await fs.writeFile(
       path.join(directory, "journal.json"),
       JSON.stringify({
-        version: 1,
+        version: 2,
         root: agentDir,
-        entries: [{ target, backupName: "0", kind: "file" }],
+        entries: [
+          {
+            target,
+            backupName: "0",
+            kind: "file",
+            beforeImage: `file:${createHash("sha256").update("original instructions").digest("hex")}`,
+            afterImage: `file:${createHash("sha256").update("interrupted instructions").digest("hex")}`,
+            postFiles: [],
+          },
+        ],
       }),
     );
     const recovering = deferred();

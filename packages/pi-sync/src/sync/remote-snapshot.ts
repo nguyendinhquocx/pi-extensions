@@ -4,6 +4,7 @@ import type { AnySyncConfig } from "../settings/settings-types.js";
 import { filterSnapshotForConfigPolicy } from "../snapshot/snapshot.js";
 import type { Snapshot } from "../snapshot/snapshot-types.js";
 import { safeTerminalText } from "../ui/terminal-text.js";
+import { sameLocalFields, validatePortableSnapshot } from "./local-fields.js";
 import {
   inspectRemoteSelection,
   type RemoteSelectionState,
@@ -17,6 +18,7 @@ export async function readSnapshotForHead(backend: SyncBackend, head: RemoteHead
   if (signal?.aborted) {
     throw signal.reason instanceof Error ? signal.reason : new DOMException("The operation was aborted", "AbortError");
   }
+  validatePortableSnapshot(snapshot);
   if (snapshot.id !== head.snapshotId) {
     throw new Error(`Remote head ${head.snapshotId} resolved to unexpected snapshot ${snapshot.id}.`);
   }
@@ -30,6 +32,10 @@ export async function readSnapshotForHead(backend: SyncBackend, head: RemoteHead
 }
 
 export function requireCompatibleRemoteSelection(config: AnySyncConfig, snapshot: Snapshot) {
+  if (!sameLocalFields(config.localFields, snapshot.localFields))
+    throw new Error(
+      "Remote local-field policy differs; confirm a reviewed directional migration. Old history is not erased.",
+    );
   const state = inspectRemoteSelection(config.include, snapshot);
   if (state.kind === "different") {
     throw remoteSelectionMismatch(config, state.include, syncConfigReviewFingerprint(config));

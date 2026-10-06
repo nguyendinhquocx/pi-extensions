@@ -43,5 +43,6 @@ export interface StartupObservation {
   setupName: string;
   configIdentity: string;
   checkedAt: string;
+  automaticTransfer?: boolean;
   inspection: SyncInspection;
 }

@@ -4,12 +4,14 @@ import { loadConfig } from "../settings/config.js";
 import { localConfigPath } from "../settings/config-file.js";
 import { updateSyncSetup } from "../settings/settings-management.js";
 import { updateLocalConfig } from "../settings/settings-store.js";
+import { normalizeLocalFields, sameLocalFields } from "../sync/local-fields.js";
 import {
   SETUP_SWITCH_ACTION_OPTIONS,
   saveOnSwitch,
   setupSwitchActionFromLabel,
   setupSwitchActionLabel,
 } from "../sync/setup-switch.js";
+import { captureMutationOwner } from "../sync/sync-local.js";
 import type { RunRoute } from "./cancellable-operation.js";
 import { dispatchManagerResult } from "./manager-result-dispatcher.js";
 import { AUTOMATIC_SYNC_DESCRIPTION } from "./setup/setup-prompts.js";
@@ -30,7 +32,17 @@ export async function showSyncSettings(
   const initial = await loadConfig();
   if (signal?.aborted) return;
   const setupName = initial.setupName;
-  type Action = "automatic" | "skip-secret-scan" | "show-status" | "on-switch" | "include" | "remote-include";
+  type Action =
+    | "automatic"
+    | "automatic-transfer"
+    | "merge-settings"
+    | "local-fields"
+    | "content-policy"
+    | "skip-secret-scan"
+    | "show-status"
+    | "on-switch"
+    | "include"
+    | "remote-include";
   const menu = defineMenu<Awaited<ReturnType<typeof loadConfig>>, "settings", Action, ExtensionCommandContext>({
     start: "settings",
     screens: {
@@ -87,10 +99,158 @@ export async function showSyncSettings(
             currentValue: "Review",
             action: "remote-include",
           },
+          {
+            id: "automaticTransfer",
+            label: "Automatic transfer at startup",
+            description:
+              "May upload, replace, or delete selected files once at idle startup in TUI/RPC. Requires a baseline and conditional/lease publication; never reloads resources. Turning off cancels pending work.",
+            currentValue: state.automaticTransfer ? "On" : "Off",
+            values: ["On", "Off"],
+            action: "automatic-transfer",
+          },
+          {
+            id: "mergeSettings",
+            label: "Settings field merge (experimental)",
+            description:
+              "Combine independent global settings.json fields using a verified private ancestor; arrays and nested objects remain atomic. No reload.",
+            currentValue: state.mergeSettings ? "On" : "Off",
+            values: ["On", "Off"],
+            action: "merge-settings",
+          },
+          {
+            id: "localFields",
+            label: "Machine-local settings fields",
+            description:
+              "Root field names omitted from future portable snapshots. Policy changes require directional migration; old history remains.",
+            currentValue: `${state.localFields?.length ?? 0} fields · Edit`,
+            action: "local-fields",
+          },
+          {
+            id: "contentPolicy",
+            label: "Content / partial sync (experimental)",
+            description:
+              "Version-5 opt-in: bounded text and prefix-only sessions; partial progress keeps full withheld versions and old baseline hashes.",
+            currentValue: state.mergeContent
+              ? state.partialSync
+                ? "Content & partial"
+                : "Content only"
+              : state.partialSync
+                ? "Partial only"
+                : "Off",
+            values: ["Off", "Content only", "Content & partial", "Partial only"],
+            action: "content-policy",
+          },
         ],
       }),
     },
     actions: {
+      "content-policy": async ({ value, signal: actionSignal }) => {
+        const mutationSignal = signal ? AbortSignal.any([signal, actionSignal]) : actionSignal;
+        const validate = captureMutationOwner(ctx, mutationSignal);
+        try {
+          const previous = await loadConfig(setupName);
+          validate();
+          const mergeContent = value === "Content only" || value === "Content & partial";
+          const partialSync = value === "Partial only" || value === "Content & partial";
+          if (
+            !(await ctx.ui.confirm(
+              "Save experimental content policy?",
+              "This explicitly upgrades settings to version 5; partial snapshots use version 3 and older clients must refuse them. Text/session merge is conservative. Partial sync preserves withheld versions and old baselines. Disabling does not clear unresolved groups or recovery evidence. Review a directional migration first if portable policy changes.",
+              { signal: mutationSignal },
+            ))
+          )
+            return { kind: "rejected" };
+          validate();
+          await updateLocalConfig((current) => {
+            validate();
+            const setup = current.syncSetups[setupName];
+            if (
+              !setup ||
+              Boolean(setup.sync.mergeContent) !== Boolean(previous.mergeContent) ||
+              Boolean(setup.sync.partialSync) !== Boolean(previous.partialSync)
+            )
+              throw new Error("Content policy changed during review.");
+            return {
+              ...current,
+              version: 5,
+              syncSetups: {
+                ...current.syncSetups,
+                [setupName]: { ...setup, sync: { ...setup.sync, mergeContent, partialSync } },
+              },
+            };
+          }, mutationSignal);
+          validate();
+          return { kind: "stay" };
+        } catch (error) {
+          if (!mutationSignal.aborted) notifySaveFailure(ctx, error);
+          return { kind: "rejected" };
+        }
+      },
+      "merge-settings": async ({ value, signal: actionSignal }) => {
+        const mutationSignal = signal ? AbortSignal.any([signal, actionSignal]) : actionSignal;
+        const validate = captureMutationOwner(ctx, mutationSignal);
+        try {
+          validate();
+          await updateSyncSetup(
+            setupName,
+            (setup) => ({ ...setup, sync: { ...setup.sync, mergeSettings: value === "On" } }),
+            { signal: mutationSignal },
+          );
+          validate();
+          return { kind: "stay" };
+        } catch (error) {
+          if (!mutationSignal.aborted) notifySaveFailure(ctx, error);
+          return { kind: "rejected" };
+        }
+      },
+      "local-fields": async ({ signal: actionSignal }) => {
+        const mutationSignal = signal ? AbortSignal.any([signal, actionSignal]) : actionSignal;
+        const validate = captureMutationOwner(ctx, mutationSignal);
+        try {
+          const previous = await loadConfig(setupName);
+          validate();
+          const input = await ctx.ui.input(
+            "Machine-local settings.json root fields (JSON string array)",
+            JSON.stringify(previous.localFields ?? []),
+            { signal: mutationSignal },
+          );
+          validate();
+          if (input === undefined) return { kind: "rejected" };
+          let fields: string[];
+          try {
+            fields = normalizeLocalFields(JSON.parse(input));
+          } catch {
+            throw new Error("Invalid localFields JSON array; no policy was changed.");
+          }
+          if (sameLocalFields(previous.localFields, fields)) return { kind: "stay" };
+          const confirmed = await ctx.ui.confirm(
+            "Save portable field policy?",
+            "This opts into settings/snapshot version 4/2; older clients must refuse them. Future snapshots omit these fields, but old remote history is NOT erased. Review an explicit force push/pull migration before further sync. Removed rules can expose or replace local-only values.",
+            { signal: mutationSignal },
+          );
+          validate();
+          if (!confirmed) return { kind: "rejected" };
+          await updateLocalConfig((current) => {
+            validate();
+            const setup = current.syncSetups[setupName];
+            if (!setup || !sameLocalFields(setup.sync.localFields, previous.localFields))
+              throw new Error("Field policy changed while under review; reopen settings.");
+            return {
+              ...current,
+              version: current.version === 5 ? 5 : 4,
+              syncSetups: {
+                ...current.syncSetups,
+                [setupName]: { ...setup, sync: { ...setup.sync, localFields: fields } },
+              },
+            };
+          }, mutationSignal);
+          validate();
+          return { kind: "stay" };
+        } catch (error) {
+          if (!mutationSignal.aborted) notifySaveFailure(ctx, error);
+          return { kind: "rejected" };
+        }
+      },
       automatic: async ({ value, signal: actionSignal }) => {
         const automatic = value === "On";
         const mutationSignal = signal ? AbortSignal.any([signal, actionSignal]) : actionSignal;
@@ -104,6 +264,24 @@ export async function showSyncSettings(
           if (mutationSignal.aborted) return { kind: "rejected" };
           ctx.ui.notify(
             `Automatic sync ${automatic ? "enabled" : "disabled"} for “${safeTerminalText(setupName)}”.`,
+            "info",
+          );
+          return { kind: "stay" };
+        } catch (error) {
+          if (!mutationSignal.aborted) notifySaveFailure(ctx, error);
+          return { kind: "rejected" };
+        }
+      },
+      "automatic-transfer": async ({ value, signal: actionSignal }) => {
+        const automaticTransfer = value === "On";
+        const mutationSignal = signal ? AbortSignal.any([signal, actionSignal]) : actionSignal;
+        try {
+          await updateSyncSetup(setupName, (setup) => ({ ...setup, sync: { ...setup.sync, automaticTransfer } }), {
+            signal: mutationSignal,
+          });
+          if (mutationSignal.aborted) return { kind: "rejected" };
+          ctx.ui.notify(
+            `Automatic startup transfer ${automaticTransfer ? "enabled for the next session start" : "disabled"}. Completed transfers are not undone.`,
             "info",
           );
           return { kind: "stay" };
@@ -192,5 +370,8 @@ export async function showSyncSettings(
 }
 
 function notifySaveFailure(ctx: ExtensionCommandContext, error: unknown) {
-  ctx.ui.notify(`Pi Sync settings save failed: ${error instanceof Error ? error.message : String(error)}`, "error");
+  ctx.ui.notify(
+    `Pi Sync settings save failed: ${safeTerminalText(error instanceof Error ? error.message : String(error))}`,
+    "error",
+  );
 }

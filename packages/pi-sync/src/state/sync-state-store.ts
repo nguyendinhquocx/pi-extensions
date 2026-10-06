@@ -39,8 +39,21 @@ export async function readStateForConfig(config: AnySyncConfig): Promise<SyncSta
   );
 }
 
-export async function writeStateForConfig(config: AnySyncConfig, state: SyncState) {
+export async function writeStateForConfig(
+  config: AnySyncConfig,
+  state: SyncState,
+  snapshot?: import("../snapshot/snapshot-types.js").Snapshot,
+  validate: () => void = () => {},
+) {
+  validate();
+  if (snapshot) {
+    const { stageMergeBaseline } = await import("./merge-baseline-store.js");
+    validate();
+    await stageMergeBaseline(config, snapshot, state);
+    validate();
+  }
   await writeJson(statePathForConfig(config), state);
+  validate();
 }
 
 export function statePathForConfig(config: AnySyncConfig) {

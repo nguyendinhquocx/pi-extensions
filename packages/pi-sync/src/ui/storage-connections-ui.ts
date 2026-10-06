@@ -31,10 +31,10 @@ export async function showStorageConnections(ctx: ExtensionCommandContext, signa
         return {
           kind: "actions",
           title: "Storage connections",
-          lines: state.version3
+          lines: state.supportedVersion
             ? ["Server addresses and sign-in details, reusable across sync setups."]
-            : ["Create version 3 settings before managing storage connections."],
-          items: state.version3
+            : ["Create supported pi-sync settings before managing storage connections."],
+          items: state.supportedVersion
             ? [
                 { id: "add", label: "Add storage connection", action: "add" as const },
                 ...names.map((name, index) => {
@@ -136,11 +136,15 @@ async function loadStorageMenuState(selectedName: string | undefined, signal?: A
   const profiles = ownRecord(raw?.storageConnections) ?? {};
   const profile = selectedName ? ownRecord(profiles[selectedName]) : undefined;
   if (!selectedName || !profile) {
-    return { version3: raw?.version === 3, profiles, selected: undefined };
+    return {
+      supportedVersion: raw?.version === 3 || raw?.version === 4 || raw?.version === 5,
+      profiles,
+      selected: undefined,
+    };
   }
   const usedBy = referencingSetups(raw, selectedName);
   return {
-    version3: raw?.version === 3,
+    supportedVersion: raw?.version === 3 || raw?.version === 4 || raw?.version === 5,
     profiles,
     selected: {
       name: selectedName,
@@ -175,7 +179,7 @@ async function editStorageConnection(
 ) {
   if (ctx.mode !== "tui") {
     ctx.ui.notify(
-      "Editing storage connections requires TUI mode for safe credential handling. Edit the private version 3 settings file instead.",
+      "Editing storage connections requires TUI mode for safe credential handling. Edit the private pi-sync settings file instead.",
       "warning",
     );
     return;
@@ -250,7 +254,7 @@ async function editStorageConnection(
 export async function showAddStorageConnection(ctx: ExtensionCommandContext, signal?: AbortSignal) {
   if (ctx.mode !== "tui") {
     ctx.ui.notify(
-      "Adding storage connections requires TUI mode for safe credential handling. Edit the private version 3 settings file instead.",
+      "Adding storage connections requires TUI mode for safe credential handling. Edit the private pi-sync settings file instead.",
       "warning",
     );
     return false;

@@ -40,6 +40,77 @@ for (const direction of ["push", "pull"] as const) {
   });
 }
 
+for (const outcome of ["decision", "selection"] as const)
+  test(`manager conflict action dispatches ${outcome} instead of dropping the result`, async () => {
+    await withConfiguredDecision(async (decision, configIdentity) => {
+      const choices = [
+        "More…",
+        "History & recovery…",
+        "Review unresolved conflicts",
+        ...(outcome === "decision" ? ["Keep local content and replace remote…"] : []),
+      ];
+      const routes: string[] = [];
+      const titles: string[] = [];
+      const context = createMockContext({
+        hasUI: true,
+        mode: "rpc",
+        select: async (title: string) => {
+          titles.push(title);
+          return choices.shift();
+        },
+      });
+      await showSyncManager(context.ctx, async (route) => {
+        routes.push(route);
+        if (route !== "conflicts") return { kind: "completed", outcome: "applied" };
+        if (outcome === "selection")
+          return {
+            kind: "remote-selection-required",
+            decision: {
+              setupName: "home",
+              configIdentity,
+              localInclude: ["settings.json"],
+              remoteInclude: ["settings.json", "models.json"],
+            },
+          };
+        return { kind: "decision-required", decision };
+      });
+      assert.deepEqual(routes, outcome === "decision" ? ["conflicts", "push --force"] : ["conflicts"]);
+      if (outcome === "selection")
+        assert.ok(context.notifications.some((item) => item.message.includes("models.json")));
+      if (outcome === "decision") assert.equal(titles.length, 4);
+    });
+  });
+test("cancelled conflict decision keeps the manager usable without forcing a direction", async () => {
+  await withConfiguredDecision(async (decision) => {
+    const choices: Array<string | undefined> = [
+      "More…",
+      "History & recovery…",
+      "Review unresolved conflicts",
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+    ];
+    const titles: string[] = [];
+    const routes: string[] = [];
+    const { ctx } = createMockContext({
+      hasUI: true,
+      mode: "rpc",
+      select: async (title: string) => {
+        titles.push(title);
+        return choices.shift();
+      },
+    });
+    await showSyncManager(ctx, async (route) => {
+      routes.push(route);
+      return { kind: "decision-required", decision };
+    });
+    assert.deepEqual(routes, ["conflicts"]);
+    assert.ok(titles.some((title) => title.includes("Resolve sync conflict")));
+    assert.ok(titles.filter((title) => title.includes("History & recovery")).length >= 2);
+  });
+});
+
 test("resolution reviews exact differences and invokes local-wins push through the captured setup", async () => {
   await withConfiguredDecision(async (decision) => {
     const tui = createTuiHarness({ width: 60, rows: 18 });

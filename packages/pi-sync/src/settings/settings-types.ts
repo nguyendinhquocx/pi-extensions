@@ -79,6 +79,13 @@ export type SyncSetupStorageSettings =
 export interface SyncPolicySettings {
   include: string[];
   automatic: boolean;
+  /** Explicit opt-in, separate from the legacy observe/shutdown policy. */
+  automaticTransfer?: boolean;
+  /** Version 4: settings.json root fields never uploaded. */
+  localFields?: string[];
+  mergeSettings?: boolean;
+  mergeContent?: boolean;
+  partialSync?: boolean;
   [key: string]: unknown;
 }
 
@@ -89,7 +96,7 @@ export interface SyncSetupSettings {
 }
 
 export interface PiSyncSettingsV3 {
-  version: 3;
+  version: 3 | 4 | 5;
   activeSyncSetup?: string;
   onSwitch: OnSwitchAction;
   skipSecretScan?: boolean;
@@ -107,6 +114,11 @@ export interface SyncConfig<Backend extends ResolvedSyncBackend = ResolvedS3Back
   snapshotIdentity: string;
   include: string[];
   automatic: boolean;
+  automaticTransfer?: boolean;
+  localFields?: string[];
+  mergeSettings?: boolean;
+  mergeContent?: boolean;
+  partialSync?: boolean;
   onSwitch: OnSwitchAction;
   skipSecretScan: boolean;
   showStatus: boolean;
@@ -124,6 +136,7 @@ export interface PartialConfig {
   storagePath: string;
   include: string[];
   automatic: boolean;
+  automaticTransfer?: boolean;
   onSwitch: OnSwitchAction;
   showStatus: boolean;
   bucket?: string;

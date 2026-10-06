@@ -72,6 +72,9 @@ test("argument completion retains prior tokens and completes known setup names",
   assert.ok(completeSyncArguments("")?.some((item) => item.value === "status"));
   assert.ok(completeSyncArguments("status --s")?.some((item) => item.value === "status --setup"));
   assert.ok(completeSyncArguments("status --setup w")?.some((item) => item.value === "status --setup work"));
+  assert.ok(completeSyncArguments("conflicts --s")?.some((item) => item.value === "conflicts --setup"));
+  assert.ok(completeSyncArguments("conflicts --setup w")?.some((item) => item.value === "conflicts --setup work"));
+  assert.equal(completeSyncArguments("conflicts --force"), null);
   assert.ok(completeSyncArguments("use h")?.some((item) => item.value === "use home"));
   assert.equal(completeSyncArguments("use home "), null);
 });
@@ -1003,7 +1006,7 @@ test("unsupported settings pause startup automatic sync and remain unchanged", a
     await notified.promise;
     await mock.events.get("session_shutdown")?.[0]?.({ reason: "reload" }, ctx);
     const output = notifications.map((item) => item.message).join("\n");
-    assert.match(output, /startup check skipped|version 3 is required/u);
+    assert.match(output, /startup check skipped|version 3 or 4 is required/u);
     assert.doesNotMatch(output, /hidden/u);
     assert.deepEqual(readFileSync(localConfigPath()), bytes);
   });

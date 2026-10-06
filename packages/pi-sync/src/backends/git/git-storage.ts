@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import type { Snapshot, SnapshotSelection } from "../../snapshot/snapshot-types.js";
+import { sameLocalFields, validatePortableSnapshot, validateSnapshotFieldPolicy } from "../../sync/local-fields.js";
 import { portableSnapshotSelection, snapshotSelectionInclude } from "../../sync/sync-policy.js";
 
 export const GIT_MANIFEST_VERSION = 2;
@@ -7,7 +8,6 @@ export const MAX_GIT_MANIFEST_BYTES = 1024 * 1024;
 export const MAX_GIT_TREE_OUTPUT_BYTES = 16 * 1024 * 1024;
 export const MAX_GIT_PAYLOAD_BYTES = 100 * 1024 * 1024;
 export const MAX_GIT_SNAPSHOT_BYTES = 512 * 1024 * 1024;
-const SNAPSHOT_VERSION = 1;
 
 export interface GitManifestFile {
   path: string;
@@ -25,6 +25,7 @@ export interface GitManifest {
   syncSessions: boolean;
   snapshotSyncSessions?: boolean;
   selection?: SnapshotSelection;
+  localFields?: string[];
   files: GitManifestFile[];
 }
 
@@ -55,7 +56,7 @@ export function requireGitManifest(value: unknown): GitManifest {
   }
   if (
     manifest.version !== GIT_MANIFEST_VERSION ||
-    manifest.snapshotVersion !== SNAPSHOT_VERSION ||
+    (manifest.snapshotVersion !== 1 && manifest.snapshotVersion !== 2 && manifest.snapshotVersion !== 3) ||
     typeof manifest.snapshotId !== "string" ||
     manifest.snapshotId.length > 512 ||
     !/^[A-Za-z0-9._-]+$/u.test(manifest.snapshotId) ||
@@ -83,11 +84,13 @@ export function requireGitManifest(value: unknown): GitManifest {
       "syncSessions",
       ...(manifest.snapshotSyncSessions === undefined ? [] : ["snapshotSyncSessions"]),
       ...(manifest.selection === undefined ? [] : ["selection"]),
+      ...(manifest.localFields === undefined ? [] : ["localFields"]),
       "files",
     ])
   ) {
     throw new Error("Git publication manifest is malformed.");
   }
+  validateSnapshotFieldPolicy({ version: manifest.snapshotVersion, localFields: manifest.localFields });
   if (manifest.selection !== undefined) portableSnapshotSelection(manifest.selection);
   let total = 0;
   const paths = new Set<string>();
@@ -122,6 +125,8 @@ export function validateGitSnapshot(snapshot: Snapshot, manifest: GitManifest, n
   const syncSessions =
     snapshot.syncSessions === true || snapshot.files.some((file) => file.path.startsWith("sessions/"));
   if (
+    snapshot.version !== manifest.snapshotVersion ||
+    !sameLocalFields(snapshot.localFields, manifest.localFields) ||
     snapshot.id !== manifest.snapshotId ||
     snapshot.createdAt !== manifest.createdAt ||
     snapshot.machine !== manifest.machine ||
@@ -144,8 +149,8 @@ export function validateGitSnapshot(snapshot: Snapshot, manifest: GitManifest, n
 
 export function prepareGitSnapshot(snapshot: Snapshot, namespace: string) {
   snapshotSelectionInclude(snapshot);
+  validatePortableSnapshot(snapshot);
   if (
-    snapshot.version !== SNAPSHOT_VERSION ||
     typeof snapshot.id !== "string" ||
     !snapshot.id ||
     snapshot.id.length > 512 ||

@@ -431,6 +431,14 @@ A single question renders its header as plain muted text and omits Review and qu
 Its answer confirmation is labeled as submission, and the interaction returns as soon as that answer is confirmed.
 Add an optional note before confirming a single preset answer because that confirmation submits the interaction.
 Free-form answers are enabled by default, notes require `allowNotes`, and `maxTextLength` applies to free-form answers and notes.
+TUI answers and notes use a separate instance of the custom editor registered through Pi's `ctx.ui.setEditorComponent()`, when available through `ctx.ui.getEditorComponent()`.
+The custom editor owns editing and submission keys, including Escape; Ctrl+C remains a hard cancellation path.
+Its `onSubmit` value is authoritative, including intentional whitespace normalization; raw marker decoding still preserves unsafe characters without restoring the pre-submit draft.
+Editing hints defer to the custom editor's keybindings instead of advertising selector cancellation or standard submission keys it may consume.
+The questionnaire does not replace the main editor, alter its draft, or copy its application action handlers.
+Without a custom factory, the existing Editor and cancellation behavior remain unchanged; selector and Review cancellation also remain unchanged.
+Questionnaire-owned editor instances receive focus and optional mouse/key-release input, and their optional `dispose()` method runs when the interaction ends.
+For release-aware editors, key cycles stay with the editor that received the press across answer/note submission; selector-owned opening releases and repeats are not forwarded.
 RPC preserves the existing sequential `select()` and `editor()` fallback for choices and free-form answers, but does not collect TUI-only notes or show the final review.
 RPC preserves the editor response verbatim, including an empty string, for compatibility with existing Pi dialogs.
 Pi's RPC editor API has no abort signal, so owner cancellation during an open editor is classified as stale after that editor closes.

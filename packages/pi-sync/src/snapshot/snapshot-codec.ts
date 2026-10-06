@@ -36,9 +36,14 @@ export async function decodeSnapshot(
   await pipeline(Readable.from([buffer]), createGunzip(), sink, { signal: options.signal });
   throwIfAborted(options.signal);
   const parsed = JSON.parse(Buffer.concat(chunks, total).toString("utf8")) as Snapshot;
-  if (parsed.version !== VERSION || !Array.isArray(parsed.files)) {
+  if ((parsed.version !== VERSION && parsed.version !== 2 && parsed.version !== 3) || !Array.isArray(parsed.files)) {
     throw new Error("Unsupported snapshot format.");
   }
+  if (parsed.version === 2 || parsed.version === 3) {
+    const { normalizeLocalFields, validatePortableSnapshot } = await import("../sync/local-fields.js");
+    validatePortableSnapshot(parsed);
+    if (parsed.localFields !== undefined) parsed.localFields = normalizeLocalFields(parsed.localFields);
+  } else if (parsed.localFields !== undefined) throw new Error("Portable field policy requires snapshot version 2.");
   snapshotSelectionInclude(parsed);
   return parsed;
 }

@@ -141,6 +141,7 @@ export class GitSyncBackend implements SyncBackend {
       profile: manifest.profile,
       ...(manifest.snapshotSyncSessions === undefined ? {} : { syncSessions: manifest.snapshotSyncSessions }),
       ...(manifest.selection === undefined ? {} : { selection: manifest.selection }),
+      ...(manifest.localFields === undefined ? {} : { localFields: manifest.localFields }),
       files,
     };
     validateGitSnapshot(snapshot, manifest, this.config.destination.namespace);
@@ -172,6 +173,7 @@ export class GitSyncBackend implements SyncBackend {
       syncSessions: snapshot.syncSessions === true || snapshot.files.some((file) => file.path.startsWith("sessions/")),
       ...(snapshot.syncSessions === undefined ? {} : { snapshotSyncSessions: snapshot.syncSessions }),
       ...(snapshot.selection === undefined ? {} : { selection: snapshot.selection }),
+      ...(snapshot.localFields === undefined ? {} : { localFields: snapshot.localFields }),
       files: files.map(({ path: filePath, sha256: fileSha, size }) => ({
         path: filePath,
         sha256: fileSha,

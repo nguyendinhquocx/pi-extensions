@@ -61,6 +61,12 @@ export class GoalWaitTimer {
     this.timer = setTimeout(() => {
       if (generation !== this.generation) return;
       this.timer = undefined;
+      // Timer delays do not track wall-clock corrections. Preserve the absolute
+      // deadline when a backward correction or a capped delay makes this fire early.
+      if (Date.now() < resumeAt) {
+        this.schedule(resumeAt, onDue);
+        return;
+      }
       onDue();
     }, delay);
   }

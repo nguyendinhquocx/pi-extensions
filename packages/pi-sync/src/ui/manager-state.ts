@@ -72,7 +72,11 @@ export async function describeManagerState(
     };
   }
   const configuredTargets = ownRecord(raw.syncSetups);
-  if (raw.version === 3 && configuredTargets && Object.keys(configuredTargets).length === 0) {
+  if (
+    (raw.version === 3 || raw.version === 4 || raw.version === 5) &&
+    configuredTargets &&
+    Object.keys(configuredTargets).length === 0
+  ) {
     return {
       title: [
         "Manage sync",
@@ -129,7 +133,14 @@ export async function describeManagerState(
       `Storage: ${backendStorageDescription(config)}`,
       `Included: ${selection.builtIns.length} built-in group${selection.builtIns.length === 1 ? "" : "s"} · ${selection.custom.length} extra path${selection.custom.length === 1 ? "" : "s"} · Sessions ${selection.sessions ? "on" : "off"}`,
       `Automatic sync: ${automaticSyncSummary(config.automatic)}`,
+      `Automatic transfer at startup: ${config.automaticTransfer ? "On — upload/replace/delete at idle; no reload" : "Off"}`,
       `Last applied: ${lastAppliedSnapshot}`,
+      ...(syncState?.unresolved?.length
+        ? [
+            `Unresolved: ${syncState.unresolved.length} dependency groups · review History & recovery`,
+            `Last observed: ${safeTerminalText(syncState.lastObservedSnapshot ?? "unknown")}`,
+          ]
+        : []),
       ...(currentAttention
         ? [
             currentAttention.decision.setupName === config.setupName
