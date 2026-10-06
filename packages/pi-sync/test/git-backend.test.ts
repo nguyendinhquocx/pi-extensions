@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import {
+  cpSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
@@ -11,8 +12,9 @@ import {
   symlinkSync,
   writeFileSync,
 } from "node:fs";
+import { tmpdir } from "node:os";
 import path from "node:path";
-import { describe, test } from "vitest";
+import { afterAll, describe, test } from "vitest";
 import { GitSyncBackend, gitBackendIdentity, isSupportedGitVersion } from "../src/backends/git/git-backend.js";
 import { isGitPayloadSizeAllowed } from "../src/backends/git/git-storage.js";
 import {
@@ -20,46 +22,110 @@ import {
   SyncBackendConflictError,
   SyncBackendPublicationOutcomeUnknownError,
 } from "../src/backends/sync-backend.js";
+import type { Snapshot } from "../src/snapshot/snapshot-types.js";
 import { createBareRemote, gitConfig } from "./git-test-helpers.js";
 import { snapshot } from "./helpers.js";
 
-test("Git backend publishes lease-protected commits and preserves repeated-content history", async () => {
-  const fixture = createBareRemote();
-  try {
-    const backend = new GitSyncBackend(gitConfig(fixture.remote), {
-      cacheRoot: path.join(fixture.root, "cache"),
-      allowLocalRemotes: true,
-    });
-    const content = {
-      ...snapshot([
-        { path: "settings.json", content: Buffer.from("one") },
-        { path: "keybindings.json", content: Buffer.from("shared") },
-        { path: "copies/keybindings.json", content: Buffer.from("shared") },
-      ]),
-      selection: {
-        version: 1 as const,
-        include: ["settings.json", "keybindings.json", "copies", "missing.toml"],
-      },
-    };
-    const first = await backend.publishSnapshot(content, { kind: "missing" });
+// Each selectable test awaits memoized prerequisites within its own test budget.
+describe("lease-protected repeated-content history", { concurrent: false, shuffle: false }, () => {
+  let fixture: ReturnType<typeof createBareRemote>;
+  let backend: GitSyncBackend;
+  let content: Snapshot;
+  let changed: Snapshot;
+  type Publication = Awaited<ReturnType<GitSyncBackend["publishSnapshot"]>>;
+  let first: Publication;
+  let second: Publication;
+  let third: Publication;
+  let firstReady: Promise<void> | undefined;
+  let secondReady: Promise<void> | undefined;
+  let thirdReady: Promise<void> | undefined;
+
+  function ensureFirst(): Promise<void> {
+    firstReady ??= (async () => {
+      fixture = createBareRemote();
+      backend = new GitSyncBackend(gitConfig(fixture.remote), {
+        cacheRoot: path.join(fixture.root, "cache"),
+        allowLocalRemotes: true,
+      });
+      content = {
+        ...snapshot([
+          { path: "settings.json", content: Buffer.from("one") },
+          { path: "keybindings.json", content: Buffer.from("shared") },
+          { path: "copies/keybindings.json", content: Buffer.from("shared") },
+        ]),
+        selection: {
+          version: 1 as const,
+          include: ["settings.json", "keybindings.json", "copies", "missing.toml"],
+        },
+      };
+      first = await backend.publishSnapshot(content, { kind: "missing" });
+    })();
+    return firstReady;
+  }
+
+  function ensureSecond(): Promise<void> {
+    secondReady ??= (async () => {
+      await ensureFirst();
+      second = await backend.publishSnapshot(content, expectedRemoteHead(first.head));
+    })();
+    return secondReady;
+  }
+
+  function ensureThird(): Promise<void> {
+    thirdReady ??= (async () => {
+      await ensureSecond();
+      changed = {
+        ...content,
+        id: "changed",
+        files: content.files.map((file) =>
+          file.path === "settings.json"
+            ? (snapshot([{ path: "settings.json", content: Buffer.from("two") }]).files[0] ?? file)
+            : file,
+        ),
+      };
+      third = await backend.publishSnapshot(changed, expectedRemoteHead(second.head));
+    })();
+    return thirdReady;
+  }
+
+  test("publishes the initial snapshot within the test budget", async () => {
+    await ensureFirst();
     assert.match(first.head.revision, new RegExp(`^${gitBackendIdentity(gitConfig(fixture.remote))}:[0-9a-f]{40}$`));
-    const second = await backend.publishSnapshot(content, expectedRemoteHead(first.head));
-    const changed = {
-      ...content,
-      id: "changed",
-      files: content.files.map((file) =>
-        file.path === "settings.json"
-          ? (snapshot([{ path: "settings.json", content: Buffer.from("two") }]).files[0] ?? file)
-          : file,
-      ),
-    };
-    const third = await backend.publishSnapshot(changed, expectedRemoteHead(second.head));
+  });
+
+  test("publishes repeated content against the first lease within the test budget", async () => {
+    await ensureSecond();
+    assert.notEqual(first.head.snapshotRef, second.head.snapshotRef);
+    assert.equal(first.head.snapshotId, second.head.snapshotId);
+  });
+
+  test("publishes changed content against the second lease within the test budget", async () => {
+    await ensureThird();
+    assert.notEqual(third.head.snapshotRef, second.head.snapshotRef);
+    assert.equal(third.head.snapshotId, "changed");
+  });
+
+  afterAll(async () => {
+    // Drain every dependency chain, including a continuation after a test timeout.
+    await Promise.allSettled([firstReady, secondReady, thirdReady]);
+    if (fixture) rmSync(fixture.root, { recursive: true, force: true });
+  });
+
+  test("publishes distinct leased commits and preserves repeated-content history", async ({ signal }) => {
+    await ensureThird();
+    signal.throwIfAborted();
+    assert.match(first.head.revision, new RegExp(`^${gitBackendIdentity(gitConfig(fixture.remote))}:[0-9a-f]{40}$`));
     assert.notEqual(first.head.snapshotRef, second.head.snapshotRef);
     assert.equal(first.head.snapshotId, second.head.snapshotId);
     assert.deepEqual(
       (await backend.listHistory()).map((entry) => entry.snapshotRef),
       [first.head.snapshotRef, second.head.snapshotRef, third.head.snapshotRef],
     );
+  });
+
+  test("reuses identical payload blobs and replaces only changed content", async ({ signal }) => {
+    await ensureThird();
+    signal.throwIfAborted();
     const firstTree = publicationTree(fixture.remote, first.head.snapshotRef);
     const thirdTree = publicationTree(fixture.remote, third.head.snapshotRef);
     assert.deepEqual([...firstTree.keys()].sort(), [
@@ -83,10 +149,25 @@ test("Git backend publishes lease-protected commits and preserves repeated-conte
       ]),
       Buffer.from("two"),
     );
+  });
+
+  test("reads historical and current commit references", async ({ signal }) => {
+    await ensureThird();
+    signal.throwIfAborted();
     assert.deepEqual(await backend.readSnapshot(first.head.snapshotRef), content);
     assert.deepEqual(await backend.readSnapshot(third.head.snapshotRef), changed);
+  });
+
+  test("resolves unique content IDs and rejects ambiguous repeated IDs", async ({ signal }) => {
+    await ensureThird();
+    signal.throwIfAborted();
     assert.deepEqual(await backend.readSnapshot("changed"), changed);
     await assert.rejects(backend.readSnapshot("snap"), /ambiguous.*commit reference/i);
+  });
+
+  test("restores history from a fresh cache without moving the owned remote ref", async ({ signal }) => {
+    await ensureThird();
+    signal.throwIfAborted();
     const freshBackend = new GitSyncBackend(gitConfig(fixture.remote), {
       cacheRoot: path.join(fixture.root, "fresh-cache"),
       allowLocalRemotes: true,
@@ -98,9 +179,7 @@ test("Git backend publishes lease-protected commits and preserves repeated-conte
       }).trim(),
       third.head.snapshotRef,
     );
-  } finally {
-    rmSync(fixture.root, { recursive: true, force: true });
-  }
+  });
 });
 
 test("Git backend publishes and reads snapshots with a relative cache root", async () => {
@@ -568,7 +647,48 @@ test("Git backend disables local pre-push hooks in its private cache", async () 
   }
 });
 
-describe("Git backend fails closed on malformed native publication trees", () => {
+describe("Git backend fails closed on malformed native publication trees", {
+  concurrent: false,
+  shuffle: false,
+}, () => {
+  let seed: ReturnType<typeof createBareRemote>;
+  let seedWork: string;
+  let seedHead: string;
+  let publicationReady: Promise<void> | undefined;
+  let seedReady: Promise<void> | undefined;
+
+  function ensurePublication(): Promise<void> {
+    publicationReady ??= (async () => {
+      seed = createBareRemote();
+      const backend = new GitSyncBackend(gitConfig(seed.remote), {
+        cacheRoot: path.join(seed.root, "cache"),
+        allowLocalRemotes: true,
+      });
+      await backend.publishSnapshot(snapshot([{ path: "settings.json", content: Buffer.from("valid") }]), {
+        kind: "missing",
+      });
+    })();
+    return publicationReady;
+  }
+
+  function ensureSeed(): Promise<void> {
+    seedReady ??= (async () => {
+      await ensurePublication();
+      seedWork = path.join(seed.root, "seed-work");
+      execFileSync("git", ["clone", "--branch", "pi-sync/default", seed.remote, seedWork], { stdio: "ignore" });
+      seedHead = execFileSync("git", ["rev-parse", "HEAD"], { cwd: seedWork, encoding: "utf8" }).trim();
+    })();
+    return seedReady;
+  }
+
+  test("publishes one valid seed within the test budget", ensurePublication);
+  test("clones an immutable valid working-tree seed within the test budget", ensureSeed);
+
+  afterAll(async () => {
+    await Promise.allSettled([publicationReady, seedReady]);
+    if (seed) rmSync(seed.root, { recursive: true, force: true });
+  });
+
   const cases: Array<{
     name: string;
     expected: RegExp;
@@ -674,9 +794,19 @@ describe("Git backend fails closed on malformed native publication trees", () =>
     },
   ];
   for (const entry of cases) {
-    test(entry.name, { skip: entry.skip }, async () => {
-      const error = await malformedPublicationError(entry.mutate, entry.verify);
+    test(entry.name, { skip: entry.skip }, async ({ signal }) => {
+      await ensureSeed();
+      signal.throwIfAborted();
+      const error = await malformedPublicationError(seed.remote, seedWork, entry.mutate, entry.verify);
       assert.match(error, entry.expected);
+      // Neither the copied worktree nor its push may mutate the reusable seed.
+      assert.equal(
+        execFileSync("git", ["--git-dir", seed.remote, "rev-parse", "refs/heads/pi-sync/default"], {
+          encoding: "utf8",
+        }).trim(),
+        seedHead,
+      );
+      assert.equal(readFileSync(path.join(seedWork, "pi-sync/files/settings.json"), "utf8"), "valid");
     });
   }
 });
@@ -787,21 +917,21 @@ test("Git backend requires a supported Git version", () => {
 });
 
 async function malformedPublicationError(
+  seedRemote: string,
+  seedWork: string,
   mutate: (work: string, manifestPath: string, filePath: string) => void,
   verify?: (backend: GitSyncBackend, commit: string) => Promise<unknown>,
 ) {
-  const fixture = createBareRemote();
-  const work = path.join(fixture.root, "mutated-work");
+  const root = mkdtempSync(path.join(tmpdir(), "pi-sync-malformed-"));
+  const remote = path.join(root, "remote.git");
+  const work = path.join(root, "mutated-work");
   try {
-    const backend = new GitSyncBackend(gitConfig(fixture.remote), {
-      cacheRoot: path.join(fixture.root, "cache"),
+    // Copy, do not hard-link: every case owns its refs, objects, index, and payloads.
+    cpSync(seedRemote, remote, { recursive: true });
+    cpSync(seedWork, work, { recursive: true });
+    const backend = new GitSyncBackend(gitConfig(remote), {
+      cacheRoot: path.join(root, "cache"),
       allowLocalRemotes: true,
-    });
-    await backend.publishSnapshot(snapshot([{ path: "settings.json", content: Buffer.from("valid") }]), {
-      kind: "missing",
-    });
-    execFileSync("git", ["clone", "--branch", "pi-sync/default", fixture.remote, work], {
-      stdio: "ignore",
     });
     mutate(work, path.join(work, "pi-sync", "manifest.json"), path.join(work, "pi-sync", "files", "settings.json"));
     execFileSync("git", ["add", "--all"], { cwd: work });
@@ -809,7 +939,7 @@ async function malformedPublicationError(
       cwd: work,
       stdio: "ignore",
     });
-    execFileSync("git", ["push", "origin", "HEAD:refs/heads/pi-sync/default"], {
+    execFileSync("git", ["push", remote, "HEAD:refs/heads/pi-sync/default"], {
       cwd: work,
       stdio: "ignore",
     });
@@ -824,7 +954,7 @@ async function malformedPublicationError(
     }
     assert.fail("Expected malformed Git publication to be rejected.");
   } finally {
-    rmSync(fixture.root, { recursive: true, force: true });
+    rmSync(root, { recursive: true, force: true });
   }
 }
 

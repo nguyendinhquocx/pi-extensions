@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { DefaultResourceLoader, SettingsManager } from "@earendil-works/pi-coding-agent";
-import { test } from "vitest";
+import { afterAll, describe, test } from "vitest";
 import { type BuildMetadata, registerRuntimeBuilderContract } from "../../../test/runtime-builder-contract.js";
 import { createMockContext } from "../../../test/support.js";
 import { v3WebDavSettings } from "./helpers.js";
@@ -177,22 +177,83 @@ test("generated runtime is mapped, external, self-contained, and loadable by Pi"
   }
 });
 
-test("generated Jiti runtime starts a lazy background check and accepts foreground help before remote completion", async () => {
-  const builder = await loadBuilder();
-  const root = await mkdtemp(join(packageRoot, ".pi-sync-build-test-"));
-  const agentDir = join(root, "agent");
-  const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
-  const previousFetch = globalThis.fetch;
-  const requested = deferred();
-  let aborted = false;
-  let requests = 0;
+// Memoize prerequisites inside each selectable test, never in a longer setup hook.
+describe("generated lazy background check", { concurrent: false, shuffle: false }, () => {
+  let root: string;
+  let agentDir: string;
+  let fixtureReady: Promise<void> | undefined;
+  let reloadReady: Promise<void> | undefined;
+  let foregroundReady = Promise.resolve();
   let loaded: ReturnType<DefaultResourceLoader["getExtensions"]> | undefined;
-  try {
-    await builder.buildRuntime({ outputDirectory: join(root, "dist") });
-    await mkdir(agentDir);
-    await writeFile(join(agentDir, "pi-sync.json"), JSON.stringify(v3WebDavSettings({ automatic: true })));
-    await writeFile(join(agentDir, "settings.json"), "{}\n");
-    process.env.PI_CODING_AGENT_DIR = agentDir;
+  const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
+
+  function ensureFixture(): Promise<void> {
+    fixtureReady ??= (async () => {
+      const builder = await loadBuilder();
+      root = await mkdtemp(join(packageRoot, ".pi-sync-build-test-"));
+      agentDir = join(root, "agent");
+      await builder.buildRuntime({ outputDirectory: join(root, "dist") });
+      await mkdir(agentDir);
+      await writeFile(join(agentDir, "pi-sync.json"), JSON.stringify(v3WebDavSettings({ automatic: true })));
+      await writeFile(join(agentDir, "settings.json"), "{}\n");
+      process.env.PI_CODING_AGENT_DIR = agentDir;
+    })();
+    return fixtureReady;
+  }
+
+  test("builds the shared background-check fixture within the test budget", ensureFixture);
+
+  afterAll(async () => {
+    // A timed-out build can still publish output; finish it before deleting the fixture.
+    await fixtureReady?.catch(() => {});
+    await reloadReady?.catch(() => {});
+    await foregroundReady.catch(() => {});
+    loaded?.runtime.invalidate("generated background check smoke complete");
+    if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+    else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
+    if (root) await rm(root, { force: true, recursive: true });
+  });
+
+  async function ensureLoaded(signal: AbortSignal): Promise<void> {
+    await ensureFixture();
+    signal.throwIfAborted();
+    reloadReady ??= (async () => {
+      const loader = new DefaultResourceLoader({
+        cwd: root,
+        agentDir,
+        settingsManager: SettingsManager.inMemory({}),
+        additionalExtensionPaths: [join(root, "dist/index.ts")],
+      });
+      // Retain the runtime before reload so partial initialization is also cleaned up.
+      loaded = loader.getExtensions();
+      await loader.reload();
+      loaded = loader.getExtensions();
+      assert.deepEqual(loaded.errors, []);
+      assert.equal(loaded.extensions.length, 1);
+      assert.ok(loaded.extensions[0]?.commands.has("sync"));
+    })();
+    await reloadReady;
+    signal.throwIfAborted();
+  }
+
+  test("loads the generated registration without starting a session", async ({ signal }) => {
+    await ensureLoaded(signal);
+  });
+
+  test("accepts foreground help before the lazy remote check completes", async ({ signal }) => {
+    foregroundReady = foregroundReady.catch(() => {}).then(() => exerciseForegroundHelp(signal));
+    await foregroundReady;
+  });
+
+  async function exerciseForegroundHelp(signal: AbortSignal): Promise<void> {
+    await ensureLoaded(signal);
+    const previousFetch = globalThis.fetch;
+    const requested = deferred();
+    let aborted = false;
+    let requests = 0;
+    const extension = loaded?.extensions[0];
+    assert.ok(extension);
+    const context = createMockContext({ mode: "rpc" });
     globalThis.fetch = (async (_input, init) => {
       assert.equal(init?.method, "GET");
       requests++;
@@ -208,38 +269,31 @@ test("generated Jiti runtime starts a lazy background check and accepts foregrou
         );
       });
     }) as typeof fetch;
-    const loader = new DefaultResourceLoader({
-      cwd: root,
-      agentDir,
-      settingsManager: SettingsManager.inMemory({}),
-      additionalExtensionPaths: [join(root, "dist/index.ts")],
-    });
-    await loader.reload();
-    loaded = loader.getExtensions();
-    assert.deepEqual(loaded.errors, []);
-    const extension = loaded.extensions[0];
-    assert.ok(extension);
-    const context = createMockContext({ mode: "rpc" });
+    const cancelWait = () => requested.resolve();
+    signal.addEventListener("abort", cancelWait, { once: true });
     try {
-      for (const handler of extension.handlers.get("session_start") ?? [])
+      for (const handler of extension.handlers.get("session_start") ?? []) {
         await handler({ type: "session_start", reason: "startup" }, context.ctx);
+        signal.throwIfAborted();
+      }
       await requested.promise;
+      signal.throwIfAborted();
       assert.equal(aborted, false);
       await extension.commands.get("sync")?.handler("help", context.ctx);
+      signal.throwIfAborted();
       assert.equal(aborted, true);
       assert.equal(requests, 1);
       assert.ok(context.notifications.some((n) => n.message.includes("/sync")));
       assert.ok(context.notifications.every((n) => !/failed|skipped/iu.test(n.message)));
     } finally {
-      for (const handler of extension.handlers.get("session_shutdown") ?? [])
-        await handler({ type: "session_shutdown", reason: "reload" }, context.ctx);
+      try {
+        for (const handler of extension.handlers.get("session_shutdown") ?? [])
+          await handler({ type: "session_shutdown", reason: "reload" }, context.ctx);
+      } finally {
+        signal.removeEventListener("abort", cancelWait);
+        globalThis.fetch = previousFetch;
+      }
     }
-  } finally {
-    loaded?.runtime.invalidate("generated background check smoke complete");
-    globalThis.fetch = previousFetch;
-    if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
-    else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
-    await rm(root, { force: true, recursive: true });
   }
 });
 

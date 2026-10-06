@@ -13,11 +13,15 @@ type Action =
   | "set-timeout"
   | "set-retries"
   | "set-retention"
-  | "set-notify";
+  | "set-notify"
+  | "set-recovery";
 
 export interface SettingsMenuOwner {
   signal: AbortSignal;
   isCurrent(): boolean;
+  isPaused?(): boolean;
+  hasCheckpoint?(): boolean;
+  canReplayCheckpoint?(): boolean;
 }
 
 interface CompactMenuStatus {
@@ -69,7 +73,13 @@ async function update(
 
 export function createCodexCompactMenu(
   runtime: CodexCompactSettingsRuntime,
-  options: { onCompactRequested?: () => void; status?: CompactMenuStatus } = {},
+  options: {
+    onCompactRequested?: () => void;
+    status?: CompactMenuStatus;
+    isPaused?: () => boolean;
+    hasCheckpoint?: () => boolean;
+    canReplayCheckpoint?: () => boolean;
+  } = {},
 ): MenuDefinition<CodexCompactSettingsState, Screen, Action, ExtensionCommandContext> {
   return {
     start: "main",
@@ -82,6 +92,19 @@ export function createCodexCompactMenu(
           `Protocol setting: ${protocolLabel(state.settings.protocol)}`,
           `Active model: ${safeText(options.status?.model ?? "none")}`,
           `Compact route: ${safeText(compactRoute(state, options.status))}`,
+          ...(state.settings.enabled && options.hasCheckpoint?.() && options.canReplayCheckpoint?.() === false
+            ? ["Compaction cancels: the active checkpoint cannot replay on this model/route."]
+            : []),
+          ...(options.isPaused?.()
+            ? [
+                "Last observed remote operation paused after OAuth rejection; /reload retries it.",
+                options.hasCheckpoint?.()
+                  ? state.settings.checkpointRecovery === "cancel" || options.canReplayCheckpoint?.() === false
+                    ? "Recovery: cancel compaction; preserve checkpoint history."
+                    : "Recovery: checkpoint-aware summary; cancel if unsafe or unsuccessful."
+                  : "Recovery: Pi native compaction.",
+              ]
+            : []),
         ],
         items: [
           {
@@ -122,6 +145,15 @@ export function createCodexCompactMenu(
             currentValue: protocolLabel(state.settings.protocol),
             values: ["Auto", "Remote V2", "Responses Compact", "Context Management (experimental)"],
             action: "set-protocol",
+          },
+          {
+            id: "checkpointRecovery",
+            label: "Checkpoint recovery",
+            description:
+              "On remote failure: Summarize uses inference quota; failure always cancels. Cancel preserves history without a summary request.",
+            currentValue: state.settings.checkpointRecovery === "cancel" ? "Cancel" : "Summarize",
+            values: ["Summarize", "Cancel"],
+            action: "set-recovery",
           },
           {
             id: "requestTimeoutMs",
@@ -190,6 +222,8 @@ export function createCodexCompactMenu(
           },
           signal,
         ),
+      "set-recovery": ({ ctx, value, signal }) =>
+        update(runtime, ctx, { checkpointRecovery: value === "Cancel" ? "cancel" : "summarize" }, signal),
       "set-timeout": ({ ctx, value, signal }) =>
         update(runtime, ctx, { requestTimeoutMs: Number.parseInt(value ?? "5", 10) * 60_000 }, signal),
       "set-retries": ({ ctx, value, signal }) =>
@@ -221,7 +255,17 @@ export async function showCodexCompactMenu(
       onCompactRequested: () => {
         compactRequested = true;
       },
-      status: compactMenuStatus(ctx),
+      status: {
+        get model() {
+          return compactMenuStatus(ctx).model;
+        },
+        get api() {
+          return ctx.model?.api;
+        },
+      },
+      isPaused: owner.isPaused,
+      hasCheckpoint: owner.hasCheckpoint,
+      canReplayCheckpoint: owner.canReplayCheckpoint,
     }),
     {
       getState: () => runtime.get(),

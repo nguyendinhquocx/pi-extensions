@@ -17,6 +17,7 @@ type StampAction =
   | "set-seconds"
   | "set-date-context"
   | "set-response-timing"
+  | "set-output-throughput"
   | "set-assistant-metadata"
   | "set-exact-timeline"
   | "set-thinking-level"
@@ -115,6 +116,14 @@ export function createStampMenu(
             currentValue: responseTimingLabel(state.settings.responseTiming),
             values: ["Off", "Duration", "Detailed"],
             action: "set-response-timing",
+          },
+          {
+            id: "showOutputThroughput",
+            label: "Show output throughput",
+            description: "Average reported output tokens per second, from creation to completion.",
+            currentValue: visibilityLabel(state.settings.showOutputThroughput),
+            values: ["Show", "Hide"],
+            action: "set-output-throughput",
           },
           {
             id: "showExactTimeline",
@@ -257,6 +266,12 @@ export function createStampMenu(
           settingStatus("Time zone", timeZoneLabel(state.settings.timeZone), state, "timeZone"),
           settingStatus("Response timing", responseTimingLabel(state.settings.responseTiming), state, "responseTiming"),
           settingStatus(
+            "Output throughput",
+            visibilityLabel(state.settings.showOutputThroughput),
+            state,
+            "showOutputThroughput",
+          ),
+          settingStatus(
             "Exact timeline",
             visibilityLabel(state.settings.showExactTimeline),
             state,
@@ -305,6 +320,8 @@ export function createStampMenu(
           "The clock shows message creation; response timing ends at assistant message completion.",
           "First content is Pi's first non-empty text, thinking, or tool-call stream update.",
           "First n/a means no meaningful update was observed; no other boundary is substituted.",
+          "Output throughput averages reported output tokens from creation to completion, not server generation speed.",
+          "Throughput is independent of metadata and timing display; errors and aborted responses omit it.",
           "Thinking level capture requires both assistant metadata and its own setting to be enabled.",
           "Compact abnormal labels require their setting; normal stops always stay quiet there.",
           "Cost since user message resets at every user message and appears on non-tool-use responses.",
@@ -344,6 +361,8 @@ export function createStampMenu(
           value === "Detailed" ? "detailed" : value === "Duration" ? "duration" : "off";
         return savePatch(runtime, ctx, signal, { responseTiming }, `Response timing: ${value}.`);
       },
+      "set-output-throughput": ({ ctx, value, signal }) =>
+        savePatch(runtime, ctx, signal, { showOutputThroughput: value === "Show" }, `Output throughput: ${value}.`),
       "set-exact-timeline": ({ ctx, value, signal }) =>
         savePatch(runtime, ctx, signal, { showExactTimeline: value === "Show" }, `Exact timeline: ${value}.`),
       "set-assistant-metadata": ({ ctx, value, signal }) => {
@@ -479,6 +498,7 @@ function formatCompactStatus(state: StampSettingsState): string {
     localeLabel(state.settings.locale),
     timeZoneLabel(state.settings.timeZone),
     `Timing ${responseTimingLabel(state.settings.responseTiming).toLowerCase()}`,
+    `Throughput ${state.settings.showOutputThroughput ? "shown" : "hidden"}`,
     `Timeline ${state.settings.showExactTimeline ? "shown" : "hidden"}`,
     `Metadata ${assistantMetadataLabel(state.settings.assistantMetadata).toLowerCase()}`,
     `Thinking ${state.settings.showThinkingLevel ? "shown" : "hidden"}`,

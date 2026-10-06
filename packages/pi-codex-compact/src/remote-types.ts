@@ -21,6 +21,7 @@ export interface RemoteCompactionRequest {
   requestTimeoutMs?: number;
   maxRetries?: number;
   fetch?: typeof globalThis.fetch;
+  onProviderStreamEvent?: (event: unknown) => void;
 }
 
 export interface RemoteCompactionResponse {

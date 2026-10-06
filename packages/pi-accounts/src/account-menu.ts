@@ -12,6 +12,8 @@ const SWITCH_ANOTHER_PROVIDER_ACTION = "Switch another provider’s account";
 type AccountMenuSession = {
   selections: ProviderAccountSelections;
   error?: string;
+  environmentAccount?: string;
+  environmentError?: string;
 };
 
 type AccountMenuOwner = {
@@ -91,7 +93,13 @@ export async function showAccountsMenu(
         return {
           kind: "actions",
           title: "Accounts",
-          lines: formatAccountsMenuTitle(ctx, state.states, state.hasAnyStoredAccount, state.selectionError)
+          lines: formatAccountsMenuTitle(
+            ctx,
+            state.states,
+            state.hasAnyStoredAccount,
+            state.selectionError,
+            session.environmentAccount !== undefined || session.environmentError !== undefined,
+          )
             .split("\n")
             .slice(1),
           items: [
@@ -100,6 +108,10 @@ export async function showAccountsMenu(
               currentState,
               state.hasAnyStoredAccount,
               state.selectionError !== undefined,
+            ).filter((item) =>
+              session.environmentAccount === undefined && !session.environmentError
+                ? true
+                : item.action !== "switch-current" && item.action !== "switch-route",
             ),
             ...([...state.states.values()].some((provider) => provider.adapter.supportsApiKey)
               ? [
@@ -282,6 +294,13 @@ export async function showAccountsMenu(
       "switch-account": async ({ itemId, signal }) => {
         const providerId = selectedProviderId;
         if (!providerId) return { kind: "rejected" };
+        if (session.environmentAccount !== undefined || session.environmentError) {
+          ctx.ui.notify(
+            "PI_ACCOUNT controls this process's account selection. Unset it and restart Pi to switch accounts.",
+            "warning",
+          );
+          return { kind: "rejected" };
+        }
         const latest = await store.readProviderAsync(providerId);
         if (!owner.isCurrent()) return { kind: "close" };
         const accountName = switchAccountOptions(
@@ -322,9 +341,14 @@ export async function showAccountsMenu(
         currentProviderId: toProviderId(ctx.model?.provider),
         hasAnyStoredAccount: [...states.values()].some((state) => accountNames(state).length > 0),
         selectionError:
-          session.error ??
+          (session.environmentAccount !== undefined && session.error
+            ? "The saved session selection is unavailable, but PI_ACCOUNT remains effective. Unset it and restart Pi to repair via /accounts."
+            : session.error) ??
+          session.environmentError ??
           (missingSelection
-            ? "A selected account is no longer available. Choose an account or default to recover."
+            ? session.environmentAccount !== undefined
+              ? "PI_ACCOUNT names an account that is unavailable for at least one provider. Save it or unset PI_ACCOUNT and restart Pi."
+              : "A selected account is no longer available. Choose an account or default to recover."
             : undefined),
       };
     },
@@ -342,14 +366,16 @@ async function readProviderMenuStates(
   const states = new Map<AccountProviderId, ProviderMenuState>();
   for (const id of adapters.keys()) {
     const state = data.providers[id] ?? { accounts: defineOwnMap({}) };
-    const active = session.selections[id] ?? undefined;
+    const active = session.environmentAccount ?? session.selections[id] ?? undefined;
     states.set(id, {
       id,
       adapter: requireAdapter(adapters, id),
       active,
       defaultAccount: state.active,
       selectionInvalid:
-        session.error !== undefined || (active !== undefined && !getOwnCredential(state.accounts, active)),
+        (session.environmentAccount === undefined && session.error !== undefined) ||
+        session.environmentError !== undefined ||
+        (active !== undefined && !getOwnCredential(state.accounts, active)),
       accounts: state.accounts,
     });
   }
@@ -361,16 +387,20 @@ function formatAccountsMenuTitle(
   states: Map<AccountProviderId, ProviderMenuState>,
   hasAnyStoredAccount: boolean,
   selectionError?: string,
+  fromEnvironment = false,
 ): string {
-  if (!hasAnyStoredAccount && !selectionError) {
+  if (!hasAnyStoredAccount && !selectionError && !fromEnvironment) {
     return "Accounts\n\nNo saved accounts yet.\n\nWhat do you want to do?";
   }
   const activeLines = sortedProviderStates(states).map(
     (state) =>
-      `  ${state.adapter.displayName}: ${state.selectionInvalid ? "recovery required" : (state.active ?? "default")}`,
+      `  ${state.adapter.displayName}: ${state.selectionInvalid ? "recovery required" : fromEnvironment ? "PI_ACCOUNT" : (state.active ?? "default")}`,
   );
   return [
     "Accounts",
+    ...(fromEnvironment
+      ? ["", "Account selection source: PI_ACCOUNT (process override). Unset it and restart Pi to switch accounts."]
+      : []),
     ...(selectionError ? ["", `Selection error: ${sanitizeTerminalText(selectionError)}`] : []),
     "",
     "Current model:",

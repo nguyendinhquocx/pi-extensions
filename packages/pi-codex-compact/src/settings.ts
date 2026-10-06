@@ -16,6 +16,7 @@ export interface CodexCompactSettings {
   maxRetries: number;
   replacementTokenBudget: number;
   notifyOnFallback: boolean;
+  checkpointRecovery: "summarize" | "cancel";
 }
 
 export const DEFAULT_CODEX_COMPACT_SETTINGS: Readonly<CodexCompactSettings> = Object.freeze({
@@ -26,6 +27,7 @@ export const DEFAULT_CODEX_COMPACT_SETTINGS: Readonly<CodexCompactSettings> = Ob
   maxRetries: 2,
   replacementTokenBudget: 64_000,
   notifyOnFallback: true,
+  checkpointRecovery: "summarize",
 });
 
 const LIMITS = Object.freeze({
@@ -117,6 +119,12 @@ export function normalizeCodexCompactSettings(value: unknown): CodexCompactSetti
   ) {
     return undefined;
   }
+  if (
+    Object.hasOwn(value, "checkpointRecovery") &&
+    value.checkpointRecovery !== "summarize" &&
+    value.checkpointRecovery !== "cancel"
+  )
+    return undefined;
   if (Object.hasOwn(value, "notifyOnFallback") && typeof value.notifyOnFallback !== "boolean") {
     return undefined;
   }
@@ -130,6 +138,7 @@ export function normalizeCodexCompactSettings(value: unknown): CodexCompactSetti
     }
   }
   return {
+    checkpointRecovery: value.checkpointRecovery === "cancel" ? "cancel" : "summarize",
     enabled: typeof value.enabled === "boolean" ? value.enabled : DEFAULT_CODEX_COMPACT_SETTINGS.enabled,
     protocol:
       value.protocol === "remote-v2" ||

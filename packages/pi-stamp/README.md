@@ -3,13 +3,13 @@
 [![npm](https://img.shields.io/npm/v/@narumitw/pi-stamp)](https://www.npmjs.com/package/@narumitw/pi-stamp) [![Pi extension](https://img.shields.io/badge/Pi-extension-blue)](https://pi.dev) [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](./LICENSE)
 
 Add a quiet, right-aligned timestamp after each user and assistant message in Pi's interactive transcript.
-Optionally show response timing, assistant provenance and usage, or tool duration and outcome.
+Optionally show response timing and output throughput, assistant provenance and usage, or tool duration and outcome.
 
 ## ✨ Features
 
 - Shows each message's recorded creation time on a dim, right-aligned row.
 - Supports 12/24-hour clocks, seconds, automatic date context, locales, and time zones.
-- Optionally shows response latency, elapsed time since user, model and provider identity, effective Pi Thinking level, stop reason, tokens, call cost, and cost since user.
+- Optionally shows response latency, average output throughput, elapsed time since user, model and provider identity, effective Pi Thinking level, stop reason, tokens, call cost, and cost since user.
 - Optionally records tool duration and success or error after each complete tool block.
 - Shows exact UTC ISO 8601 and Unix millisecond observation times only during transcript expansion.
 - Keeps sensitive response IDs and bounded diagnostics behind explicit opt-in and transcript expansion.
@@ -57,7 +57,7 @@ Run `/stamp` to open the presentation menu:
 
 ```text
 Stamp
-24-hour · seconds · Day changes · Invariant · Local · Timing off · Timeline shown · Metadata off · Thinking shown · Abnormal shown · Cost since user hidden · Time since user hidden · Tool stamps hidden
+24-hour · seconds · Day changes · Invariant · Local · Timing off · Throughput hidden · Timeline shown · Metadata off · Thinking shown · Abnormal shown · Cost since user hidden · Time since user hidden · Tool stamps hidden
 
 Settings
 Status
@@ -85,6 +85,7 @@ The `/stamp` Settings screen provides these controls:
 | `locale` | `"invariant"`, `"system"`, or one BCP 47 tag | `"invariant"` | Controls localized date/time presentation. |
 | `timeZone` | `"local"` or one supported IANA zone | `"local"` | Controls time and day-boundary interpretation; `UTC` is accepted. |
 | `responseTiming` | `"off"`, `"duration"`, `"detailed"` | `"off"` | Keeps timestamps minimal, adds total assistant duration, or labels first-content and total timing. |
+| `showOutputThroughput` | boolean | `false` | Captures and shows average reported output tokens per second, independently of metadata and duration display. |
 | `showExactTimeline` | boolean | `true` | Shows exact UTC and Unix observation times when transcript details are expanded. |
 | `assistantMetadata` | `"off"`, `"compact"`, `"expanded"` | `"off"` | Captures and shows no assistant metadata, a compact model/Thinking-level/total/cost summary, or all supported provenance and usage fields. |
 | `showThinkingLevel` | boolean | `true` | Captures and shows Pi's effective turn Thinking level when assistant metadata is enabled. |
@@ -175,6 +176,26 @@ These rows are hidden in the collapsed transcript, require no new session data, 
 Timing labels are local Pi lifecycle observations, not provider latency telemetry.
 They require no network request or refresh task.
 Relative labels such as `3m ago` remain unavailable because they would require periodic background refresh and lifecycle cleanup.
+
+### Output throughput
+
+Enable **Show output throughput** in `/stamp` Settings (`showOutputThroughput: true`) to add an average rate to the timing row:
+
+```text
+14:32:08 · first 0.8s · total 3.2s · 42 tok/s
+```
+
+The rate is `usage.output / ((completedAt - timestamp) / 1000)`: reported output tokens divided by the exact time from message creation to the observed `message_end`.
+It includes waiting and reasoning time, excludes tool execution, and is **not server generation speed**.
+Reasoning tokens are not added again, and first-content timing is not used as the denominator.
+
+The setting defaults off and works independently of response timing, assistant metadata, and cost/time since user.
+While enabled, eligible responses persist their output count and timing inputs, not a rounded rate.
+Normal, tool-call, and length-limited responses qualify; error and aborted responses, missing or invalid counts, and missing or non-positive durations show no rate.
+Valid zero counts display `0 tok/s`; positive rates below `0.1` display `<0.1 tok/s`, and other rates use at most one decimal place.
+
+Disabling the setting hides recorded rates without erasing data.
+Older stamps can show throughput only if they already contain valid output usage, an eligible stop reason, and completion timing; timestamp-only history is not backfilled.
 
 ### Time since user
 
@@ -291,6 +312,8 @@ Message entry compatibility is cumulative:
   Full assistant metadata and Thinking level remain optional in this version.
 - Version 7 assistant entries add fixed elapsed milliseconds since the latest user message and require a completion observation.
   Cost, full assistant metadata, and Thinking level remain optional.
+- Version 8 assistant entries add an independently captured output-token count for throughput and require positive creation-to-completion time.
+  Time since user, cost, full assistant metadata, and Thinking level remain optional.
 - Version 1 tool entries store only bounded association/timing/outcome data.
 
 Existing versions remain readable.

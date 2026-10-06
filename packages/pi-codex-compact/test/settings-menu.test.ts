@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
+import { visibleWidth } from "@earendil-works/pi-tui";
 import { resolveMenuScreen } from "@narumitw/pi-tui-kit";
 import { test } from "vitest";
-import { createMockContext } from "../../../test/support.js";
+import { createCustomSelectorHarness, createMockContext } from "../../../test/support.js";
 import {
   type CodexCompactSettingsRuntime,
   type CodexCompactSettingsState,
@@ -116,6 +117,7 @@ test("settings screen exposes bounded controls and invalid files remain repairab
     [
       ["enabled", "On"],
       ["protocol", "Auto"],
+      ["checkpointRecovery", "Summarize"],
       ["requestTimeoutMs", "5 min"],
       ["maxRetries", "2"],
       ["replacementTokenBudget", "64K tokens"],
@@ -293,4 +295,172 @@ test("non-TUI command reports through RPC and rejects print and JSON modes", asy
     assert.deepEqual(nonInteractive.notifications, []);
   }
   assert.equal(compactions, 0);
+});
+
+test("checkpoint recovery menu applies exact patches and paused status distinguishes recovery modes", async () => {
+  const memory = memoryRuntime();
+  const menu = createCodexCompactMenu(memory.runtime, {
+    status: { model: "openai/fixture", api: "openai-responses" },
+    isPaused: () => true,
+    hasCheckpoint: () => true,
+  });
+  const ctx = createMockContext({ mode: "tui" }).ctx;
+  const invoke = (value: string) =>
+    menu.actions["set-recovery"]({
+      ctx,
+      state: memory.runtime.get(),
+      signal: new AbortController().signal,
+      itemId: "checkpointRecovery",
+      value,
+    });
+  await invoke("Cancel");
+  assert.deepEqual(memory.patches, [{ checkpointRecovery: "cancel" }]);
+  const cancel = resolveMenuScreen(menu, "main", memory.runtime.get());
+  assert.match(cancel.lines?.join("\n") ?? "", /cancel compaction; preserve checkpoint history/);
+  await invoke("Summarize");
+  const summarize = resolveMenuScreen(menu, "main", memory.runtime.get());
+  assert.match(summarize.lines?.join("\n") ?? "", /checkpoint-aware summary; cancel if unsafe/);
+  assert.match(summarize.lines?.join("\n") ?? "", /reload retries/);
+  const native = resolveMenuScreen(
+    createCodexCompactMenu(memory.runtime, { isPaused: () => true, hasCheckpoint: () => false }),
+    "main",
+    memory.runtime.get(),
+  );
+  assert.match(native.lines?.join("\n") ?? "", /Pi native compaction/);
+});
+
+test("checkpoint recovery failed save preserves displayed value and reports failure", async () => {
+  const memory = memoryRuntime();
+  const runtime = {
+    ...memory.runtime,
+    update: async () => {
+      throw new Error("disk failure");
+    },
+  };
+  const menu = createCodexCompactMenu(runtime);
+  const context = createMockContext({ mode: "tui" });
+  const result = await menu.actions["set-recovery"]({
+    ctx: context.ctx,
+    state: runtime.get(),
+    signal: new AbortController().signal,
+    itemId: "checkpointRecovery",
+    value: "Cancel",
+  });
+  assert.deepEqual(result, { kind: "rejected" });
+  assert.equal(runtime.get().settings.checkpointRecovery, "summarize");
+  assert.match(context.notifications[0].message, /disk failure/);
+});
+
+test("paused status renders narrowly and respects remapped and hard cancellation", async () => {
+  for (const key of ["\u0018", "\u0003"]) {
+    const memory = memoryRuntime();
+    const widths = [0, 12, 32];
+    let rendered: string[][] = [];
+    let closed: unknown;
+    let compactions = 0;
+    const context = createMockContext({
+      mode: "tui",
+      model: { provider: "openai", id: "fixture\u001b[31m", api: "openai-responses" },
+      compact: () => {
+        compactions += 1;
+      },
+      custom: async (factory: unknown) => {
+        const harness = createCustomSelectorHarness(factory, 32, {
+          matches: (data, action) => action === "tui.select.cancel" && data === "\u0018",
+          getKeys: (action) => (action === "tui.select.cancel" ? ["ctrl+x"] : []),
+        });
+        try {
+          rendered = widths.map((width) => harness.render(width));
+          harness.handleInput(key);
+          closed = harness.result;
+          return closed;
+        } finally {
+          harness.dispose();
+        }
+      },
+    });
+    await showCodexCompactMenu(memory.runtime, context.ctx, {
+      signal: new AbortController().signal,
+      isCurrent: () => true,
+      isPaused: () => true,
+      hasCheckpoint: () => true,
+    });
+    assert.equal(compactions, 0);
+    assert.ok(
+      closed && typeof closed === "object" && "kind" in closed && (closed.kind === "close" || closed.kind === "back"),
+    );
+    assert.equal(rendered.length, widths.length);
+    assert.ok(rendered.flat().every((line) => !line.includes("\u001b[31m")));
+    for (let i = 0; i < widths.length; i += 1)
+      assert.ok(
+        rendered[i].every((line) => visibleWidth(line) <= Math.max(1, widths[i])),
+        JSON.stringify({ width: widths[i], lines: rendered[i] }),
+      );
+  }
+});
+
+test("route status revalidates model metadata after loading menu state", async () => {
+  const memory = memoryRuntime();
+  let model = { provider: "openai", id: "old", api: "openai-responses" };
+  const runtime = {
+    ...memory.runtime,
+    get: () => {
+      model = { provider: "openai-codex", id: "new", api: "openai-codex-responses" };
+      return memory.runtime.get();
+    },
+  };
+  let rendered: string[] = [];
+  const context = createMockContext({
+    mode: "tui",
+    custom: async (factory: unknown) => {
+      const harness = createCustomSelectorHarness(factory, 128);
+      try {
+        rendered = harness.render();
+        harness.handleInput("\u0003");
+        return harness.result;
+      } finally {
+        harness.dispose();
+      }
+    },
+  });
+  Object.defineProperty(context.ctx, "model", { get: () => model });
+  await showCodexCompactMenu(runtime, context.ctx, {
+    signal: new AbortController().signal,
+    isCurrent: () => true,
+    isPaused: () => true,
+    hasCheckpoint: () => false,
+  });
+  const output = rendered.join("\n");
+  assert.match(output, /openai-codex\/new/);
+  assert.match(output, /Responses Remote V2/);
+  assert.doesNotMatch(output, /openai\/old/);
+});
+
+test("menu reports mandatory cancellation for incompatible checkpoint routes and does not promise summary recovery", () => {
+  const memory = memoryRuntime();
+  const menu = createCodexCompactMenu(memory.runtime, {
+    status: { model: "anthropic/model", api: "anthropic-messages" },
+    hasCheckpoint: () => true,
+    canReplayCheckpoint: () => false,
+  });
+  const main = resolveMenuScreen(menu, "main", memory.runtime.get());
+  assert.equal(main.kind, "actions");
+  if (main.kind !== "actions") throw new Error("expected actions");
+  assert.match(main.lines?.join("\n") ?? "", /Compaction cancels:.*checkpoint cannot replay/);
+  const paused = createCodexCompactMenu(memory.runtime, {
+    status: { model: "openai/model", api: "openai-responses" },
+    isPaused: () => true,
+    hasCheckpoint: () => true,
+    canReplayCheckpoint: () => false,
+  });
+  const pausedMain = resolveMenuScreen(paused, "main", memory.runtime.get());
+  assert.equal(pausedMain.kind, "actions");
+  if (pausedMain.kind !== "actions") throw new Error("expected actions");
+  assert.match(pausedMain.lines?.join("\n") ?? "", /Recovery: cancel compaction; preserve checkpoint history/);
+  assert.doesNotMatch(pausedMain.lines?.join("\n") ?? "", /Recovery: checkpoint-aware summary/);
+  assert.equal(
+    memory.runtime.get().settings.checkpointRecovery,
+    "summarize",
+    "effective cancellation does not rewrite policy",
+  );
 });

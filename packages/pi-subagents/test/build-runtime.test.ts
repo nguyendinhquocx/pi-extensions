@@ -3,8 +3,9 @@ import { spawn } from "node:child_process";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { DefaultResourceLoader, SettingsManager } from "@earendil-works/pi-coding-agent";
-import { test } from "vitest";
+import { afterAll, describe, test } from "vitest";
 import { type BuildMetadata, registerRuntimeBuilderContract } from "../../../test/runtime-builder-contract.js";
+import { createLoaderQueue } from "./loader-queue.js";
 
 const { packageRoot, loadBuilder } = registerRuntimeBuilderContract({
   packageId: "pi-subagents",
@@ -124,77 +125,130 @@ test("generated main entry references the generated child entries", async () => 
   }
 });
 
-test("Pi's Jiti loader loads the generated extension, child bridge, and readiness probe", async () => {
-  const builder = await loadBuilder();
-  const root = await mkdtemp(join(packageRoot, ".pi-subagents-build-test-"));
-  const agentDir = join(root, "agent");
-  const output = join(root, "dist");
+// Memoize prerequisites inside each selectable test, never in a longer setup hook.
+describe("generated Jiti entrypoints", { concurrent: false, shuffle: false }, () => {
+  let root: string;
+  let agentDir: string;
+  let output: string;
+  let fixtureReady: Promise<void> | undefined;
   const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
-  try {
-    await builder.buildRuntime({ outputDirectory: output });
-    await mkdir(agentDir, { recursive: true });
-    process.env.PI_CODING_AGENT_DIR = agentDir;
-    const mainLoader = new DefaultResourceLoader({
-      cwd: root,
-      agentDir,
-      settingsManager: SettingsManager.inMemory({}),
-      additionalExtensionPaths: [join(output, "index.ts")],
-    });
-    await mainLoader.reload();
-    const loadedMain = mainLoader.getExtensions();
-    assert.deepEqual(loadedMain.errors, []);
-    assert.equal(loadedMain.extensions.length, 1);
-    const main = loadedMain.extensions[0];
-    assert.ok(main?.handlers.has("session_start"));
-    assert.ok(main?.handlers.has("session_shutdown"));
-    assert.deepEqual([...(main?.messageRenderers.keys() ?? [])], ["pi-subagents-completion"]);
-    assert.deepEqual(
-      [...(main?.tools.keys() ?? [])],
-      ["subagent_spawn", "subagent_inspect", "subagent_cancel", "subagent_wait", "subagent_send"],
-    );
-    assert.deepEqual(
-      Object.keys(
-        (
-          main?.tools.get("subagent_send")?.definition.parameters as {
-            properties?: Record<string, unknown>;
-          }
-        )?.properties ?? {},
-      ),
-      ["recipient", "requestId", "message"],
-    );
+  const loaders = createLoaderQueue();
+  const children: Promise<unknown>[] = [];
 
-    const childLoader = new DefaultResourceLoader({
-      cwd: root,
-      agentDir,
-      settingsManager: SettingsManager.inMemory({}),
-      additionalExtensionPaths: [
-        join(output, "child-communication-bridge.ts"),
-        join(output, "child-readiness-probe.ts"),
-      ],
-    });
-    await childLoader.reload();
-    const loadedChild = childLoader.getExtensions();
-    assert.deepEqual(loadedChild.errors, []);
-    assert.equal(loadedChild.extensions.length, 2);
-    assert.deepEqual([...(loadedChild.extensions[0]?.tools.keys() ?? [])], []);
-    assert.deepEqual([...(loadedChild.extensions[1]?.handlers.keys() ?? [])], []);
-    assert.deepEqual(await loadCredentialBackedChild(output, agentDir, root), {
+  function ensureFixture(): Promise<void> {
+    fixtureReady ??= (async () => {
+      const builder = await loadBuilder();
+      root = await mkdtemp(join(packageRoot, ".pi-subagents-build-test-"));
+      agentDir = join(root, "agent");
+      output = join(root, "dist");
+      await builder.buildRuntime({ outputDirectory: output });
+      await mkdir(agentDir, { recursive: true });
+      process.env.PI_CODING_AGENT_DIR = agentDir;
+    })();
+    return fixtureReady;
+  }
+
+  test("builds the shared Jiti fixture within the test budget", ensureFixture);
+
+  afterAll(async () => {
+    // Drain builds, reloads, and child close before deleting paths or restoring the environment.
+    await fixtureReady?.catch(() => {});
+    await loaders.drain();
+    await Promise.allSettled(children);
+    if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+    else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
+    if (root) await rm(root, { force: true, recursive: true });
+  });
+
+  test("Pi's Jiti loader preserves the main extension registrations", async ({ signal }) => {
+    await ensureFixture();
+    await loaders.run(
+      () =>
+        new DefaultResourceLoader({
+          cwd: root,
+          agentDir,
+          settingsManager: SettingsManager.inMemory({}),
+          additionalExtensionPaths: [join(output, "index.ts")],
+        }),
+      signal,
+      (loader) => {
+        const loaded = loader.getExtensions();
+        assert.deepEqual(loaded.errors, []);
+        assert.equal(loaded.extensions.length, 1);
+        const main = loaded.extensions[0];
+        assert.ok(main?.handlers.has("session_start"));
+        assert.ok(main?.handlers.has("session_shutdown"));
+        assert.deepEqual([...(main?.messageRenderers.keys() ?? [])], ["pi-subagents-completion"]);
+        assert.deepEqual(
+          [...(main?.tools.keys() ?? [])],
+          ["subagent_spawn", "subagent_inspect", "subagent_cancel", "subagent_wait", "subagent_send"],
+        );
+        assert.deepEqual(
+          Object.keys(
+            (main?.tools.get("subagent_send")?.definition.parameters as { properties?: Record<string, unknown> })
+              ?.properties ?? {},
+          ),
+          ["recipient", "requestId", "message"],
+        );
+      },
+    );
+  });
+
+  test("child Jiti entrypoints stay inactive without broker credentials", async ({ signal }) => {
+    await ensureFixture();
+    await loaders.run(
+      () =>
+        new DefaultResourceLoader({
+          cwd: root,
+          agentDir,
+          settingsManager: SettingsManager.inMemory({}),
+          additionalExtensionPaths: [
+            join(output, "child-communication-bridge.ts"),
+            join(output, "child-readiness-probe.ts"),
+          ],
+        }),
+      signal,
+      (loader) => {
+        const loaded = loader.getExtensions();
+        assert.deepEqual(loaded.errors, []);
+        assert.equal(loaded.extensions.length, 2);
+        assert.deepEqual([...(loaded.extensions[0]?.tools.keys() ?? [])], []);
+        assert.deepEqual([...(loaded.extensions[1]?.handlers.keys() ?? [])], []);
+      },
+    );
+  });
+
+  test("fresh credential-backed child loads the bridge and readiness entrypoints", async ({ signal }) => {
+    await ensureFixture();
+    signal.throwIfAborted();
+    const childReady = loadCredentialBackedChild(output, agentDir, root, signal);
+    children.push(childReady);
+    const result = await childReady;
+    signal.throwIfAborted();
+    assert.deepEqual(result, {
       errors: 0,
       tools: ["subagent_send", "subagent_wait"],
       sendParameters: ["requestId", "message"],
       readinessHandlers: ["resources_discover", "session_shutdown"],
     });
-  } finally {
-    if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
-    else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
-    await rm(root, { force: true, recursive: true });
-  }
+  });
+
+  test("cancellation releases a credential-backed child before reading its result", async ({ signal }) => {
+    await ensureFixture();
+    signal.throwIfAborted();
+    const controller = new AbortController();
+    const childReady = loadCredentialBackedChild(output, agentDir, root, AbortSignal.any([controller.signal, signal]));
+    children.push(childReady);
+    controller.abort();
+    await assert.rejects(childReady, { name: "AbortError" });
+  });
 });
 
 async function loadCredentialBackedChild(
   output: string,
   agentDir: string,
   cwd: string,
+  signal: AbortSignal,
 ): Promise<{ errors: number; tools: string[]; sendParameters: string[]; readinessHandlers: string[] }> {
   const source = `
 import fs from "node:fs";
@@ -222,6 +276,7 @@ fs.closeSync(4);
 `;
   const child = spawn(process.execPath, ["--input-type=module", "-e", source, output, agentDir, cwd], {
     cwd: resolve("."),
+    signal,
     env: {
       ...process.env,
       PI_SUBAGENT_BROKER_FD: "3",
@@ -229,14 +284,11 @@ fs.closeSync(4);
     },
     stdio: ["ignore", "pipe", "pipe", "pipe", "pipe"],
   });
-  const credentials = child.stdio[3];
-  assert.ok(credentials && "end" in credentials);
-  credentials.end(
-    JSON.stringify({
-      communication: { host: "127.0.0.1", port: 31_337, token: "a".repeat(64) },
-      expectedTools: ["subagent_send", "subagent_wait"],
-    }),
-  );
+  let spawnError: Error | undefined;
+  child.once("error", (error) => {
+    spawnError = error;
+  });
+  const closed = new Promise<number | null>((resolveExit) => child.once("close", resolveExit));
   let stdout = "";
   let stderr = "";
   child.stdout?.on("data", (chunk: Buffer) => {
@@ -245,17 +297,34 @@ fs.closeSync(4);
   child.stderr?.on("data", (chunk: Buffer) => {
     stderr += chunk.toString();
   });
-  const code = await new Promise<number | null>((resolveExit, reject) => {
-    child.once("error", reject);
-    child.once("close", resolveExit);
-  });
-  assert.equal(code, 0, stderr);
-  return JSON.parse(stdout) as {
-    errors: number;
-    tools: string[];
-    sendParameters: string[];
-    readinessHandlers: string[];
-  };
+  try {
+    const credentials = child.stdio[3];
+    assert.ok(credentials && "end" in credentials);
+    let credentialError: Error | undefined;
+    credentials.once("error", (error) => {
+      credentialError = error;
+    });
+    credentials.end(
+      JSON.stringify({
+        communication: { host: "127.0.0.1", port: 31_337, token: "a".repeat(64) },
+        expectedTools: ["subagent_send", "subagent_wait"],
+      }),
+    );
+    const code = await closed;
+    if (spawnError) throw spawnError;
+    if (credentialError) throw credentialError;
+    assert.equal(code, 0, stderr);
+    assert.ok(stdout, "credential-backed child exited without a result");
+    return JSON.parse(stdout) as {
+      errors: number;
+      tools: string[];
+      sendParameters: string[];
+      readinessHandlers: string[];
+    };
+  } finally {
+    if (child.exitCode === null && child.signalCode === null) child.kill();
+    await closed;
+  }
 }
 
 function requireOutput(metadata: BuildMetadata, path: string) {

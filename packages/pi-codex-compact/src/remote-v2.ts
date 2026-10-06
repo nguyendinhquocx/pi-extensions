@@ -44,6 +44,7 @@ export async function requestRemoteCompactionV2(request: RemoteCompactionRequest
     timeoutMs: request.requestTimeoutMs ?? 5 * 60 * 1000,
     maxRetries: request.maxRetries ?? 2,
     fetch: inspectedFetch,
+    onProviderStreamEvent: request.onProviderStreamEvent,
     onPayload: (payload) => {
       const prepared = prepareRemoteCompactionPayload(payload, request.priorCheckpoint);
       sentInput = assertPreparedInput(prepared).slice(0, -1);

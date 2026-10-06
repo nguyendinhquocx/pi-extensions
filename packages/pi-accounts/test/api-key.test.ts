@@ -13,6 +13,9 @@ import accountsExtension from "../src/accounts.js";
 import { createBuiltinProviderAdapters } from "../src/oauth.js";
 import { OAUTH_CREDENTIAL_SOURCE_CHANNEL } from "../src/oauth-credential-source.js";
 import { RUNTIME_FAIL_CLOSED_API_KEY, RuntimeAuthCoordinator } from "../src/runtime-auth.js";
+import { isolateAccountEnvironment } from "./isolate-account-environment.js";
+
+isolateAccountEnvironment();
 
 const oauth = {
   type: "oauth" as const,

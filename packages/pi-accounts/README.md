@@ -16,7 +16,7 @@ Each Pi session keeps its own selection for every provider, and choosing `defaul
 
 - Manages named OAuth accounts for every built-in `/login` provider: Anthropic, GitHub Copilot, Kimi For Coding, Meta, OpenAI, OpenAI Codex (legacy), OpenRouter, Radius, and xAI.
 - Saves named API key accounts for the same providers except OAuth-only OpenAI Codex (legacy).
-- Selects an account—or Pi's default login—independently for each provider and Pi session.
+- Selects an account—or Pi's default login—independently for each provider and Pi session, with an optional `PI_ACCOUNT` override for scripts and concurrent Pi processes.
 - Saves a default account for each provider to use in new sessions without changing existing sessions.
 - Restores session selections after resume or reload while allowing concurrent sessions to use different accounts.
 - Applies provider-specific credentials, endpoints, headers, and model availability through Pi's built-in providers.
@@ -63,6 +63,8 @@ The package declares `dist/index.ts`, so an unbuilt local checkout must be built
 Run `/accounts` in TUI or RPC mode.
 Log in to save a named account, then choose **Set default account → provider → account** to use it when starting a new Pi session.
 Use **Switch … account** to change only the current session.
+For a process-local, non-interactive choice, run `PI_ACCOUNT=work pi` or `PI_ACCOUNT=personal pi --print "..."` after saving those accounts.
+The name applies to **every supported provider used by that process**; a provider without that name fails closed rather than falling back to another account.
 
 Routine account selection and provider activation continue in the background after Pi starts.
 The first prompt, model switch, or `/accounts` operation that needs a provider waits for its current selection and authentication to finish; activation failures still fail that provider closed before a request is sent.
@@ -103,17 +105,44 @@ The picker shows the saved default and saves your selection immediately; leaving
 Defaults are user-wide settings in `<getAgentDir()>/pi-accounts.json` (normally `~/.pi/agent/pi-accounts.json`); project overrides are not supported.
 The existing `providers.<provider-id>.active` field stores the saved account name, so previous values remain compatible without migration.
 An absent or `null` value means Pi's built-in login; named values must match a saved account under that provider.
-The menu clears `active` when you choose **Pi built-in login** or remove the configured default account.
+The menu clears `active` when you choose **Pi built-in login** or remove the configured default account. Editing a saved default while `PI_ACCOUNT` is set does not change that process's effective selection.
 
 New sessions, including `/new`, forks, and clones, snapshot these defaults.
 A session's saved selection takes precedence on restart, resume, and `/reload`; changing a default never switches that session or other existing sessions.
 Login and **Switch … account** still change only the current session, not the startup default.
+
+`PI_ACCOUNT=<name>` takes precedence over both saved defaults and session selections, including on resume and `/reload`.
+It is read when a session starts and remains fixed for that session; changing the process environment afterward affects only subsequently started sessions.
+The value must be a saved account name: 1–64 letters, numbers, dots, underscores, or hyphens (surrounding whitespace is trimmed); `default` is reserved and invalid.
+A missing name for **any supported provider when used**, or an invalid value, fails that provider closed rather than using a default or an existing session choice. Providers not managed by this package remain unchanged.
+Unset `PI_ACCOUNT` and restart Pi to restore the session's saved selection. The override does not change saved default-selection fields or record its value in session entries; routine session initialization can still snapshot defaults, and OAuth refresh can update credentials in `pi-accounts.json`.
+If a saved session selection is invalid or cannot be written, a valid `PI_ACCOUNT` can still authenticate without repairing that underlying error; unset it and restart Pi to recover through `/accounts`.
+`/accounts` and the account status indicate the environment as the effective source without echoing raw environment input. While it is set, interactive switching is unavailable; login can save an account but does not replace the override, and removing its selected credential fails that provider closed immediately.
+
 Sessions predating session-local selection support snapshot the current default once because their historical choice cannot be inferred.
 If a manually configured default names a missing account, affected sessions fail closed until you choose an available account or Pi's built-in login.
 
 Saves preserve unknown settings fields and use the credential store's cross-process lock and private atomic replacement.
 Within one store, asynchronous reads follow queued writes; failed writes leave the queue usable.
 Malformed settings block saves instead of being replaced, and failed saves do not change the session's authentication.
+
+## 🔌 Extension account protocols
+
+Trusted extensions can use Pi's in-process `pi.events` API to discover named accounts,
+activate one for the current session, and request a verified active OAuth credential.
+Topology and activation replies contain account identifiers, never credential material;
+the separate OAuth credential offer **does** contain secrets. No package import or
+credential-file read is needed. See the repository's [Named Account Protocols v1](https://github.com/narumiruna/pi-extensions/blob/main/docs/api/accounts-v1.md)
+for topology and activation; it links to the separate OAuth readiness and credential-source
+specifications. These references describe payloads, reply timing, cancellation, and consumer safety.
+
+Activation does not change the user-wide default. When `PI_ACCOUNT` is set, protocol activation
+(including restoration of Pi auth) returns `activation_failed` without changing the selection.
+Otherwise, activation may persist a session selection even if authentication later fails or the
+requester cancels, leaving that provider fail-closed.
+Consumers must bound their wait: a missing reply or timeout is not proof that activation
+did not happen, and dependent work must not proceed without confirmation. `pi.events`
+is not a trust boundary; load only trusted extensions.
 
 ## 🔒 Security and privacy
 
@@ -146,7 +175,7 @@ The protocols do not persist or log the offer, which contains neither the accoun
 Consumers must match its access token and provider metadata against freshly resolved runtime authentication.
 Without a compatible consumer, account activation works unchanged and no credential is requested.
 
-Pi extensions run with the user's process privileges, and the shared event bus does not isolate installed extensions.
+Pi extensions run with the user's process privileges; `pi.events` does not isolate installed extensions.
 Install only trusted extensions because any extension can read user files and process memory.
 The protocol reduces accidental credential coupling; it is not a sandbox.
 

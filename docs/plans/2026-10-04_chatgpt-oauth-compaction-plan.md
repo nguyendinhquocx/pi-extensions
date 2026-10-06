@@ -12,19 +12,22 @@ A live probe using installed Pi 1.0.2, the stored `openai` OAuth credential, `gp
 
 The current interactive session uses `openai-codex/gpt-6.1-sol`; that is a distinct provider route. This plan tests the official `openai` route implicated by the issue, not the Codex route.
 
-In a disposable repository copy at commit `6b1644d5`, all 262 `pi-codex-compact` tests passed with Node 26.10.0 and Pi dependencies 1.0.2. These deterministic results verify request handling and fallback, not hosted entitlement. Context Management has not been tested with the current credential during this investigation.
+In a disposable repository copy at commit `6b1644d5`, all 262 `pi-codex-compact` tests passed with Node 26.10.0 and Pi dependencies 1.0.2. These deterministic results verify request handling and fallback, not hosted entitlement. Context Management was untested at that stage; the resumed results below supersede that initial limitation.
 
 The user approved end-to-end execution, including at most two hosted requests, a focused branch, signed commit, push, and pull request in the subsequent instruction naming this plan. No publication or issue metadata changes are authorized.
+
+The user subsequently selected option 1, explicitly authorizing Pi's normal refresh of the stored official `openai` OAuth credential before resuming the same at-most-two-model-request probe. This supersedes the no-refresh restriction below only for Pi-managed OpenAI OAuth refresh; it does not authorize interactive re-login, Codex token substitution, alternate routes, or additional model requests. PR #1440 has merged; resumed work uses a focused follow-up branch from the current `origin/main`.
 
 ## Plan
 
 - [x] Obtain approval for at most two hosted requests and their quota exposure; record approval before making either request. Evidence: the user's end-to-end execution instruction naming this plan.
 - [x] Inspect the working tree and installed APIs. Evidence: `origin/main` and HEAD both resolved to `6b1644d5`; created `narumi/docs/verify-chatgpt-compaction`. Reviewed the collector, request implementation, replay tests, and installed credential APIs; copied package source into an isolated temporary directory. Hosted fixture preparation was not applicable after credential preflight failed; no conversation content was sent.
 - [x] Resolve a currently valid stored official `openai` OAuth credential without refresh or writes, or stop at the named blocker. Evidence: October 5, 2026 preflight found an expired stored OAuth credential. A hash-bracketed read-only check confirmed expiration and unchanged credential-file content during that check. No refresh, re-login, or key command was run.
-- [ ] Blocked: the bounded `context-management` request could not run because the official OAuth credential was expired and refresh was prohibited. Zero hosted requests were dispatched; no protocol success is claimed.
-- [ ] Blocked: conditional replay could not run because no Context Management checkpoint was produced.
-- [x] Clean up prepared temporary files and inspect the diff. Evidence: the owned temporary directory was removed; no request, timer, listener, or session was created. `git status` showed only the intended plan and evidence note; manifests and lockfile remained unchanged after dependency setup.
-- [x] Report observations separately from historical PR claims without changing runtime behavior. Evidence: `docs/implementation-notes/chatgpt-oauth-compaction-verification.md` records the prior unary 401, the expired-credential blocker, zero follow-up requests, historical PR limits, existing opt-in guidance, quota exposure, and the checkpoint-disable warning.
+- [x] Resume credential resolution through Pi's public `ModelRuntime.getAuth()` API with the normal file-backed store. Evidence: request auth resolved as OAuth, the official OpenAI credential was valid, and all credential data remained unchanged during this process; zero OAuth refresh requests were necessary.
+- [x] Make one bounded `context-management` request with synthetic history and an assistant-only fact. Evidence: 36,505 serialized input characters, one HTTP 200 from streaming `/v1/responses`, and one checkpoint item accepted by the existing collector and bounded replacement-history validator; retries disabled.
+- [x] Only after validated compaction succeeds, make one ordinary replay request using checkpoint history without original plaintext. Evidence: one HTTP 200 through the same provider/model, with exact recovery of the assistant-only synthetic passphrase. Dispatch and payload assertions verified exactly two model requests and absent original plaintext.
+- [x] Clean up the original stopped execution's temporary files and inspect its diff. Evidence: that temporary directory was removed; no request, timer, listener, or session was created during that stopped execution. Manifests and lockfile remained unchanged after dependency setup. Resumed cleanup is recorded in Completion Checklist below.
+- [x] Report observations separately from historical PR claims without changing runtime behavior. Evidence: `docs/implementation-notes/chatgpt-oauth-compaction-verification.md` records the prior unary 401, original expired-credential blocker, successful resumed streaming compaction and replay, historical PR limits, existing opt-in guidance, quota exposure, and checkpoint-disable warning.
 
 ## Scope and Verification Rules
 
@@ -38,7 +41,7 @@ The two requests may consume subscription quota; successful inference may still 
 
 ## Rollback / Recovery
 
-Use in-memory credentials and disposable probe files; never publish credentials or copy them into the repository. Do not refresh OAuth credentials because refresh can rotate tokens and invalidate the original login. No persistent configuration or session changes should need rollback. If the credential file changes concurrently, report that observation without overwriting it. Do not disable the extension in sessions containing opaque checkpoints, because disabling also stops checkpoint replay.
+Use disposable probe files and Pi's public credential store; never publish credentials or copy them into the repository. The original execution prohibited refresh; the resumed execution permits only the user-approved Pi-managed official OpenAI OAuth refresh. Refresh can rotate tokens: preserve Pi's successfully published credential and never restore an old token snapshot. No persistent configuration or session changes should need rollback. If other provider credentials change concurrently, report that observation without overwriting them. Do not disable the extension in sessions containing opaque checkpoints, because disabling also stops checkpoint replay.
 
 ## Verification Evidence
 
@@ -55,13 +58,17 @@ The verification counts above describe the initial execution, not a passing revi
 - The two-worker full `npm test` retry did not finish within the 300-second command deadline and reported failures in unchanged tests. A focused single-worker run of the seven reported files passed 53 tests and failed one `pi-sync` root-storage test at its unchanged 5,000 ms timeout.
 - A single-worker full `npm test` retry was terminated at its owned 600-second subprocess deadline, with no final suite result. It reported timeouts in `pi-sync` Git backend/routes tests and the `pi-chrome-devtools` generated-entry test. No test timeout was increased, unrelated code was changed, or hosted request was made. The cause of these failures remains unverified; the passing root-test gate required for this revision remains blocked.
 
+### Resumed live verification
+
+On October 5, 2026, the probe resumed on `narumi/docs/verify-refreshed-chatgpt-compaction` from `46a05a29` after #1440 merged. Compaction and ordinary checkpoint replay both returned HTTP 200 with Pi 1.0.2, official OpenAI OAuth, and `gpt-6.1-sol`. One validated opaque checkpoint recovered an assistant-only synthetic fact without the original plaintext. The stored token was valid at resolution time, so the approved refresh did not need to run. Exactly two model requests and zero refresh requests were sent; credential data and persistent settings remained unchanged, and temporary files were removed. For this follow-up, `npm run check` passed and all 262 package tests passed. A two-worker full `npm test` run reached the 300-second command deadline without a final result. It reported failures in unchanged `pi-sync` root-storage, Git backend/routes, and settings-management tests, plus `pi-goal` and `pi-statusline` generated-entry tests. Several were 5,000 ms timeouts; the concurrent-settings failure's cause is unverified. No per-test cap was increased or unrelated source changed. The required passing full-suite result remains missing.
+
 ## Completion Checklist
 
 - [x] Explicit approval for the hosted probe is recorded in Context and the first Plan task.
-- [x] Actual Pi version, model, provider, endpoint, request count, and sanitized prior HTTP result are recorded in the evidence note; follow-up preflight has no HTTP result because zero requests were sent.
-- [x] Each unattempted path has a named blocker and no success claim: expired official OAuth prevented compaction; absent checkpoint prevented replay.
-- [x] No more than two hosted requests were dispatched: this execution sent zero, with no retries or alternate routes.
-- [x] Temporary resources are removed, credential-file integrity is checked for the read-only check, and unrelated repository changes are preserved.
-- [ ] Both required repository gates must pass after subsequent repository changes before declaring those changes complete; retain passing evidence for `npm run check` and `npm test`. The initial execution passed both gates as recorded above; the review-fix test gate remains blocked by the timeouts recorded in Review-fix verification.
-- [ ] The handoff names applicable guidance, the live smoke blocker, risks, and unverified paths; the user accepts the expired-credential blocker. Awaiting user acknowledgement, not further request approval.
-- [ ] Delete this plan only after all tasks and preceding completion checks are satisfied or the user explicitly accepts the blocker as the final disposition, and report its former path. Retained while live verification and blocker acknowledgement are pending.
+- [x] Actual Pi version, model, provider, endpoint, request counts, and sanitized HTTP results are recorded in the evidence note, separating initial unary rejection, blocked preflight, and successful resumed streaming requests.
+- [x] A validated Context Management checkpoint and exact synthetic fact recovery were observed with original plaintext omitted. Prior blockers remain historical observations, not current blockers or evidence of protocol failure.
+- [x] The resumed probe dispatches at most two model requests: exactly two streaming Responses requests, zero OAuth refresh requests, and no retries or alternate routes. The original blocked execution dispatched zero.
+- [x] Remove all resumed temporary resources and preserve unrelated changes. Evidence: probe `finally` aborted controllers, cleared deadlines and listeners, restored the fetch wrapper, deleted the temporary directory, and confirmed all credential data was unchanged during the resumed process.
+- [ ] Both required repository gates must pass after subsequent repository changes before declaring those changes complete; retain passing evidence for `npm run check` and `npm test`. The initial execution passed both gates as recorded above; the resumed full-suite gate remains blocked by the reported failures and deadline recorded in Resumed live verification.
+- [ ] The handoff names applicable guidance, the successful live smoke, verification results, risks, and unverified paths; the user accepts the observed result. The expired-credential blocker was superseded by the authorized resumed test, not accepted as proof of protocol failure.
+- [ ] Delete this plan only after all tasks and preceding completion checks are satisfied, and report its former path. Retained while final verification and result acknowledgement are pending.

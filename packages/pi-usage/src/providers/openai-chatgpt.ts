@@ -24,7 +24,13 @@ export const OPENAI_CHATGPT_ADAPTER: UsageProviderAdapter = {
   id: "openai",
   displayName: "OpenAI",
   semantics: { kind: "consumer-subscription", label: "ChatGPT plan authentication status" },
-  async query(_auth, signal, _timeoutMs, guard) {
+  invalidateCacheOnFailure: true,
+  async query(auth, signal, timeoutMs, guard) {
+    if (auth.openaiCompanion) {
+      const { queryOpenAICompanionUsage } = await import("./openai-companion-usage.js");
+      signal.throwIfAborted();
+      return queryOpenAICompanionUsage(auth, signal, timeoutMs, guard);
+    }
     if (!guard) throw new Error("ChatGPT plan status requires runtime-auth revalidation.");
     signal.throwIfAborted();
     await guard();
@@ -38,8 +44,9 @@ export const OPENAI_CHATGPT_ADAPTER: UsageProviderAdapter = {
       buckets: [],
       metrics: [{ id: "plan-auth", label: "ChatGPT plan authentication", value: "Connected (native OAuth)" }],
       notes: [
-        "Numerical usage and reset times are unavailable in pi-usage for native OpenAI OAuth.",
+        "Numerical usage requires a companion /login openai-codex with the same ChatGPT account/workspace; native inference stays on openai.",
         `Manage usage: ${CHATGPT_USAGE_SETTINGS_URL}`,
+        "Companion usage uses undocumented ChatGPT endpoints; registration matching is not independent identity proof.",
         "Fast mode and earned reset redemption remain legacy openai-codex features.",
       ],
     };
@@ -56,11 +63,11 @@ export function resolveOpenAIChatGPTAuth(
   // isUsingOAuth() is a cached snapshot; source alone is also insufficient when a model header
   // overrides Authorization. Match both freshly resolved credentials and the exact native grant.
   if (source !== "OAuth") throw new UnsupportedOpenAIUsageAuthError();
-  const access = accessToken(auth);
-  if (!access || access !== accessToken(providerAuth)) {
+  const access = openAIAuthAccessToken(auth);
+  if (!access || access !== openAIAuthAccessToken(providerAuth)) {
     throw new Error("The active OpenAI model authorization does not match its resolved OAuth credential.");
   }
-  const matches = new Map<string, string>();
+  const matches = new Map<string, { refresh: string; clientId: string }>();
   for (const candidate of candidates) {
     if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) continue;
     const credential = candidate as Record<string, unknown>;
@@ -80,24 +87,28 @@ export function resolveOpenAIChatGPTAuth(
         "The matching OpenAI OAuth credential is not a complete native ChatGPT grant; reconnect with /login openai.",
       );
     }
-    matches.set(JSON.stringify([credential.clientId, credential.refresh]), credential.refresh);
+    matches.set(JSON.stringify([credential.clientId, credential.refresh]), {
+      refresh: credential.refresh,
+      clientId: credential.clientId,
+    });
   }
   if (matches.size > 1)
     throw new Error("Conflicting native ChatGPT credentials match the active OpenAI runtime account.");
-  const refresh = matches.values().next().value;
-  if (!refresh)
+  const match = matches.values().next().value;
+  if (!match)
     throw new Error("The active OpenAI runtime account does not match an available native ChatGPT OAuth credential.");
   const authorization = `Bearer ${access}`;
   return {
+    openaiClientId: match.clientId,
     apiKey: access,
     headers: { Authorization: authorization },
     fingerprint: "",
-    secrets: [access, refresh, authorization],
+    secrets: [access, match.refresh, authorization, match.clientId],
     model,
   };
 }
 
-function accessToken(auth: RequestAuth | undefined): string | undefined {
+export function openAIAuthAccessToken(auth: RequestAuth | undefined): string | undefined {
   if (!auth) return undefined;
   const authorization = Object.entries(auth.headers ?? {}).filter(([name]) => name.toLowerCase() === "authorization");
   if (authorization.length > 1) throw new Error("OpenAI runtime authorization headers are ambiguous.");

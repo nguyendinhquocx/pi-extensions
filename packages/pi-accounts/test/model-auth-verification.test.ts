@@ -10,6 +10,9 @@ import { AccountStore, InMemoryAccountStorageBackend } from "../src/account-stor
 import accountsExtension from "../src/accounts.js";
 import { type AccountProviderId, createBuiltinProviderAdapters } from "../src/oauth.js";
 import { RUNTIME_FAIL_CLOSED_API_KEY, RuntimeAuthCoordinator } from "../src/runtime-auth.js";
+import { isolateAccountEnvironment } from "./isolate-account-environment.js";
+
+isolateAccountEnvironment();
 
 const key = "sk-named-fixture";
 const otherKey = "sk-other-fixture";
@@ -111,6 +114,33 @@ for (const account of ["work", "subscription"]) {
     await f.coordinator.clear(f.context());
   });
 }
+
+test("Kimi checks only models offered to the selected OAuth account", async () => {
+  const f = await fixture("kimi-coding");
+  const models = f.registry.getAll().filter((model) => model.provider === "kimi-coding");
+  const later = models.at(-1);
+  assert.ok(later && later.id !== f.model.id);
+  f.registry.registerProvider("kimi-coding", {
+    models: models.map((model) =>
+      model.id === later.id ? { ...model, headers: { Authorization: `Bearer ${otherKey}` } } : model,
+    ),
+  });
+  await f.store.updateProvider("kimi-coding", (state) => ({
+    ...state,
+    accounts: { ...state.accounts, subscription: { ...oauth, availableModelIds: [f.model.id] } },
+  }));
+  const coordinator = new RuntimeAuthCoordinator(f.mock.pi, {
+    ...f.provider,
+    oauth: { ...f.provider.oauth, toAuth: async (value) => ({ headers: { Authorization: `Bearer ${value.access}` } }) },
+  });
+  const ctx = f.context();
+  assert.equal((await coordinator.ensureActive(ctx, f.store, "subscription")).status, "active");
+  const selectedModel = f.registry.find("kimi-coding", f.model.id);
+  assert.ok(selectedModel);
+  const resolved = await f.registry.getApiKeyAndHeaders(selectedModel);
+  assert.equal(resolved.ok && resolved.headers?.Authorization, `Bearer ${key}`);
+  await coordinator.clear(ctx);
+});
 
 for (const scope of ["provider", "model"] as const) {
   test(`models.json ${scope} authentication cannot silently displace a named key`, async () => {

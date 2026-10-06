@@ -213,6 +213,7 @@ function settingsRuntimeWithToolStamps(toolStamps = true): StampSettingsRuntime 
       locale: "built-in",
       timeZone: "built-in",
       responseTiming: "built-in",
+      showOutputThroughput: "built-in",
       assistantMetadata: "built-in",
       showExactTimeline: "built-in",
       showThinkingLevel: "built-in",

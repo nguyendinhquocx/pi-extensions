@@ -1,4 +1,4 @@
-import { formatElapsedSeconds, type StampAssistantMetadataMode } from "./metadata.js";
+import { formatElapsedSeconds, isReportedTokenCount, type StampAssistantMetadataMode } from "./metadata.js";
 
 export type { StampAssistantMetadataMode } from "./metadata.js";
 export { ASSISTANT_METADATA_MODES } from "./metadata.js";
@@ -22,6 +22,7 @@ export interface StampSettings {
   locale: StampLocale;
   timeZone: StampTimeZone;
   responseTiming: StampResponseTimingMode;
+  showOutputThroughput: boolean;
   assistantMetadata: StampAssistantMetadataMode;
   showExactTimeline: boolean;
   showThinkingLevel: boolean;
@@ -38,6 +39,7 @@ export const DEFAULT_STAMP_SETTINGS: Readonly<StampSettings> = Object.freeze({
   locale: "invariant",
   timeZone: "local",
   responseTiming: "off",
+  showOutputThroughput: false,
   assistantMetadata: "off",
   showExactTimeline: true,
   showThinkingLevel: true,
@@ -58,6 +60,7 @@ export interface MessageStampFormatInput {
   completedAt?: number;
   firstContentAt?: number;
   timeSinceUserMs?: number;
+  outputTokens?: number;
 }
 
 interface ZonedParts {
@@ -158,7 +161,24 @@ export function formatMessageStampLabel(
       ? formatTimeSinceUser(input.timeSinceUserMs)
       : undefined;
   const response = formatResponseTimingLabel(input, settings, label, sinceUser !== undefined);
-  return sinceUser === undefined ? response : `${response} · since user ${sinceUser}`;
+  const throughput = settings.showOutputThroughput ? formatOutputThroughput(input) : undefined;
+  return [response, throughput, sinceUser === undefined ? undefined : `since user ${sinceUser}`]
+    .filter((part) => part !== undefined)
+    .join(" · ");
+}
+
+export function formatOutputThroughput(input: Readonly<MessageStampFormatInput>): string | undefined {
+  if (
+    !isReportedTokenCount(input.outputTokens) ||
+    !isValidTimestamp(input.timestamp) ||
+    !isValidTimestamp(input.completedAt) ||
+    input.completedAt <= input.timestamp
+  )
+    return undefined;
+  const rate = input.outputTokens / ((input.completedAt - input.timestamp) / 1_000);
+  if (!Number.isFinite(rate)) return undefined;
+  const label = rate > 0 && rate < 0.1 ? "<0.1" : rate.toFixed(1).replace(/\.0$/u, "");
+  return `${label} tok/s`;
 }
 
 function formatResponseTimingLabel(

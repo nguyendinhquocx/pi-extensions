@@ -78,6 +78,7 @@ const SETTING_FIELDS = [
   "locale",
   "timeZone",
   "responseTiming",
+  "showOutputThroughput",
   "assistantMetadata",
   "showExactTimeline",
   "showThinkingLevel",
@@ -134,6 +135,11 @@ export function normalizeStampSettingsDocument(value: unknown): NormalizedStampS
     }
     settings.responseTiming = value.responseTiming as StampSettings["responseTiming"];
     sources.responseTiming = "user";
+  }
+  if (Object.hasOwn(value, "showOutputThroughput")) {
+    if (typeof value.showOutputThroughput !== "boolean") return undefined;
+    settings.showOutputThroughput = value.showOutputThroughput;
+    sources.showOutputThroughput = "user";
   }
   if (Object.hasOwn(value, "assistantMetadata")) {
     if (!ASSISTANT_METADATA_MODES.includes(value.assistantMetadata as StampSettings["assistantMetadata"])) {
@@ -395,6 +401,7 @@ function builtInSources(): Record<StampSettingsField, StampSettingsSource> {
     locale: "built-in",
     timeZone: "built-in",
     responseTiming: "built-in",
+    showOutputThroughput: "built-in",
     assistantMetadata: "built-in",
     showExactTimeline: "built-in",
     showThinkingLevel: "built-in",

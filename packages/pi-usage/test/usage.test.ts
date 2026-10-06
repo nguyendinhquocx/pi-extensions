@@ -2584,7 +2584,8 @@ test("the TUI SettingsList describes and applies usage preferences immediately",
   assert.ok(renderedSettings.some((frame) => /Show remaining or used Codex quota in the statusline/.test(frame)));
   assert.ok(renderedSettings.some((frame) => /Use faster Codex routing/.test(frame)));
   assert.doesNotMatch(renderedSettings.join("\n"), /Fireworks account/u);
-  assert.doesNotMatch(renderedSettings.join("\n"), /xAI|warning|undocumented|experimental/iu);
+  assert.doesNotMatch(renderedSettings.join("\n"), /xAI/iu);
+  assert.doesNotMatch(renderedSettings.join("\n"), /ChatGPT companion usage/);
 });
 
 test("the Settings frame respects the live terminal row budget", async () => {

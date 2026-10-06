@@ -13,8 +13,9 @@ export default defineConfig({
     include: ["test/**/*.test.ts", "packages/*/test/**/*.test.ts"],
     globalSetup: ["./test/vitest.global-setup.ts"],
     // Integration files spawn Git, LSP, and MCP children in addition to their workers.
-    // Bound file concurrency so process contention does not exhaust the per-test budget.
-    maxWorkers: Math.min(4, availableParallelism()),
+    // Two fork workers leave room for cold Jiti loads and their child processes
+    // without enlarging the five-second per-test budget. CLI overrides remain available.
+    maxWorkers: Math.min(2, availableParallelism()),
     pool: "forks",
     runner: "./test/vitest.runner.ts",
     setupFiles: ["./test/vitest.setup.ts"],

@@ -68,6 +68,7 @@ test("normalization accepts partial settings, canonicalizes locale and zone, and
         locale: "user",
         timeZone: "user",
         responseTiming: "user",
+        showOutputThroughput: "built-in",
         assistantMetadata: "user",
         showExactTimeline: "user",
         showThinkingLevel: "user",
@@ -95,6 +96,7 @@ test("normalization accepts partial settings, canonicalizes locale and zone, and
     { showCompactAbnormalOutcome: "yes" },
     { showCostSinceUser: "yes" },
     { showTimeSinceUser: "yes" },
+    { showOutputThroughput: "yes" },
     { toolStamps: "yes" },
   ]) {
     assert.equal(normalizeStampSettingsDocument(value), undefined);
@@ -111,6 +113,7 @@ test("normalization accepts partial settings, canonicalizes locale and zone, and
     "showCompactAbnormalOutcome",
     "showCostSinceUser",
     "showTimeSinceUser",
+    "showOutputThroughput",
     "toolStamps",
   ] as const) {
     for (const value of [false, true]) {

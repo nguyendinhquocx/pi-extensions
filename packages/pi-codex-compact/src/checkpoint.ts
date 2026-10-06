@@ -175,19 +175,31 @@ export function parseCheckpointDetails(value: unknown): CodexCheckpointDetails |
   };
 }
 
+function newestCompaction(entries: readonly SessionEntry[]): CompactionEntry | undefined {
+  for (let index = entries.length - 1; index >= 0; index--) {
+    const entry = entries[index];
+    if (entry.type === "compaction") return entry;
+  }
+  return undefined;
+}
+
+// A malformed or newer owned contract still contains opaque history. Compaction
+// must not mistake failed validation for an ordinary plaintext/native summary.
+export function hasActiveCheckpointClaim(entries: readonly SessionEntry[]): boolean {
+  const entry = newestCompaction(entries);
+  return !!entry && isObject(entry.details) && entry.details.kind === CHECKPOINT_KIND;
+}
+
 export function latestCheckpoint(entries: readonly SessionEntry[]):
   | {
       entry: CompactionEntry<CodexCheckpointDetails>;
       details: CodexCheckpointDetails;
     }
   | undefined {
-  for (let index = entries.length - 1; index >= 0; index--) {
-    const entry = entries[index];
-    if (entry.type !== "compaction") continue;
-    const details = parseCheckpointDetails(entry.details);
-    return details ? { entry: entry as CompactionEntry<CodexCheckpointDetails>, details } : undefined;
-  }
-  return undefined;
+  const entry = newestCompaction(entries);
+  if (!entry) return undefined;
+  const details = parseCheckpointDetails(entry.details);
+  return details ? { entry: entry as CompactionEntry<CodexCheckpointDetails>, details } : undefined;
 }
 
 function isOlderCompactionSummary(message: AgentMessage, timestamp: number): boolean {

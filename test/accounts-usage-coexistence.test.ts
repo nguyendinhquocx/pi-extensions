@@ -8,9 +8,11 @@ import accountsExtension, { AccountStore, type StoredOAuthCredential } from "../
 import type { AccountProviderAdapter } from "../packages/pi-accounts/src/oauth.js";
 import { OAUTH_CREDENTIAL_SOURCE_CHANNEL } from "../packages/pi-accounts/src/oauth-credential-source.js";
 import { InMemoryAccountStorageBackend } from "../packages/pi-accounts/src/storage.js";
+import { isolateAccountEnvironment } from "../packages/pi-accounts/test/isolate-account-environment.js";
 import usageExtension from "../packages/pi-usage/src/usage.js";
 import { createMockContext, createMockPi } from "./support.js";
 
+isolateAccountEnvironment();
 initTheme("dark", false);
 
 const originalFetch = globalThis.fetch;

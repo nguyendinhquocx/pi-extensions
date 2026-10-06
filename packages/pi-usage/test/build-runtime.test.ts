@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { DefaultResourceLoader, SettingsManager } from "@earendil-works/pi-coding-agent";
-import { test } from "vitest";
+import { DefaultResourceLoader, type ExtensionContext, SettingsManager } from "@earendil-works/pi-coding-agent";
+import { test, vi } from "vitest";
 import { registerRuntimeBuilderContract } from "../../../test/runtime-builder-contract.js";
 import { createMockContext } from "../../../test/support.js";
 
@@ -69,14 +69,60 @@ test("generated runtime is loadable by Pi's Jiti resource loader", async () => {
       assert.ok(command);
       await command.handler("", context.ctx);
       assert.match(title, /Connected \(native OAuth\)/);
-      assert.match(title, /Numerical usage.*unavailable/);
+      assert.match(title, /Numerical usage requires a companion/);
       assert.match(title, /https:\/\/chatgpt\.com\/settings\/usage/);
       assert.equal(context.statuses.get("usage"), "chatgpt usage: web only");
+
+      const companion = {
+        type: "oauth",
+        access: `e30.${Buffer.from(JSON.stringify({ "https://api.openai.com/auth": { chatgpt_account_id: "synthetic-account" } })).toString("base64url")}.sig`,
+        refresh: "synthetic-companion-refresh",
+        expires: credential.expires,
+        accountId: "synthetic-account",
+      };
+      await writeFile(join(agentDir, "auth.json"), JSON.stringify({ openai: credential, "openai-codex": companion }), {
+        mode: 0o600,
+      });
+      await writeFile(join(agentDir, "pi-usage.json"), JSON.stringify({ openaiCompanionUsage: false }));
+      const registry = (context.ctx as ExtensionContext).modelRegistry;
+      Object.assign(registry, {
+        getAll: () => [model, { ...model, provider: "openai-codex", baseUrl: "https://chatgpt.com/backend-api/codex" }],
+        getProviderAuth: async (id: string) => ({
+          source: "OAuth",
+          auth: { apiKey: id === "openai" ? credential.access : companion.access },
+        }),
+      });
+      const requests: string[] = [];
+      vi.stubGlobal("fetch", async (url: string, init: RequestInit) => {
+        requests.push(url);
+        assert.equal((init.headers as Record<string, string>).Authorization, `Bearer ${companion.access}`);
+        assert.equal((init.headers as Record<string, string>)["ChatGPT-Account-Id"], companion.accountId);
+        assert.ok(!JSON.stringify(init).includes(credential.access));
+        const window = { used_percent: 20, limit_window_seconds: 18000 };
+        return new Response(
+          JSON.stringify(
+            url.endsWith("/apps")
+              ? { items: [{ id: credential.clientId, windows: [window] }] }
+              : { rate_limit: { primary_window: window } },
+          ),
+        );
+      });
+      // Both generated lazy modules are loaded through the real Jiti boundary.
+      for (const handler of extension.handlers.get("session_start") ?? []) await handler({}, context.ctx);
+      await command.handler("", context.ctx);
+      assert.match(title, /Plan limits/);
+      assert.match(title, /App limits/);
+      assert.equal(context.statuses.get("usage"), "chatgpt plan 80% 5h · app 5h");
+      assert.match(title, /Reset time unavailable/);
+      assert.doesNotMatch(title.split("App limits:")[1]?.split("App allowance:")[0] ?? "", /%|█|░/);
+      assert.ok(requests.some((url) => url.endsWith("/apps")));
+      assert.ok(requests.some((url) => url.endsWith("/wham/usage")));
     } finally {
       for (const handler of extension.handlers.get("session_shutdown") ?? []) await handler({}, context.ctx);
     }
     assert.equal(context.statuses.get("usage"), undefined);
   } finally {
+    vi.unstubAllGlobals();
     if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
     else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
     await rm(root, { force: true, recursive: true });

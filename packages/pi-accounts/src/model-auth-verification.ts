@@ -1,6 +1,8 @@
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { AccountProviderAdapter } from "./oauth.js";
 
+export class EffectiveAuthConflictError extends Error {}
+
 /** Verify request-effective auth without rewriting provider or model configuration. */
 export async function verifyModelApiKeyAuth(
   ctx: ExtensionContext,
@@ -18,7 +20,9 @@ export async function verifyModelApiKeyAuth(
     const resolved = await ctx.modelRegistry.getApiKeyAndHeaders(model);
     signal.throwIfAborted();
     if (!resolved.ok || resolved.apiKey !== apiKey) {
-      throw new Error(`Pi could not verify the runtime ${provider.displayName} model authentication.`);
+      throw new EffectiveAuthConflictError(
+        `Pi could not verify the runtime ${provider.displayName} model authentication.`,
+      );
     }
     // Codex writes its generated Authorization last. The SDKs instead let configured headers
     // override generated auth; pi-messages spreads headers after its lowercase authorization.
@@ -45,7 +49,7 @@ export async function verifyModelApiKeyAuth(
       // with its generated lowercase header and be combined by the HTTP Headers parser.
       const duplicate = model.api === "pi-messages" && header === "authorization" && name !== header;
       if (!matches || duplicate) {
-        throw new Error(
+        throw new EffectiveAuthConflictError(
           `${provider.displayName} has a conflicting authentication header. Remove the configured authentication header or select default from /accounts.`,
         );
       }

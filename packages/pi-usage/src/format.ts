@@ -28,7 +28,8 @@ export function formatUsageReport(report: UsageReport, displayState: UsageDispla
   if (report.accountLabel) lines.push(`Account: ${report.accountLabel}`);
   lines.push(`Semantics: ${report.semantics.label}`, "");
 
-  if (report.providerId === "baseten") formatBasetenReport(lines, report);
+  if (report.source === "openai-chatgpt-companion") formatOpenAICompanionReport(lines, report);
+  else if (report.providerId === "baseten") formatBasetenReport(lines, report);
   else if (report.providerId === "openai-codex") formatCodexReport(lines, report);
   else if (report.providerId === "deepseek") formatDeepSeekReport(lines, report);
   else if (report.providerId === "fireworks") formatFireworksReport(lines, report);
@@ -60,6 +61,21 @@ export function formatUsageStatusline(
   codexStatusPercentage: CodexStatusPercentage = "remaining",
 ): string | undefined {
   if (report.providerId === "openai" && report.source === "openai-chatgpt-auth") return "chatgpt usage: web only";
+  if (report.source === "openai-chatgpt-companion") {
+    return `chatgpt ${["chatgpt-plan", "chatgpt-app"]
+      .map((group) => {
+        const windows = report.buckets
+          .filter((bucket) => bucket.groupId === group)
+          .map((bucket) => {
+            const reset = formatResetCountdown(bucket.resetsAt, now);
+            const window = reset ? `↻ ${reset}` : formatWindowLabel(bucket.windowMinutes, "weekly", true);
+            if (group === "chatgpt-app") return window;
+            return `${bucket.remaining === undefined ? "unavailable" : `${bucket.remaining.toFixed(0)}%`} ${window}`;
+          });
+        return `${group === "chatgpt-plan" ? "plan" : "app"} ${windows.join(" ")}`;
+      })
+      .join(" · ")}`;
+  }
   if (report.providerId === "baseten") return formatBasetenStatusline(report);
   if (report.providerId === "openai-codex") {
     return formatCodexStatusline(report, model, now, showCodexResetCountdown, codexStatusPercentage);
@@ -522,6 +538,23 @@ function formatZaiReport(lines: string[], report: UsageReport): void {
   }
 }
 
+function formatOpenAICompanionReport(lines: string[], report: UsageReport): void {
+  for (const group of ["chatgpt-plan", "chatgpt-app"]) {
+    lines.push(group === "chatgpt-plan" ? "Plan limits:" : "App limits:");
+    for (const bucket of report.buckets.filter((bucket) => bucket.groupId === group)) {
+      const value =
+        group === "chatgpt-app"
+          ? bucket.resetsAt === undefined
+            ? "Reset time unavailable"
+            : `resets ${formatReset(bucket.resetsAt)}`
+          : formatPercentBucket(bucket);
+      lines.push(`${formatWindowLabel(bucket.windowMinutes, "weekly", false).padEnd(VALUE_COLUMN)}${value}`);
+    }
+  }
+  for (const metric of report.metrics)
+    lines.push(`${`${metric.label}:`.padEnd(VALUE_COLUMN)}${formatMetricValue(metric.value, metric.unit)}`);
+}
+
 function formatGenericReport(lines: string[], report: UsageReport): void {
   for (const bucket of report.buckets) {
     lines.push(
@@ -668,6 +701,7 @@ function formatResetCountdown(resetsAt: number | undefined, now: number): string
 
 function formatMetricValue(value: number | string, unit: UsageBucket["unit"] | undefined): string {
   if (unit === "usd" && typeof value === "number") return formatUsd(value);
+  if (unit === "percent" && typeof value === "number") return `${value}%`;
   return String(value);
 }
 

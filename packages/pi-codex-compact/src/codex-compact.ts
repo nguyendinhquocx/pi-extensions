@@ -15,14 +15,25 @@ import {
   checkpointMarker,
   createCheckpointDetails,
   fallbackSummary,
+  fingerprintMessage,
+  hasActiveCheckpointClaim,
   latestCheckpoint,
   projectCheckpointContext,
   REPLACEMENT_BYTE_BUDGET,
 } from "./checkpoint.js";
-import { compactionFailureMessage } from "./compaction-failure.js";
+import { recoverCheckpoint, summaryPrefix } from "./checkpoint-recovery.js";
+import {
+  compactionFailureDetail,
+  compactionFailureMessage,
+  inspectFailureResponse,
+  isOAuthOperationRejection,
+  observeSseRejections,
+  streamOperationRejection,
+} from "./compaction-failure.js";
 import { validateContextManagementHistory } from "./context-management.js";
 import { type CompactionRoute, resolveCompactionRoute } from "./model-api.js";
 import { hasCheckpointMarker, rewriteCheckpointMarker } from "./protocol.js";
+import { RejectedRoutes, rejectionRouteKey } from "./rejection-state.js";
 import { requestRemoteCompaction } from "./remote.js";
 import {
   type CodexCompactSettings,
@@ -107,9 +118,26 @@ function notifyFailure(
   error: unknown,
   settings: CodexCompactSettings,
   requestValues: readonly string[],
+  checkpointPresent = false,
+  routePaused = true,
 ): void {
   if (!ctx.hasUI || !settings.notifyOnFallback) return;
-  ctx.ui.notify(compactionFailureMessage(error, requestValues), "warning");
+  const diagnosis = compactionFailureMessage(error, requestValues);
+  const message = routePaused
+    ? diagnosis
+    : diagnosis.replace(
+        "This route is paused for this session; /reload retries it. ",
+        "This failure did not pause the route. ",
+      );
+  ctx.ui.notify(
+    checkpointPresent
+      ? message.replace(
+          "Responses compaction failed; using Pi compaction. ",
+          "Responses compaction failed; applying checkpoint recovery (summary or safe cancellation). ",
+        )
+      : message,
+    "warning",
+  );
 }
 
 function sessionStillOwned(ctx: ExtensionContext, sessionId: string, signal: AbortSignal): boolean {
@@ -122,15 +150,41 @@ async function compactRemotely(
   ctx: ExtensionContext,
   settings: CodexCompactSettings,
   ownerSignal: AbortSignal,
+  rejected: RejectedRoutes,
+  isCurrent: () => boolean,
+  ownsStatus: () => boolean,
   fetch?: typeof globalThis.fetch,
 ) {
   const model = ctx.model;
   const route = resolveCompactionRoute(model, settings);
-  if (route.kind === "native" || !model) return undefined;
   const signal = AbortSignal.any([event.signal, ownerSignal]);
   if (signal.aborted) return { cancel: true };
+  if (route.kind === "native" || !model)
+    return settings.enabled && hasActiveCheckpointClaim(ctx.sessionManager.getBranch()) ? { cancel: true } : undefined;
+  const publicRouteKey = rejectionRouteKey(model, route);
+  let routeKey = publicRouteKey;
+  let endpointObserved = false;
+  let paused = false;
   const sessionId = ctx.sessionManager.getSessionId();
+  const checkpoint = latestCheckpoint(event.branchEntries);
+  const checkpointPresent = hasActiveCheckpointClaim(event.branchEntries);
+  const leafId = event.branchEntries.at(-1)?.id;
+  const stillCurrent = () =>
+    sessionStillOwned(ctx, sessionId, signal) && isCurrent() && ctx.sessionManager.getBranch().at(-1)?.id === leafId;
   let requestValues: string[] = [];
+  let remoteAttempted = false;
+  let rejectionError: Error | undefined;
+  const remoteController = new AbortController();
+  const remoteSignal = AbortSignal.any([signal, remoteController.signal]);
+  const recordRejection = (error: Error) => {
+    if (!remoteAttempted || !stillCurrent() || rejectionError) return;
+    rejectionError = error;
+    rejected.add(routeKey);
+    rejected.observe(publicRouteKey, routeKey);
+    // Stream callbacks can run inside a TransformStream; abort after that callback
+    // unwinds to avoid reentrant stream teardown. This controller owns only this task.
+    queueMicrotask(() => remoteController.abort());
+  };
   ctx.ui.setStatus(
     STATUS_KEY,
     route.protocol === "context-management"
@@ -140,8 +194,10 @@ async function compactRemotely(
         : "Responses Compact API…",
   );
   try {
+    if (checkpointPresent && !checkpoint)
+      throw new Error("The active opaque checkpoint is invalid or unsupported; history preserved");
     const auth = await ctx.modelRegistry.getApiKeyAndHeaders(model);
-    if (!sessionStillOwned(ctx, sessionId, signal)) return { cancel: true };
+    if (!stillCurrent()) return { cancel: true };
     if (!auth.ok) throw new Error(auth.error);
     // Keep resolved request values local and redact them if the provider echoes them in an error.
     requestValues = [auth.apiKey, ...Object.values(auth.headers ?? {}), ...Object.values(auth.env ?? {})].filter(
@@ -164,7 +220,7 @@ async function compactRemotely(
       apiKey: auth.apiKey,
       headers: auth.headers,
       env: auth.env,
-      signal,
+      signal: remoteSignal,
       priorCheckpoint: current.prior
         ? {
             marker: checkpointMarker(current.prior.checkpointId),
@@ -173,9 +229,50 @@ async function compactRemotely(
         : undefined,
       requestTimeoutMs: settings.requestTimeoutMs,
       maxRetries: settings.maxRetries,
-      fetch,
+      onProviderStreamEvent: (raw) => {
+        const error = streamOperationRejection(raw);
+        if (error) recordRejection(error);
+      },
+      fetch: async (input, init) => {
+        if (!stillCurrent()) throw new Error("Compaction ownership changed before dispatch");
+        const endpoint = input instanceof Request ? input.url : String(input);
+        routeKey = rejectionRouteKey(model, route, endpoint);
+        endpointObserved = true;
+        rejected.observe(publicRouteKey, routeKey);
+        paused = rejected.has(routeKey);
+        if (paused) {
+          // Cancel only the remote subrequest, including adapter-owned retries.
+          // Keep the parent compaction signal available for checkpoint recovery.
+          remoteController.abort();
+          return Response.json(
+            { error: { message: "Remote compaction route is paused after an OAuth operation rejection" } },
+            { status: 409, headers: { "x-should-retry": "false" } },
+          );
+        }
+        remoteAttempted = true;
+        const response = await (fetch ?? globalThis.fetch)(input, init);
+        if (!stillCurrent()) {
+          void response.body?.cancel().catch(() => undefined);
+          throw new Error("Compaction ownership changed after response");
+        }
+        const signals = [
+          remoteSignal,
+          ...(init?.signal ? [init.signal] : []),
+          ...(input instanceof Request ? [input.signal] : []),
+        ];
+        const requestSignal = AbortSignal.any(signals);
+        const failure = await inspectFailureResponse(response, requestSignal);
+        if (!stillCurrent()) {
+          void failure.response.body?.cancel().catch(() => undefined);
+          throw new Error("Compaction ownership changed during error inspection");
+        }
+        if (failure.rejection) recordRejection(failure.rejection);
+        return route.protocol === "responses-compact"
+          ? failure.response
+          : observeSseRejections(failure.response, requestSignal, recordRejection);
+      },
     });
-    if (!sessionStillOwned(ctx, sessionId, signal)) return { cancel: true };
+    if (!stillCurrent()) return { cancel: true };
     const replacementHistory =
       route.protocol === "context-management"
         ? validateContextManagementHistory(response.replacementHistory ?? [], {
@@ -204,13 +301,78 @@ async function compactRemotely(
       },
     };
   } catch (error) {
-    if (signal.aborted || ctx.sessionManager.getSessionId() !== sessionId) {
+    if (!stillCurrent()) return { cancel: true };
+    if (remoteAttempted && isOAuthOperationRejection(error))
+      recordRejection(error instanceof Error ? error : new Error(String(error)));
+    if (!paused || remoteAttempted)
+      notifyFailure(ctx, rejectionError ?? error, settings, requestValues, checkpointPresent, rejected.has(routeKey));
+    if (!checkpointPresent) return undefined;
+    if (!checkpoint) return { cancel: true };
+    if (settings.checkpointRecovery === "cancel") return { cancel: true };
+    try {
+      const current = projectedCurrentMessages(event, model, route);
+      if (!current.prior) throw new Error("Checkpoint recovery lost its checkpoint");
+      const messages = summaryPrefix(current.messages, keptMessages(event), fingerprintMessage);
+      const auth = await ctx.modelRegistry.getApiKeyAndHeaders(model);
+      if (!stillCurrent()) return { cancel: true };
+      if (!auth.ok) throw new Error(auth.error);
+      requestValues = [
+        ...requestValues,
+        auth.apiKey,
+        ...Object.values(auth.headers ?? {}),
+        ...Object.values(auth.env ?? {}),
+      ].filter((value): value is string => typeof value === "string" && value.length > 0);
+      const provider = ctx.modelRegistry.getProvider(model.provider);
+      if (!provider) throw new Error("The active Responses provider is unavailable");
+      ctx.ui.setStatus(STATUS_KEY, "Checkpoint recovery summary…");
+      const compaction = await recoverCheckpoint(
+        {
+          provider,
+          model,
+          context: { systemPrompt: ctx.getSystemPrompt(), messages: convertToLlm(messages), tools: [] },
+          profile: route.profile,
+          protocol: route.protocol,
+          apiKey: auth.apiKey,
+          headers: auth.headers,
+          env: auth.env,
+          signal,
+          priorCheckpoint: {
+            marker: checkpointMarker(current.prior.checkpointId),
+            replacementHistory: current.prior.replacementHistory,
+          },
+          requestTimeoutMs: settings.requestTimeoutMs,
+          maxRetries: settings.maxRetries,
+          fetch: async (input, init) => {
+            if (!stillCurrent()) throw new Error("Checkpoint recovery ownership changed before dispatch");
+            const endpoint = new URL(input instanceof Request ? input.url : String(input));
+            // Unary compaction derives /responses/compact from the provider's
+            // inference endpoint. Compare that exact public dispatch identity.
+            if (route.protocol === "responses-compact") endpoint.pathname += "/compact";
+            if (endpointObserved && rejectionRouteKey(model, route, endpoint.toString()) !== routeKey) {
+              return Response.json(
+                { error: { message: "Checkpoint recovery backend changed before dispatch" } },
+                { status: 400, headers: { "x-should-retry": "false" } },
+              );
+            }
+            return (fetch ?? globalThis.fetch)(input, init);
+          },
+        },
+        event,
+      );
+      if (!stillCurrent()) return { cancel: true };
+      return { compaction };
+    } catch (recoveryError) {
+      if (stillCurrent() && ctx.hasUI && settings.notifyOnFallback) {
+        ctx.ui.notify(
+          `Checkpoint recovery could not complete; compaction cancelled and history preserved. ${compactionFailureDetail(recoveryError, requestValues)}`,
+          "warning",
+        );
+      }
       return { cancel: true };
     }
-    notifyFailure(ctx, error, settings, requestValues);
-    return undefined;
   } finally {
-    if (!ownerSignal.aborted && ctx.sessionManager.getSessionId() === sessionId) {
+    remoteController.abort();
+    if (!ownerSignal.aborted && ctx.sessionManager.getSessionId() === sessionId && ownsStatus()) {
       ctx.ui.setStatus(STATUS_KEY, undefined);
     }
   }
@@ -222,37 +384,89 @@ export function createCodexCompactExtension(
   return (pi) => {
     const providerWarnings = new Set<string>();
     const settingsRuntime = options.settingsRuntime ?? createCodexCompactSettingsRuntime();
-    let sessionController = new AbortController();
-    let generation = 0;
+    type Owner = {
+      controller: AbortController;
+      rejected: RejectedRoutes;
+      sessionId: string;
+      operation?: AbortController;
+    };
+    const owners = new WeakMap<object, Owner>();
+    const ownerFor = (ctx: ExtensionContext): Owner => {
+      let owner = owners.get(ctx.sessionManager);
+      const sessionId = ctx.sessionManager.getSessionId();
+      if (owner?.controller.signal.aborted) return owner;
+      if (!owner || owner.sessionId !== sessionId) {
+        owner?.controller.abort();
+        if (owner) ctx.ui.setStatus(STATUS_KEY, undefined);
+        owner = { controller: new AbortController(), rejected: new RejectedRoutes(), sessionId };
+        owners.set(ctx.sessionManager, owner);
+      }
+      return owner;
+    };
+
+    const cancelOperation = (ctx: ExtensionContext) => {
+      const owner = owners.get(ctx.sessionManager);
+      const operation = owner?.operation;
+      if (!owner || !operation) return;
+      operation.abort();
+      if (owners.get(ctx.sessionManager) === owner && owner.operation === operation) {
+        owner.operation = undefined;
+        ctx.ui.setStatus(STATUS_KEY, undefined);
+      }
+    };
 
     pi.registerCommand("codex-compact", {
       description: "Compact now or configure Responses compaction",
       handler: async (args, ctx) => {
         if (args.trim()) throw new Error("Usage: /codex-compact");
-        const ownerGeneration = generation;
-        const controller = sessionController;
+        const owner = ownerFor(ctx);
+        const controller = owner.controller;
         const { showCodexCompactMenu } = await import("./settings-menu.js");
-        if (ownerGeneration !== generation || controller.signal.aborted) return;
+        if (owners.get(ctx.sessionManager) !== owner || controller.signal.aborted) return;
         await showCodexCompactMenu(settingsRuntime, ctx, {
           signal: controller.signal,
-          isCurrent: () => ownerGeneration === generation && !controller.signal.aborted,
+          isCurrent: () =>
+            owners.get(ctx.sessionManager) === owner &&
+            !controller.signal.aborted &&
+            ctx.sessionManager.getSessionId() === owner.sessionId,
+          isPaused: () => {
+            const route = resolveCompactionRoute(ctx.model, settingsRuntime.get().settings);
+            return (
+              !!ctx.model && route.kind === "remote" && owner.rejected.hasObserved(rejectionRouteKey(ctx.model, route))
+            );
+          },
+          hasCheckpoint: () => hasActiveCheckpointClaim(ctx.sessionManager.getBranch()),
+          canReplayCheckpoint: () => {
+            const checkpoint = activeCheckpoint(ctx);
+            return (
+              !!checkpoint && isCheckpointCompatible(checkpoint.details, ctx.model, settingsRuntime.get().settings)
+            );
+          },
         });
       },
     });
 
     pi.on("session_start", async (_event, ctx) => {
-      sessionController.abort();
+      owners.get(ctx.sessionManager)?.controller.abort();
+      const owner: Owner = {
+        controller: new AbortController(),
+        rejected: new RejectedRoutes(),
+        sessionId: ctx.sessionManager.getSessionId(),
+      };
+      owners.set(ctx.sessionManager, owner);
       ctx.ui.setStatus(STATUS_KEY, undefined);
-      sessionController = new AbortController();
-      generation += 1;
-      const ownerGeneration = generation;
       const sessionId = ctx.sessionManager.getSessionId();
       providerWarnings.clear();
       let state: Readonly<CodexCompactSettingsState>;
       try {
-        state = await settingsRuntime.reload(sessionController.signal);
+        state = await settingsRuntime.reload(owner.controller.signal);
       } catch (error) {
-        if (sessionController.signal.aborted || ownerGeneration !== generation) return;
+        if (
+          owner.controller.signal.aborted ||
+          owners.get(ctx.sessionManager) !== owner ||
+          ctx.sessionManager.getSessionId() !== sessionId
+        )
+          return;
         if (ctx.hasUI) {
           ctx.ui.notify(
             `Could not load pi-codex-compact.json; using defaults. ${terminalText(error instanceof Error ? error.message : String(error))}`,
@@ -262,8 +476,8 @@ export function createCodexCompactExtension(
         return;
       }
       if (
-        sessionController.signal.aborted ||
-        ownerGeneration !== generation ||
+        owner.controller.signal.aborted ||
+        owners.get(ctx.sessionManager) !== owner ||
         ctx.sessionManager.getSessionId() !== sessionId
       ) {
         return;
@@ -276,9 +490,41 @@ export function createCodexCompactExtension(
       }
     });
 
-    pi.on("session_before_compact", (event, ctx) =>
-      compactRemotely(pi, event, ctx, settingsRuntime.get().settings, sessionController.signal, options.fetch),
-    );
+    pi.on("session_before_compact", (event, ctx) => {
+      const owner = ownerFor(ctx);
+      cancelOperation(ctx);
+      const operation = new AbortController();
+      owner.operation = operation;
+      const settings = settingsRuntime.get().settings;
+      const model = ctx.model;
+      const route = resolveCompactionRoute(model, settings);
+      const key = model && route.kind === "remote" ? rejectionRouteKey(model, route) : undefined;
+      const isCurrent = () => {
+        if (owners.get(ctx.sessionManager) !== owner || owner.operation !== operation || operation.signal.aborted)
+          return false;
+        const currentSettings = settingsRuntime.get().settings;
+        const currentRoute = resolveCompactionRoute(ctx.model, currentSettings);
+        return (
+          JSON.stringify(currentSettings) === JSON.stringify(settings) &&
+          (key === undefined ||
+            (!!ctx.model && currentRoute.kind === "remote" && rejectionRouteKey(ctx.model, currentRoute) === key))
+        );
+      };
+      return compactRemotely(
+        pi,
+        event,
+        ctx,
+        settings,
+        AbortSignal.any([owner.controller.signal, operation.signal]),
+        owner.rejected,
+        isCurrent,
+        () => owners.get(ctx.sessionManager) === owner && owner.operation === operation,
+        options.fetch,
+      ).finally(() => {
+        if (owner.operation === operation) owner.operation = undefined;
+        operation.abort();
+      });
+    });
 
     pi.on("context", (event, ctx) => {
       if (!settingsRuntime.get().settings.enabled) return undefined;
@@ -299,7 +545,10 @@ export function createCodexCompactExtension(
       return rewriteCheckpointMarker(event.payload, marker, checkpoint.details.replacementHistory);
     });
 
+    pi.on("session_tree", (_event, ctx) => cancelOperation(ctx));
+
     pi.on("model_select", (event, ctx) => {
+      cancelOperation(ctx);
       if (!settingsRuntime.get().settings.enabled) return;
       const settings = settingsRuntime.get().settings;
       const checkpoint = activeCheckpoint(ctx);
@@ -316,8 +565,12 @@ export function createCodexCompactExtension(
     });
 
     pi.on("session_shutdown", async (_event, ctx) => {
-      generation += 1;
-      sessionController.abort();
+      const owner = owners.get(ctx.sessionManager) ?? ownerFor(ctx);
+      owner.controller.abort();
+      owner.rejected = new RejectedRoutes();
+      owner.operation = undefined;
+      // Keep an aborted tombstone until session_start so queued old-context
+      // events cannot recreate an active controller after shutdown.
       providerWarnings.clear();
       ctx.ui.setStatus(STATUS_KEY, undefined);
       await settingsRuntime.flush();

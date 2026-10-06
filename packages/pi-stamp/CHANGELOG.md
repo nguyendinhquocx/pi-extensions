@@ -1,5 +1,11 @@
 # @narumitw/pi-stamp
 
+## 0.53.0
+
+### Minor Changes
+
+- ec0db07: Add an opt-in output throughput setting that shows reported output tokens per creation-to-completion second on the existing stamp line, independently of response timing and assistant metadata. Preserve raw accounting inputs for later display and support compatible historical stamps.
+
 ## 0.52.0
 
 ### Minor Changes

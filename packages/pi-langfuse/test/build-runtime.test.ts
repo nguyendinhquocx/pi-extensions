@@ -1,18 +1,16 @@
 import assert from "node:assert/strict";
-import { execFile } from "node:child_process";
 import { cp, mkdir, mkdtemp, readdir, readFile, rename, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
-import { promisify } from "node:util";
 import { DefaultResourceLoader, SettingsManager } from "@earendil-works/pi-coding-agent";
+import { getLangfuseTracerProvider, setLangfuseTracerProvider } from "@langfuse/tracing";
 import { test } from "vitest";
 import { createMockContext } from "../../../test/support.js";
 
 const packageRoot = resolve("packages/pi-langfuse");
 const builderUrl = pathToFileURL(join(packageRoot, "scripts/build-runtime.mjs")).href;
 const forbiddenEagerInputs: readonly string[] = ["src/runtime.ts"];
-const execFileAsync = promisify(execFile);
 
 type BuildMetadata = {
   outputs?: Record<
@@ -230,40 +228,63 @@ test("generated host controller remains registered across resource reloads", asy
 test("generated package copies share runtime session capabilities", async () => {
   const builder = await loadBuilder();
   const root = await mkdtemp(join(packageRoot, ".pi-langfuse-build-test-"));
+  let runtime: { shutdown(): Promise<void> } | undefined;
+  let tracing: { dispose(): Promise<void> } | undefined;
+  const runtimeSlots = ["v1", "v2"].map((version) => {
+    const key = Symbol.for(`@narumitw/pi-langfuse/runtime/${version}`);
+    return { key, descriptor: Object.getOwnPropertyDescriptor(globalThis, key) };
+  });
+  const previousProvider = getLangfuseTracerProvider();
   try {
+    // Own a fresh runtime without closing any runtime inherited from another test.
+    for (const { key } of runtimeSlots) Reflect.deleteProperty(globalThis, key);
     const firstOutput = join(root, "first");
     const secondOutput = join(root, "second");
     await builder.buildRuntime({ outputDirectory: firstOutput });
     await cp(firstOutput, secondOutput, { recursive: true });
-    const script = join(root, "cross-copy.mjs");
-    await writeFile(
-      script,
-      `const first = await import(${JSON.stringify(pathToFileURL(join(firstOutput, "index.js")).href)});
-const second = await import(${JSON.stringify(pathToFileURL(join(secondOutput, "index.js")).href)});
-const options = { config: { publicKey: "pk-copy", secretKey: "sk-copy", baseUrl: "https://example.test" }, env: false };
-const firstRuntime = await first.createLangfuseRuntime(options);
-const secondRuntime = await second.createLangfuseRuntime(options);
-const tracing = second.createPiLangfuseSession(secondRuntime, { sessionId: "copy-session" });
-const handlers = new Map();
-tracing.extension({ on: (event, handler) => handlers.set(event, handler) });
-await handlers.get("session_start")({}, {
-  cwd: "/workspace",
-  mode: "rpc",
-  sessionManager: { getSessionId: () => "pi-session", getLeafId: () => undefined },
-  getContextUsage: () => undefined,
-});
-await tracing.flush();
-console.log(JSON.stringify({ sameRuntime: firstRuntime === secondRuntime, active: tracing.active }));
-await tracing.dispose();
-await firstRuntime.shutdown();
-`,
-      "utf8",
+    // Distinct emitted modules in one process exercise the shared runtime contract
+    // directly, without making child startup or stdout a second test protocol.
+    const first = await import(pathToFileURL(join(firstOutput, "index.js")).href);
+    const second = await import(pathToFileURL(join(secondOutput, "index.js")).href);
+    assert.notEqual(first, second, "the copies must have independent emitted module identities");
+    const options = {
+      config: { publicKey: "pk-copy", secretKey: "sk-copy", baseUrl: "https://example.test" },
+      env: false,
+    };
+    const firstRuntime = await first.createLangfuseRuntime(options);
+    runtime = firstRuntime;
+    const secondRuntime = await second.createLangfuseRuntime(options);
+    assert.equal(firstRuntime, secondRuntime);
+    const controller = second.createPiLangfuseSession(secondRuntime, { sessionId: "copy-session" });
+    tracing = controller;
+    const handlers = new Map();
+    controller.extension({ on: (event: string, handler: unknown) => handlers.set(event, handler) });
+    await handlers.get("session_start")(
+      {},
+      {
+        cwd: "/workspace",
+        mode: "rpc",
+        sessionManager: { getSessionId: () => "pi-session", getLeafId: () => undefined },
+        getContextUsage: () => undefined,
+      },
     );
-
-    const { stdout } = await execFileAsync(process.execPath, [script], { cwd: packageRoot, timeout: 4_000 });
-    assert.deepEqual(JSON.parse(stdout), { sameRuntime: true, active: true });
+    await controller.flush();
+    assert.equal(controller.active, true);
   } finally {
-    await rm(root, { force: true, recursive: true });
+    try {
+      await tracing?.dispose();
+    } finally {
+      try {
+        await runtime?.shutdown();
+      } finally {
+        for (const { key, descriptor } of runtimeSlots) {
+          if (descriptor) Object.defineProperty(globalThis, key, descriptor);
+          else Reflect.deleteProperty(globalThis, key);
+        }
+        setLangfuseTracerProvider(previousProvider);
+        await rm(root, { force: true, recursive: true });
+      }
+    }
   }
 });
 

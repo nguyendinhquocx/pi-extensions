@@ -31,6 +31,7 @@ test("stamp menu exposes Main, Settings, Status, Help, and read-only invalid sta
       ["locale", "Invariant"],
       ["timeZone", "Local"],
       ["responseTiming", "Off"],
+      ["showOutputThroughput", "Hide"],
       ["showExactTimeline", "Show"],
       ["assistantMetadata", "Off"],
       ["showThinkingLevel", "Show"],
@@ -54,6 +55,7 @@ test("stamp menu exposes Main, Settings, Status, Help, and read-only invalid sta
   if (status.kind !== "detail") assert.fail("Expected detail screen");
   assert.match(status.lines.join("\n"), /24-hour.*Built-in/u);
   assert.match(status.lines.join("\n"), /Response timing: Off · Built-in/u);
+  assert.match(status.lines.join("\n"), /Output throughput: Hide · Built-in/u);
   assert.match(status.lines.join("\n"), /Exact timeline: Show · Built-in/u);
   assert.match(status.lines.join("\n"), /Assistant metadata: Off · Built-in/u);
   assert.match(status.lines.join("\n"), /Thinking level: Show · Built-in/u);
@@ -313,7 +315,7 @@ test("RPC custom input retries a rejected value before saving", async () => {
     {
       kind: "select",
       title:
-        "Stamp\n24-hour · seconds · Day changes · Invariant · Local · Timing off · Timeline shown · Metadata off · Thinking shown · Abnormal shown · Cost since user hidden · Time since user hidden · Tool stamps hidden",
+        "Stamp\n24-hour · seconds · Day changes · Invariant · Local · Timing off · Throughput hidden · Timeline shown · Metadata off · Thinking shown · Abnormal shown · Cost since user hidden · Time since user hidden · Tool stamps hidden",
       options: ["Settings", "Status", "Help", "Close"],
       response: "Settings",
     },
@@ -327,6 +329,7 @@ test("RPC custom input retries a rejected value before saving", async () => {
         "Locale (Invariant)",
         "Time zone (Local)",
         "Response timing (Off)",
+        "Show output throughput (Hide)",
         "Exact timeline (Show)",
         "Assistant metadata (Off)",
         "Thinking level (Show)",
@@ -366,6 +369,7 @@ test("RPC custom input retries a rejected value before saving", async () => {
         "Locale (en-US)",
         "Time zone (Local)",
         "Response timing (Off)",
+        "Show output throughput (Hide)",
         "Exact timeline (Show)",
         "Assistant metadata (Off)",
         "Thinking level (Show)",
@@ -380,7 +384,7 @@ test("RPC custom input retries a rejected value before saving", async () => {
     {
       kind: "select",
       title:
-        "Stamp\n24-hour · seconds · Day changes · en-US · Local · Timing off · Timeline shown · Metadata off · Thinking shown · Abnormal shown · Cost since user hidden · Time since user hidden · Tool stamps hidden",
+        "Stamp\n24-hour · seconds · Day changes · en-US · Local · Timing off · Throughput hidden · Timeline shown · Metadata off · Thinking shown · Abnormal shown · Cost since user hidden · Time since user hidden · Tool stamps hidden",
       options: ["Settings", "Status", "Help", "Close"],
       response: "Close",
     },
@@ -464,6 +468,7 @@ function memorySettingsRuntime(
       locale: "built-in",
       timeZone: "built-in",
       responseTiming: "built-in",
+      showOutputThroughput: "built-in",
       assistantMetadata: "built-in",
       showExactTimeline: "built-in",
       showThinkingLevel: "built-in",

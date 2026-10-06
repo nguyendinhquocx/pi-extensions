@@ -2,6 +2,7 @@ import {
   type AuthEvent,
   type AuthPrompt,
   cleanupSessionResources,
+  type LoginOptions,
   type OAuthAuth,
   type OAuthCredential,
   type ProviderAuthInteraction,
@@ -10,7 +11,9 @@ import {
   type ExtensionCommandContext,
   type ExtensionContext,
   ExtensionSelectorComponent,
+  getAgentDir,
   LoginDialogComponent,
+  SettingsManager,
 } from "@earendil-works/pi-coding-agent";
 
 export const SUPPORTED_PROVIDER_IDS = [
@@ -156,17 +159,27 @@ export function createOAuthInteraction(
   };
 }
 
+/**
+ * Supplies the same login context as Pi's `/login`: flows such as Sign in with
+ * ChatGPT send this installation's stable device ID, which Pi keeps in the
+ * global settings (project settings are ignored) and creates on first use.
+ */
+export function createLoginOptions(cwd: string): LoginOptions {
+  return { getDeviceId: () => SettingsManager.create(cwd, getAgentDir()).getOrCreateDeviceId() };
+}
+
 export async function loginWithOAuthUI(
   ctx: ExtensionCommandContext,
   adapter: AccountProviderAdapter,
   signal: AbortSignal,
 ): Promise<OAuthCredential> {
   const oauth = resolveProviderOAuth(adapter, ctx);
+  const options = createLoginOptions(ctx.cwd);
   if (ctx.mode !== "tui") {
-    return oauth.login(createOAuthInteraction(ctx, adapter.displayName, signal));
+    return oauth.login(createOAuthInteraction(ctx, adapter.displayName, signal), options);
   }
   const result = await ctx.ui.custom<NativeOAuthLoginResult>((tui, _theme, _keybindings, done) => {
-    const flow = new NativeOAuthLoginFlow(tui, adapter, oauth, signal, done);
+    const flow = new NativeOAuthLoginFlow(tui, adapter, oauth, options, signal, done);
     flow.start();
     return flow;
   });
@@ -196,6 +209,7 @@ class NativeOAuthLoginFlow {
     private readonly tui: ConstructorParameters<typeof LoginDialogComponent>[0],
     adapter: AccountProviderAdapter,
     private readonly oauth: ProviderOwnedOAuth,
+    private readonly options: LoginOptions,
     ownerSignal: AbortSignal,
     private readonly done: (result: NativeOAuthLoginResult) => void,
   ) {
@@ -218,11 +232,14 @@ class NativeOAuthLoginFlow {
       this.finish({ ok: false, error: new Error("Login cancelled") });
       return;
     }
-    const login = this.oauth.login({
-      signal: this.signal,
-      prompt: (prompt) => this.prompt(prompt),
-      notify: (event) => this.notify(event),
-    });
+    const login = this.oauth.login(
+      {
+        signal: this.signal,
+        prompt: (prompt) => this.prompt(prompt),
+        notify: (event) => this.notify(event),
+      },
+      this.options,
+    );
     void abortable(login, this.signal).then(
       (credential) => this.finish({ ok: true, credential }),
       (error) => this.finish({ ok: false, error }),
@@ -347,7 +364,7 @@ async function abortable<T>(operation: Promise<T>, signal: AbortSignal): Promise
 function createLazyProviderOwnedOAuth(providerId: AccountProviderId, loader: ProviderModuleLoader): ProviderOwnedOAuth {
   const load = () => loadProviderOwnedOAuth(providerId, loader);
   return {
-    login: async (interaction) => (await load()).login(interaction),
+    login: async (interaction, options) => (await load()).login(interaction, options),
     refresh: async (credential, signal) => (await load()).refresh(credential, signal),
     toAuth: async (credential) => (await load()).toAuth(credential),
   };

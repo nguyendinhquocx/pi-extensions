@@ -10,6 +10,8 @@ This protocol is an anonymous, synchronous request-and-offer exchange between tr
 
 It does not identify credential owners, select or switch accounts, expose account labels, read another extension's files, synchronize credentials across processes, or authorize a credential without provider-specific verification.
 
+Consumers that need to wait for the current provider sync before collecting offers can use [OAuth Credential Readiness v1](oauth-credential-readiness-v1.md). Account discovery and explicit selection belong to [Named Account Protocols v1](accounts-v1.md); neither changes the synchronous offer contract below.
+
 The words **MUST**, **MUST NOT**, **SHOULD**, and **MAY** are normative.
 
 ## Contract

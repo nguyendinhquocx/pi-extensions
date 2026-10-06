@@ -4,6 +4,9 @@ import { join } from "node:path";
 import { DefaultResourceLoader, SettingsManager } from "@earendil-works/pi-coding-agent";
 import { test } from "vitest";
 import { registerRuntimeBuilderContract } from "../../../test/runtime-builder-contract.js";
+import { isolateAccountEnvironment } from "./isolate-account-environment.js";
+
+isolateAccountEnvironment();
 
 const { packageRoot, loadBuilder } = registerRuntimeBuilderContract({
   packageId: "pi-accounts",

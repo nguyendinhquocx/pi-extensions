@@ -107,6 +107,7 @@ function event(entries: SessionEntry[], signal: AbortSignal): SessionBeforeCompa
 async function harness(
   options: {
     settings?: Partial<CodexCompactSettings>;
+    withCheckpoint?: boolean;
     fetch?: typeof globalThis.fetch;
     mode?: "tui" | "rpc" | "print" | "json";
     body?: unknown;
@@ -123,7 +124,7 @@ async function harness(
     refresh: "synthetic-refresh-not-used",
     expires: Date.now() + 3_600_000,
   });
-  const entries = branch();
+  const entries = options.withCheckpoint ? branch() : branch().slice(0, 1);
   const original = structuredClone(entries);
   const requests: string[] = [];
   const mock = createMockPi();
@@ -174,9 +175,12 @@ async function harness(
 }
 
 for (const protocol of ["auto", "responses-compact", "remote-v2"] as const) {
-  test(`${protocol}: real OpenAI adapter's HTTP 401 preserves native fallback and existing checkpoint`, async () => {
-    const h = await harness({ settings: { protocol, maxRetries: 2 } });
-    assert.equal(await h.run(), undefined, "Pi can perform native compaction");
+  test(`${protocol}: real OpenAI adapter's HTTP 401 cancels unsafe native handoff and preserves checkpoint`, async () => {
+    const h = await harness({
+      withCheckpoint: true,
+      settings: { protocol, maxRetries: 2, checkpointRecovery: "cancel" },
+    });
+    assert.deepEqual(await h.run(), { cancel: true }, "opaque history is not handed to native text-only compaction");
     assert.deepEqual(
       h.requests,
       [
@@ -194,11 +198,11 @@ for (const protocol of ["auto", "responses-compact", "remote-v2"] as const) {
     const notice = h.notifications[0];
     assert.equal(notice.level, "warning");
     assert.match(notice.message, /ChatGPT OAuth.*not authorized.*compaction operation/);
-    assert.match(notice.message, /using Pi compaction/);
+    assert.match(notice.message, /Without a checkpoint, using Pi compaction/);
     assert.match(notice.message, /hardened_oauth_rule_missing/);
     assert.match(notice.message, /rejected_by_hardened_oauth_boundary/);
-    assert.match(notice.message, /disable remote compaction/);
-    assert.match(notice.message, /without an opaque checkpoint; disabling also stops checkpoint replay/);
+    assert.match(notice.message, /route is paused for this session/);
+    assert.match(notice.message, /Compatible checkpoint replay remains enabled/);
     assert.doesNotMatch(notice.message, /upgrade|expired|broken|synthetic-oauth-access|synthetic-refresh/);
 
     const replay = await h.mock.events.get("before_provider_request")?.[0](
@@ -216,10 +220,10 @@ for (const protocol of ["auto", "responses-compact", "remote-v2"] as const) {
 
 for (const reason of ["reload", "resume", "fork"] as const) {
   test(`${reason}: persisted replay survives rejection, a fresh factory, and changed resolved credentials`, async () => {
-    const h = await harness();
-    assert.equal(await h.run(), undefined);
+    const h = await harness({ withCheckpoint: true, settings: { checkpointRecovery: "cancel" } });
+    assert.deepEqual(await h.run(), { cancel: true });
     h.setResolvedKey("sk-synthetic-api-key");
-    assert.equal(await h.run(), undefined, "repeated compaction still falls back without replacing the checkpoint");
+    assert.deepEqual(await h.run(), { cancel: true }, "rejected route cancels while preserving checkpoint replay");
     const fresh = createMockPi();
     createCodexCompactExtension({ settingsRuntime: runtime({}) })(fresh.pi);
     await fresh.events.get("session_start")?.[0]({ type: "session_start", reason }, h.ctx);
@@ -254,7 +258,7 @@ for (const reason of ["reload", "resume", "fork"] as const) {
     assert.deepEqual(first.input[0], { type: "compaction", encrypted_content: "existing-opaque" });
     assert.deepEqual(second.input, [...first.input, later]);
     assert.deepEqual(h.entries, h.original);
-    assert.equal(h.requests.length, 2, "replay does not probe auth or backend capabilities");
+    assert.equal(h.requests.length, 1, "rejected attempts and replay do not probe auth or backend capabilities");
   });
 }
 

@@ -126,3 +126,30 @@ test("aborted settings operations do not publish", async () => {
   await assert.rejects(runtime.update({ enabled: false }, controller.signal), /aborted/i);
   assert.equal((await loadCodexCompactSettings(path)).kind, "missing");
 });
+
+test("checkpoint recovery defaults, validation, queued persistence and failed writes", async () => {
+  assert.equal(normalizeCodexCompactSettings({})?.checkpointRecovery, "summarize");
+  for (const value of ["cancel", "summarize"] as const)
+    assert.equal(normalizeCodexCompactSettings({ checkpointRecovery: value })?.checkpointRecovery, value);
+  for (const value of [null, false, 0, "native", {}, []])
+    assert.equal(normalizeCodexCompactSettings({ checkpointRecovery: value }), undefined);
+  const path = await tempSettingsPath();
+  await writeFile(path, '{"future":{"keep":true}}');
+  const runtime = createCodexCompactSettingsRuntime(path);
+  await runtime.reload();
+  await Promise.all([
+    runtime.update({ checkpointRecovery: "cancel" }),
+    runtime.update({ checkpointRecovery: "summarize" }),
+  ]);
+  await runtime.flush();
+  assert.equal((await runtime.reload()).settings.checkpointRecovery, "summarize");
+  assert.deepEqual(JSON.parse(await readFile(path, "utf8")).future, { keep: true });
+  await assert.rejects(runtime.update({ checkpointRecovery: "invalid" as "cancel" }));
+  assert.equal(runtime.get().settings.checkpointRecovery, "summarize");
+  await runtime.update({ checkpointRecovery: "cancel" });
+  assert.equal((await runtime.reload()).settings.checkpointRecovery, "cancel");
+  await writeFile(path, '{"checkpointRecovery":"unknown"}');
+  await runtime.reload();
+  await assert.rejects(runtime.update({ checkpointRecovery: "cancel" }), /Cannot overwrite/);
+  assert.equal(await readFile(path, "utf8"), '{"checkpointRecovery":"unknown"}');
+});

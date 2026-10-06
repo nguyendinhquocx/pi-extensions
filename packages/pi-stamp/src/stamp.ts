@@ -14,11 +14,13 @@ import {
   type AssistantCostSinceUserData,
   type AssistantMetadataData,
   captureAssistantMetadata,
+  captureCompletedOutputTokens,
   captureReportedCost,
   formatAssistantMetadataLines,
   formatToolStampLabel,
   isAssistantEstimatedCost,
   isAssistantMetadataData,
+  isReportedTokenCount,
   isStampThinkingLevel,
   type StampThinkingLevel,
   sanitizeMetadataText,
@@ -93,6 +95,12 @@ export interface AssistantMessageStampDataV7 extends Omit<AssistantMessageStampD
   costSinceUser?: number;
 }
 
+export interface AssistantMessageStampDataV8 extends Omit<AssistantMessageStampDataV7, "version" | "timeSinceUserMs"> {
+  version: 8;
+  outputTokens: number;
+  timeSinceUserMs?: number;
+}
+
 export interface ToolStampDataV1 {
   version: 1;
   kind: "tool";
@@ -110,7 +118,8 @@ export type MessageStampData =
   | AssistantMessageStampDataV4
   | AssistantMessageStampDataV5
   | AssistantMessageStampDataV6
-  | AssistantMessageStampDataV7;
+  | AssistantMessageStampDataV7
+  | AssistantMessageStampDataV8;
 export type StampEntryData = MessageStampData | ToolStampDataV1;
 
 export interface StampExtensionOptions {
@@ -175,7 +184,7 @@ export function isMessageStampData(value: unknown): value is MessageStampData {
           value.firstContentAt <= value.completedAt))
     );
   }
-  if (value.version === 6 || value.version === 7) {
+  if (value.version === 6 || value.version === 7 || value.version === 8) {
     return (
       value.role === "assistant" &&
       hasOnlyKeys(value, [
@@ -189,11 +198,16 @@ export function isMessageStampData(value: unknown): value is MessageStampData {
         "thinkingLevel",
         "estimatedCost",
         "costSinceUser",
-        ...(value.version === 7 ? ["timeSinceUserMs"] : []),
+        ...(value.version !== 6 ? ["timeSinceUserMs"] : []),
+        ...(value.version === 8 ? ["outputTokens"] : []),
       ]) &&
-      (value.version !== 7 ||
-        (isValidTimestamp(value.completedAt) &&
-          typeof value.timeSinceUserMs === "number" &&
+      (value.version === 6 || isValidTimestamp(value.completedAt)) &&
+      (value.version !== 8 ||
+        (isReportedTokenCount(value.outputTokens) &&
+          (value.completedAt as number) > value.timestamp &&
+          (!Object.hasOwn(value, "metadata") || captureCompletedOutputTokens(value.metadata) !== undefined))) &&
+      (!(value.version === 7 || Object.hasOwn(value, "timeSinceUserMs")) ||
+        (typeof value.timeSinceUserMs === "number" &&
           Number.isFinite(value.timeSinceUserMs) &&
           value.timeSinceUserMs >= 0)) &&
       (!Object.hasOwn(value, "metadata") || isAssistantMetadataData(value.metadata)) &&
@@ -202,7 +216,7 @@ export function isMessageStampData(value: unknown): value is MessageStampData {
         ? isAssistantEstimatedCost(value.costSinceUser) &&
           (!Object.hasOwn(value, "estimatedCost") ||
             (isAssistantEstimatedCost(value.estimatedCost) && value.estimatedCost <= value.costSinceUser))
-        : value.version === 7 && !Object.hasOwn(value, "estimatedCost")) &&
+        : value.version !== 6 && !Object.hasOwn(value, "estimatedCost")) &&
       hasValidOptionalAssistantTiming(value, value.timestamp)
     );
   }
@@ -273,10 +287,17 @@ export function createStampEntryRenderer(getSettings: () => Readonly<StampSettin
     return dynamicRightAlignedText(
       memoizeStampLines(getSettings, (settings) => {
         const hasAssistantTiming = data.version !== 1 && data.version !== 2;
+        const outputTokens =
+          data.version === 8
+            ? data.outputTokens
+            : "metadata" in data
+              ? captureCompletedOutputTokens(data.metadata)
+              : undefined;
         const label = formatMessageStampLabel(
           {
             timestamp: data.timestamp,
-            ...(data.version === 7 ? { timeSinceUserMs: data.timeSinceUserMs } : {}),
+            outputTokens,
+            ...(data.version === 7 || data.version === 8 ? { timeSinceUserMs: data.timeSinceUserMs } : {}),
             ...(data.version === 1 ? {} : { previousTimestamp: data.previousTimestamp }),
             ...(hasAssistantTiming
               ? {
@@ -298,16 +319,17 @@ export function createStampEntryRenderer(getSettings: () => Readonly<StampSettin
         const timelineLines =
           options.expanded && settings.showExactTimeline ? exactTimelineLines(timelineObservations) : [];
         const metadataLines =
-          data.version === 4 || data.version === 5 || data.version === 6 || data.version === 7
+          data.version === 4 || data.version === 5 || data.version === 6 || data.version === 7 || data.version === 8
             ? formatAssistantMetadataLines(
                 data.metadata,
                 settings.assistantMetadata,
                 options.expanded,
-                (data.version === 5 || data.version === 6 || data.version === 7) && settings.showThinkingLevel
+                (data.version === 5 || data.version === 6 || data.version === 7 || data.version === 8) &&
+                  settings.showThinkingLevel
                   ? data.thinkingLevel
                   : undefined,
                 settings.showCompactAbnormalOutcome,
-                (data.version === 6 || data.version === 7) &&
+                (data.version === 6 || data.version === 7 || data.version === 8) &&
                   data.costSinceUser !== undefined &&
                   settings.showCostSinceUser
                   ? {
@@ -369,6 +391,7 @@ function haveSameStampSettings(left: Readonly<StampSettings>, right: Readonly<St
     left.locale === right.locale &&
     left.timeZone === right.timeZone &&
     left.responseTiming === right.responseTiming &&
+    left.showOutputThroughput === right.showOutputThroughput &&
     left.assistantMetadata === right.assistantMetadata &&
     left.showExactTimeline === right.showExactTimeline &&
     left.showThinkingLevel === right.showThinkingLevel &&
@@ -510,80 +533,51 @@ export default function stampExtension(pi: ExtensionAPI, options: StampExtension
     timeSinceUserMs: number | undefined,
   ): void => {
     const matchingTiming = timing?.timestamp === timestamp ? timing : undefined;
-    const metadata =
-      settingsRuntime.get().settings.assistantMetadata === "off" ? undefined : captureAssistantMetadata(message);
-    if (costSinceUserData || timeSinceUserMs !== undefined) {
-      const common = {
-        role: "assistant" as const,
-        timestamp,
-        ...(lastStampTimestamp === undefined ? {} : { previousTimestamp: lastStampTimestamp }),
-        ...(matchingTiming
-          ? {
-              completedAt: matchingTiming.completedAt,
-              ...(matchingTiming.firstContentAt === undefined ? {} : { firstContentAt: matchingTiming.firstContentAt }),
-            }
-          : {}),
-        ...(metadata === undefined ? {} : { metadata }),
-        ...(thinkingLevel === undefined ? {} : { thinkingLevel }),
+    const settings = settingsRuntime.get().settings;
+    const metadata = settings.assistantMetadata === "off" ? undefined : captureAssistantMetadata(message);
+    const outputTokens = settings.showOutputThroughput ? captureCompletedOutputTokens(message) : undefined;
+    const common = {
+      role: "assistant" as const,
+      timestamp,
+      ...(lastStampTimestamp === undefined ? {} : { previousTimestamp: lastStampTimestamp }),
+      ...(matchingTiming
+        ? {
+            completedAt: matchingTiming.completedAt,
+            ...(matchingTiming.firstContentAt === undefined ? {} : { firstContentAt: matchingTiming.firstContentAt }),
+          }
+        : {}),
+      ...(metadata === undefined ? {} : { metadata }),
+      ...(thinkingLevel === undefined ? {} : { thinkingLevel }),
+    };
+    let richStamp: MessageStampData | undefined;
+    if (outputTokens !== undefined && matchingTiming && matchingTiming.completedAt > timestamp) {
+      richStamp = {
+        ...common,
+        version: 8,
+        completedAt: matchingTiming.completedAt,
+        outputTokens,
+        ...(timeSinceUserMs === undefined ? {} : { timeSinceUserMs }),
+        ...costSinceUserData,
       };
-      let stamp: AssistantMessageStampDataV6 | AssistantMessageStampDataV7 | undefined;
-      if (timeSinceUserMs !== undefined && matchingTiming) {
-        stamp = {
-          ...common,
-          version: 7,
-          completedAt: matchingTiming.completedAt,
-          timeSinceUserMs,
-          ...costSinceUserData,
-        };
-      } else if (costSinceUserData) {
-        stamp = { ...common, version: 6, ...costSinceUserData };
-      }
-      if (isMessageStampData(stamp)) {
-        pi.appendEntry<MessageStampData>(STAMP_ENTRY_TYPE, stamp);
-        lastStampTimestamp = timestamp;
-        return;
-      }
+    } else if (timeSinceUserMs !== undefined && matchingTiming) {
+      richStamp = {
+        ...common,
+        version: 7,
+        completedAt: matchingTiming.completedAt,
+        timeSinceUserMs,
+        ...costSinceUserData,
+      };
+    } else if (costSinceUserData) {
+      richStamp = { ...common, version: 6, ...costSinceUserData };
+    } else if (metadata && thinkingLevel !== undefined) {
+      richStamp = { ...common, version: 5, metadata, thinkingLevel };
+    } else if (metadata) {
+      richStamp = { ...common, version: 4, metadata };
     }
-    if (metadata && thinkingLevel !== undefined) {
-      const stamp: AssistantMessageStampDataV5 = {
-        version: 5,
-        role: "assistant",
-        timestamp,
-        ...(lastStampTimestamp === undefined ? {} : { previousTimestamp: lastStampTimestamp }),
-        ...(matchingTiming
-          ? {
-              completedAt: matchingTiming.completedAt,
-              ...(matchingTiming.firstContentAt === undefined ? {} : { firstContentAt: matchingTiming.firstContentAt }),
-            }
-          : {}),
-        metadata,
-        thinkingLevel,
-      };
-      if (isMessageStampData(stamp)) {
-        pi.appendEntry<AssistantMessageStampDataV5>(STAMP_ENTRY_TYPE, stamp);
-        lastStampTimestamp = timestamp;
-        return;
-      }
-    }
-    if (metadata) {
-      const stamp: AssistantMessageStampDataV4 = {
-        version: 4,
-        role: "assistant",
-        timestamp,
-        ...(lastStampTimestamp === undefined ? {} : { previousTimestamp: lastStampTimestamp }),
-        ...(matchingTiming
-          ? {
-              completedAt: matchingTiming.completedAt,
-              ...(matchingTiming.firstContentAt === undefined ? {} : { firstContentAt: matchingTiming.firstContentAt }),
-            }
-          : {}),
-        metadata,
-      };
-      if (isMessageStampData(stamp)) {
-        pi.appendEntry<AssistantMessageStampDataV4>(STAMP_ENTRY_TYPE, stamp);
-        lastStampTimestamp = timestamp;
-        return;
-      }
+    if (isMessageStampData(richStamp)) {
+      pi.appendEntry<MessageStampData>(STAMP_ENTRY_TYPE, richStamp);
+      lastStampTimestamp = timestamp;
+      return;
     }
     if (!matchingTiming) {
       appendVersion2Stamp("assistant", timestamp);

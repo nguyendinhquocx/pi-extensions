@@ -14,7 +14,8 @@ Pi still decides when compaction runs and keeps its normal `/compact`, threshold
 - Validates and persists one bounded opaque checkpoint that survives compatible reloads, resumes, and forks.
 - Replays the latest checkpoint while preserving newer conversation and extension context.
 - Supports repeated and cross-protocol compaction by carrying the previous checkpoint forward.
-- Falls back to Pi's native plaintext compaction on non-cancellation failures.
+- Falls back to Pi-native compaction without a checkpoint; with a checkpoint, tries a checkpoint-aware plaintext summary or safely cancels.
+- Pauses repeated attempts on a session route after an exact OAuth operation rejection, without disabling compatible replay.
 - Provides `/codex-compact` for effective-route status, settings, and manual compaction.
 
 **Context Management is experimental and requires explicit opt-in.** It makes a normal inference request and consumes the active route's quota or API usage; support depends on the backend, model, and account. Default routing is unchanged.
@@ -58,7 +59,7 @@ After successful remote compaction, compatible requests replay the opaque checkp
 Signing in does not guarantee compaction permission; see [ChatGPT OAuth rejection](#chatgpt-oauth-rejection) if the backend refuses the operation.
 
 With the default `auto` protocol, Codex Responses uses Remote V2 while OpenAI and Azure OpenAI Responses use unary `responses/compact`.
-When the active model uses another API, compaction remains entirely Pi-native.
+When the active model uses another API, compaction remains Pi-native unless an active opaque checkpoint requires safe cancellation.
 To opt in a compatible custom API, add it to `apiProfiles` as described below.
 
 ## 💬 Commands
@@ -66,7 +67,7 @@ To opt in a compatible custom API, add it to `apiProfiles` as described below.
 Run `/codex-compact` to inspect the effective compaction path, change settings, or request manual compaction in TUI mode.
 It accepts no arguments.
 RPC reports the manual settings path without compacting; print and JSON modes reject the command.
-Closing the menu with Escape or Ctrl+C does not compact the session.
+Closing the menu with Escape or Ctrl+C does not compact the session. Menu rendering inherits Kit's minimum one-cell width; synthetic zero-column renders are clamped to one cell.
 
 Manual compaction uses **Responses Remote V2**, **Responses Compact API**, opt-in **Responses Context Management**, or **Pi native**, as described in [Settings](#-settings).
 Pi's built-in `/compact` remains available and follows the same extension hook.
@@ -92,7 +93,8 @@ There is no environment-variable or project-level override.
   "requestTimeoutMs": 300000,
   "maxRetries": 2,
   "replacementTokenBudget": 64000,
-  "notifyOnFallback": true
+  "notifyOnFallback": true,
+  "checkpointRecovery": "summarize"
 }
 ```
 
@@ -104,7 +106,8 @@ There is no environment-variable or project-level override.
 | `requestTimeoutMs` | `300000` | Integer from 30,000 to 600,000 ms | Bound one extension-owned remote request. | Keep five minutes; increase only for a consistently slow connection. |
 | `maxRetries` | `2` | Integer from 0 to 2 | Retry transient provider transport failures before Pi fallback. | Keep two; use zero when diagnosing the first failure. |
 | `replacementTokenBudget` | `64000` | Integer from 8,000 to 128,000 tokens | Bound approximate retained user-message text; for Context Management, bound serialized post-checkpoint output instead. | Keep 64K. Context Management fails closed rather than truncating an oversized suffix. |
-| `notifyOnFallback` | `true` | Boolean | Warn when remote compaction fails and Pi-native compaction takes over. | Keep enabled so silent fallback does not hide protocol or entitlement problems. |
+| `notifyOnFallback` | `true` | Boolean | Warn on remote failure and unsuccessful checkpoint recovery. | Keep enabled so silent fallback does not hide protocol or entitlement problems. |
+| `checkpointRecovery` | `"summarize"` | `"summarize"` or `"cancel"` | After remote failure with an active checkpoint, try a normal inference summary or cancel without an extra request. Summary failure always cancels. | Use `summarize` for recovery; use `cancel` to avoid summary quota and preserve the checkpoint. |
 
 Missing fields use defaults.
 Settings reload on every `session_start`, including `/reload`, resume, and fork.
@@ -146,7 +149,7 @@ A custom provider or proxy is eligible when its model explicitly uses one of the
 For a custom API label, eligibility is opt-in: `apiProfiles` must map that exact non-built-in label to `"codex-responses-v1"`. The default is empty, and an unconfigured custom API remains Pi-native.
 `codex-responses-v1` uses Remote V2 in `auto` mode. With `responses-compact` explicitly selected, it retains the Codex Compact request fields, including tools and reasoning. The provider must honor Pi's public `transport: "sse"`, `onPayload`, and injected `fetch` options, and its backend must support the selected compaction protocol and opaque item replay. The profile declares compatibility; it does not probe the backend.
 The extension does not send a separate capability probe or automatically retry a failed billable request through the other protocol.
-A failed remote attempt falls back to Pi native, but an ordinary request cannot transparently recover after an incompatible provider has already received an existing opaque checkpoint.
+A failed remote attempt uses native fallback without a checkpoint and [checkpoint recovery](#checkpoint-recovery) otherwise. An ordinary request cannot transparently recover after an incompatible provider has already received an existing opaque checkpoint.
 Provider provenance is stored for diagnosis but is not a replay gate.
 Switching providers can replay a checkpoint only when the API label, compatibility profile, and exact model ID still match. Custom API checkpoints also require a current matching `apiProfiles` entry; removing or changing it leaves Pi's visible fallback marker plus retained recent messages in context.
 
@@ -164,7 +167,7 @@ This route was verified with Pi's official **OpenAI → Sign in with ChatGPT**, 
 
 Pi still decides when to compact. Only the extension-owned compaction request adds `context_management: [{"type":"compaction","compact_threshold":1024}]`, forces streaming with `store: false`, requests `reasoning.encrypted_content` while preserving other `include` fields and the provider's thinking effort, and appends a deterministic maintenance-only user message. Original instructions, history, and tool schemas remain provider-owned; `tool_choice: "none"` prevents new tool work. The request uses no `compaction_trigger`, server-side response ID, alternate credentials, or endpoint rewrite.
 
-Successful completed-item events are authoritative: a stream can emit several checkpoints while omitting them from terminal response output. The extension persists the latest checkpoint and its exact completed assistant/reasoning suffix only after successful completion (`response.completed` or Codex's `response.done`). Post-checkpoint reasoning must have non-empty encrypted content for stateless replay; terminal output can supply missing encryption before publication, otherwise compaction falls back to Pi native. It never executes generated tools or silently truncates that suffix. Missing checkpoints, malformed/unsafe output, exceeded bounds, permission errors, and unsupported capabilities fall back to native compaction; very short history may not cross the 1,024-token server threshold. The normal inference can consume quota even if no checkpoint is returned, and native fallback can make an additional summarization request. Safe generated output is retained as provider context, not displayed as new assistant work.
+Successful completed-item events are authoritative: a stream can emit several checkpoints while omitting them from terminal response output. The extension persists the latest checkpoint and its exact completed assistant/reasoning suffix only after successful completion (`response.completed` or Codex's `response.done`). Post-checkpoint reasoning must have non-empty encrypted content for stateless replay; terminal output can supply missing encryption before publication, otherwise the request follows the documented fallback/recovery policy. It never executes generated tools or silently truncates that suffix. Missing checkpoints, malformed/unsafe output, exceeded bounds, permission errors, and unsupported capabilities follow the same fallback/recovery policy; very short history may not cross the 1,024-token server threshold. The normal inference can consume quota even if no checkpoint is returned, and fallback/recovery can make an additional summarization request. Safe generated output is retained as provider context, not displayed as new assistant work.
 
 Ordinary requests do not enable server compaction or add maintenance instructions. To stop new Context Management attempts, select `auto` or another protocol while leaving the extension enabled for compatible replay. Older package versions do not understand this protocol's checkpoints; retain a version supporting Context Management for sessions containing them.
 
@@ -183,15 +186,33 @@ type=rejected_by_hardened_oauth_boundary
 message=This ChatPass credential is not authorized for the requested operation.
 ```
 
-The extension reports this operation-specific rejection and returns control to Pi-native compaction without publishing a new checkpoint or switching credentials, providers, or protocols.
+The extension reports this operation-specific rejection and pauses that remote operation for the current session route. Without an active checkpoint, it returns control to Pi-native compaction. With a checkpoint, it applies [checkpoint recovery](#checkpoint-recovery). It does not automatically switch credentials, providers, or remote compaction protocols.
 This does not prove the account is broken or ordinary chat is unavailable, and upgrading Pi alone is not a guaranteed fix.
 See OpenAI's [errors and recovery](https://developers.openai.com/siwc/token-sharing-open-source/errors-and-recovery) for route and grant checks; re-login is not a guaranteed remedy for an endpoint permission rejection.
 
-For sessions without an existing opaque checkpoint, turn **Remote compaction** off in `/codex-compact` → **Settings**, or set `"enabled": false` in the documented global settings file and reload Pi, to use native compaction directly.
-**Disabling remote compaction also disables opaque checkpoint replay.** If a session already contains a checkpoint, leave the extension enabled to preserve compatible replay and allow native fallback on rejected attempts; disabling it exposes only the fallback marker and retained recent messages.
+Later compactions skip the rejected operation while compatible checkpoint replay remains enabled, even with fallback notifications off. Rejections are isolated by session manager and provider/model/API/profile/protocol plus the configured and dispatched endpoint origin/path (and Azure's `api-version`). Pi/provider authentication and request preparation still run to resolve the effective backend; rejected dispatches stop before network work. Changing the resolved compaction protocol (including selecting Context Management) or the backend permits a new attempt. Switching back remains paused.
+
+Session start, `/reload`, resume, fork, replacement, and shutdown clear rejection state. The first 128 rejected identities are retained until reset; further identities follow ordinary failure handling without evicting earlier ones. The menu reports the last observed dispatch identity, which is rechecked at the next compaction. URL credentials and query secrets are excluded; non-Azure query routing changes, header-/body-only backend changes, and credentials on an otherwise unchanged route require `/reload` to retry. State is temporary, not a settings write or an entitlement cache.
+
+For sessions without an existing opaque checkpoint, you may also turn **Remote compaction** off in `/codex-compact` → **Settings**, or set `"enabled": false` in the documented global settings file and reload Pi, to use native compaction directly.
+**Disabling remote compaction also disables opaque checkpoint replay.** If a session already contains a checkpoint, leave the extension enabled to preserve compatible replay and allow checkpoint recovery on rejected attempts; disabling it exposes only the fallback marker and retained recent messages.
 The selected route shown in the menu is not an entitlement check, and forcing Remote V2 is not a verified workaround for this rejection.
 
-## 🔄 How it works
+### Checkpoint recovery
+
+Pi's native summary generator reads the checkpoint's plaintext placeholder, not its encrypted history. Handing a checkpoint-bearing session directly to that generator can lose older context when the new native summary replaces it.
+
+On remote failure, **Checkpoint recovery → Summarize** (the default) makes a normal streaming inference request through the same compatible provider/model and Pi-managed authentication. It replays the encrypted checkpoint as real Responses input items, summarizes the projected history before Pi's retained cut point, and disables tool work. A completed, bounded plaintext summary replaces the opaque checkpoint in the active context; Pi retains the recent tail and file-operation metadata. Ordinary requests do not receive these summary instructions. Summaries are lossy: completion and transport validation cannot prove every prior fact was preserved.
+
+This request consumes inference quota/API usage and can fail if inference, checkpoint replay, or the projected cut point is unsupported. Summary recovery also requires the provider's public `onProviderStreamEvent` callbacks for completion validation; adapters that omit them cancel safely. Malformed or unsupported metadata bearing this extension's checkpoint kind cancels before any remote or summary request instead of being mistaken for plaintext history. Missing, partial, unsafe, inconsistent, oversized, or stale results cancel compaction without publishing a replacement. Cancellation, session changes, and shutdown abort owned work. Model selection and completed tree navigation cancel in-flight compaction without clearing route pauses. **Checkpoint recovery → Cancel** skips the summary request entirely and preserves the existing history. Neither choice changes fallback without a checkpoint, and failure never falls through to text-only native summarization when an active checkpoint is present. If compaction is cancelled, switch to a supported protocol/model or reload after resolving authorization; a context-limit turn may remain blocked until compaction succeeds.
+
+Disabling remote compaction still disables replay; the recovery setting does not override `enabled: false`. Keep the extension enabled when the active session needs its checkpoint. Hosted checkpoint-to-text recovery remains unverified; deterministic adapter tests establish request plumbing and safe publication, not hosted recall.
+
+### Codex CLI routing comparison
+
+The examined Codex CLI source uses Remote V2 on its resolved Responses route: ChatGPT/Codex OAuth defaults to the Codex backend, while API keys default to the OpenAI API. This extension already uses V2 for Codex-profile `auto` routes; OpenAI/Azure `auto` remains unary Compact API. Select Remote V2 explicitly to use that request form on a compatible API-key backend. Pi's newer OpenAI ChatGPT token-sharing OAuth is a different grant: neither an API label nor Codex CLI source establishes its compaction permission. No authentication-dependent automatic routing is added.
+
+## 🧭 How it works
 
 1. Pi prepares compaction and selects the recent message suffix it will retain.
 2. If an earlier compatible checkpoint is present, the extension identifies its boundary from the summary persisted on the active `CompactionEntry` and validates the retained suffix fingerprints.
@@ -234,7 +255,7 @@ These hard byte ceilings are intentionally not configurable.
   Removing the extension exposes only the portability fallback marker and Pi-retained recent messages.
 - The package does not reproduce Codex core's context-window UUID/number lineage, previous-model compatibility fallback, exact pre-turn ordering, or exact mid-turn model-session ownership.
 - Pi's public `getAllTools()` metadata does not expose `constrainedSampling`; Remote V2 preserves active tool order, names, descriptions, and parameter schemas but cannot reproduce that optional field.
-- Remote failure falls back to Pi's plaintext summary, so a session can contain both remote opaque and native compaction entries over time.
+- Successful checkpoint recovery intentionally replaces active opaque history with a lossy plaintext summary; failed recovery preserves the checkpoint and cancels compaction. Raw session history can contain both opaque and plaintext compaction entries.
 - Settings concurrency is coordinated only within one Pi process; separate processes rely on the final conflict check.
 
 ## 📊 Benchmark

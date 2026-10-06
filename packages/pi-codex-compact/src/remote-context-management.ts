@@ -100,7 +100,10 @@ export async function requestContextManagement(request: RemoteCompactionRequest)
         delete (prepared as Record<string, unknown>).previous_response_id;
         return prepared;
       },
-      onProviderStreamEvent: (event) => collector.observe(event),
+      onProviderStreamEvent: (event) => {
+        request.onProviderStreamEvent?.(event);
+        collector.observe(event);
+      },
     });
     const usage = await Promise.race([collectProviderUsage(stream, signal), aborted]);
     if (signal.aborted) throw abortError();

@@ -1,5 +1,15 @@
 # @narumitw/pi-usage
 
+## 0.62.0
+
+### Minor Changes
+
+- 504f6d8: Add default-off experimental native ChatGPT plan/app quota reporting through a separately validated same-account Codex companion login. Keep plan and app limits distinct, fail closed on invalid or ambiguous registration data, and preserve web-only reporting when disabled or the companion login is absent. Native inference, legacy Codex behavior, and reset restrictions are unchanged.
+
+### Patch Changes
+
+- e32b7e7: Fix experimental ChatGPT companion usage confirmation leaving Settings unfinished and the usage footer blank. Return to Settings after confirmation and refresh usage when the screen closes, without requiring a reload.
+
 ## 0.61.2
 
 ### Patch Changes

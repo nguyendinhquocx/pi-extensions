@@ -178,7 +178,7 @@ for (const protocol of ["remote-v2", "responses-compact", "context-management"] 
         },
       });
       const pending = mock.events.get("session_before_compact")?.[0]?.(
-        { type: "session_before_compact", signal: new AbortController().signal },
+        { type: "session_before_compact", branchEntries: [], signal: new AbortController().signal },
         ctx,
       );
       await started;

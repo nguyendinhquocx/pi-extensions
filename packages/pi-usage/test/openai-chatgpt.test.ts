@@ -69,7 +69,7 @@ test("native OpenAI OAuth reports authentication only, with no quota, countdown,
     assert.equal(report.metrics[0]?.value, "Connected (native OAuth)");
     const text = formatUsageReport(report, "current");
     assert.match(text, /OpenAI ChatGPT Plan Status/);
-    assert.match(text, /Numerical usage and reset times are unavailable/);
+    assert.match(text, /Numerical usage requires a companion/);
     assert.match(text, /https:\/\/chatgpt\.com\/settings\/usage/);
     assert.doesNotMatch(text, /synthetic|[0-9]+%/);
     assert.equal(formatUsageStatusline(report), "chatgpt usage: web only");

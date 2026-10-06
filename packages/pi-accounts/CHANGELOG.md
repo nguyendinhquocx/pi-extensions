@@ -1,5 +1,17 @@
 # @narumitw/pi-accounts
 
+## 0.53.0
+
+### Minor Changes
+
+- 1a81acc: Support OpenAI and Meta OAuth accounts alongside all existing built-in login providers. Add named API key profiles for supported providers with native API key authentication, preserving session-local selection, private credential storage, and fail-closed activation. API key entry uses visible native TUI/RPC input. Verify effective model authentication and fail closed when configured headers would select a different account, without rewriting user configuration.
+- 629be1d: Add versioned `pi.events` protocols for read-only named-account topology discovery and explicit session-scoped OAuth or API-key account activation. Return credential-free typed outcomes, preserve session isolation and stale-activation safety, and support restoring Pi's built-in authentication without introducing automatic rotation or routing policy.
+- 40bf607: Allow `PI_ACCOUNT=<name>` to select the named account for every supported provider in the current Pi process without changing saved defaults or session selections. Missing or invalid names fail closed instead of falling back to another account.
+
+### Patch Changes
+
+- 2537959: Wait for queued credential writes before replying to account topology and activation requests, preserve activation results across routine same-account syncs while honoring consumer cancellation, verify effective authentication for every available model, and classify credential read and resolved auth conflicts with specific error codes.
+
 ## 0.52.2
 
 ### Patch Changes

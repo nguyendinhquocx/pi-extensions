@@ -60,6 +60,18 @@ export function captureReportedCost(value: unknown): number | undefined {
   return isAssistantEstimatedCost(value.usage.cost.total) ? value.usage.cost.total : undefined;
 }
 
+// Output already includes any provider-accounted reasoning; never add reasoning tokens again.
+export function captureCompletedOutputTokens(value: unknown): number | undefined {
+  if (
+    !isRecord(value) ||
+    !["stop", "toolUse", "length"].includes(value.stopReason as string) ||
+    !isRecord(value.usage) ||
+    !isReportedTokenCount(value.usage.output)
+  )
+    return undefined;
+  return value.usage.output;
+}
+
 export function captureAssistantMetadata(value: unknown): AssistantMetadataData | undefined {
   if (!isRecord(value)) return undefined;
   const api = sanitizeMetadataText(value.api);
@@ -383,7 +395,7 @@ function isUnsafeTerminalCodePoint(codePoint: number): boolean {
   );
 }
 
-function isReportedTokenCount(value: unknown): value is number {
+export function isReportedTokenCount(value: unknown): value is number {
   return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
 }
 
