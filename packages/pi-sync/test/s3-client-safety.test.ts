@@ -3,6 +3,43 @@ import { test } from "vitest";
 import { S3Client } from "../src/backends/s3/s3-client.js";
 import { requiredConfig } from "./helpers.js";
 
+test("S3 reads request a signed identity representation without changing mutation headers", async () => {
+  const seen: Array<{ method: string; encoding: string | null; authorization: string }> = [];
+  await withFetch(
+    async (_input, init) => {
+      const headers = new Headers(init?.headers);
+      seen.push({
+        method: init?.method ?? "GET",
+        encoding: headers.get("accept-encoding"),
+        authorization: headers.get("authorization") ?? "",
+      });
+      return Response.json({ snapshot: "ok" }, { headers: { etag: '"object"' } });
+    },
+    async () => {
+      const client = new S3Client(s3Config());
+      await client.getJson("latest.json");
+      await client.getBuffer("snapshots/old.json.gz");
+      await client.diagnoseRead("latest.json");
+      await client.putJson("latest.json", {});
+      await client.delete("probe");
+    },
+  );
+  assert.deepEqual(
+    seen.map(({ method, encoding }) => ({ method, encoding })),
+    [
+      { method: "GET", encoding: "identity" },
+      { method: "GET", encoding: "identity" },
+      { method: "GET", encoding: "identity" },
+      { method: "PUT", encoding: null },
+      { method: "DELETE", encoding: null },
+    ],
+  );
+  for (const request of seen) {
+    if (request.method === "GET") assert.match(request.authorization, /SignedHeaders=accept-encoding;/u);
+    else assert.doesNotMatch(request.authorization, /accept-encoding/u);
+  }
+});
+
 test("S3 JSON reads reject oversized response bodies", async () => {
   await withFetch(
     async () => new Response(JSON.stringify({ value: "x".repeat(2 * 1024 * 1024) })),
@@ -53,7 +90,10 @@ test("R2 retries a rejected session token once without the token", async () => {
   const seenTokens: Array<string | null> = [];
   await withFetch(
     async (_input, init) => {
-      const token = new Headers(init?.headers).get("x-amz-security-token");
+      const headers = new Headers(init?.headers);
+      assert.equal(headers.get("accept-encoding"), "identity");
+      assert.match(headers.get("authorization") ?? "", /SignedHeaders=accept-encoding;/u);
+      const token = headers.get("x-amz-security-token");
       seenTokens.push(token);
       if (token) {
         return new Response("<Error><Code>InvalidArgument</Code><Message>X-Amz-Security-Token</Message></Error>", {

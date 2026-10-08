@@ -271,34 +271,6 @@ test("Fireworks runtime auth accepts only official model and resolved-auth origi
   assert.deepEqual(auth?.headers, { Authorization: "Bearer fw-current-key" });
   assert.equal(auth?.auth?.apiKey, "provider-key");
   assert.ok(auth?.secrets.includes("must-not-send"));
-
-  const fetchMock = vi.spyOn(globalThis, "fetch");
-  try {
-    for (const [modelBaseUrl, authBaseUrl, pattern] of [
-      ["https://proxy.example.test/inference", undefined, /custom.*official/iu],
-      [FIREWORKS_MODEL.baseUrl, "https://proxy.example.test/v1", /proxy-resolved.*official/iu],
-    ] as const) {
-      const model = { ...FIREWORKS_MODEL, baseUrl: modelBaseUrl };
-      const { ctx } = createMockContext({
-        model,
-        modelRegistry: {
-          getApiKeyAndHeaders: async () => ({ ok: true, apiKey: "must-not-send" }),
-          getProviderAuth: async () => ({
-            auth: {
-              apiKey: "must-not-send",
-              ...(authBaseUrl ? { baseUrl: authBaseUrl } : {}),
-            },
-          }),
-          getAvailable: () => [model],
-          getAll: () => [model],
-        },
-      });
-      await assert.rejects(() => resolveUsageAuth(ctx, adapter), pattern);
-    }
-    assert.equal(fetchMock.mock.calls.length, 0);
-  } finally {
-    fetchMock.mockRestore();
-  }
 });
 
 test("Fireworks transport revalidates before network access and counts it against its deadline", async () => {

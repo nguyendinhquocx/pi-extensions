@@ -2,6 +2,33 @@
 
 This changelog retains the published `@narumitw/pi-todo` predecessor history below the first `pi-progress` release.
 
+## 0.5.0
+
+### Minor Changes
+
+- c61e1e0: Simplify progress steps to `{ text, status }`, retaining blocked status and asking the model to describe its unblock condition in text. This is a breaking result/schema change for consumers of the separate reason field; use a minor bump for this pre-1.0 package.
+  
+  Write version 5 state, strictly decode historical versions, and losslessly merge valid blocked reasons into text. Keep legacy tool-call tolerance and established compaction boundaries. Raise the text limit to 503 characters to accommodate the old 300-character text, separator, and 200-character reason; older packages do not restore version 5 results.
+
+### Patch Changes
+
+- 09dac97: Publish progress and completion widgets as string lines in RPC mode instead of ignored component factories.
+- 1258c73: Render progress widgets in UI-capable RPC hosts such as Pi Web while keeping print and JSON modes headless.
+
+## 0.4.2
+
+### Patch Changes
+
+- fb35c02: Express progress steps as a discriminated union in the tool schema so only blocked steps expose and require a reason. Preserve redundant-reason input normalization and recognize normalized call/result pairs during compaction without changing stored state or historical result validation.
+- Updated dependencies [178e2e4]
+  - @narumitw/pi-tui-kit@0.65.3
+
+## 0.4.1
+
+### Patch Changes
+
+- e706fc5: Ignore redundant `reason` fields on non-blocked `update_progress` steps before strict validation so explanatory model output does not cause avoidable tool retries.
+
 ## 0.4.0
 
 ### Minor Changes

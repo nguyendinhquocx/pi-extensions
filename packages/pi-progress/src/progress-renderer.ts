@@ -95,8 +95,7 @@ function renderStep(step: ProgressStep, theme: Theme, width: number): string[] {
       break;
     case "blocked": {
       prefix = theme.fg("warning", "⚠ ");
-      const reason = sanitizeProgressText(step.reason ?? "") || "(reason hidden after sanitization)";
-      styledText = `${theme.fg("warning", text)}${reason ? theme.fg("muted", ` — ${reason}`) : ""}`;
+      styledText = theme.fg("warning", text);
       break;
     }
     case "pending":

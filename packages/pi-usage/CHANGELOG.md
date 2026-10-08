@@ -1,5 +1,29 @@
 # @narumitw/pi-usage
 
+## 0.64.1
+
+### Patch Changes
+
+- 69b4499: Remove app reset windows from the ChatGPT statusline while retaining them in detailed usage reports.
+- Updated dependencies [178e2e4]
+  - @narumitw/pi-tui-kit@0.65.3
+
+## 0.64.0
+
+### Minor Changes
+
+- 12c03d4: Add Command Code (`command-code`) usage reporting for the official `@commandcode/pi-commandcode-provider` extension.
+
+### Patch Changes
+
+- ca8477b: Preserve available Command Code usage sections when an optional endpoint exhausts its transport deadline, reserve time within the overall deadline for mandatory credential revalidation, and preserve caller cancellation even when it races a timeout.
+
+## 0.63.1
+
+### Patch Changes
+
+- 6d1150e: Hide ChatGPT app reset windows from the statusline while preserving plan percentages and resets and the detailed app report.
+
 ## 0.63.0
 
 ### Minor Changes

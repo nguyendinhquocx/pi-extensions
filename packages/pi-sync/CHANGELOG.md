@@ -1,5 +1,25 @@
 # @narumitw/pi-sync
 
+## 0.53.1
+
+### Patch Changes
+
+- fbb7757: Request identity representations for S3 reads so transfer compression does not weaken R2 JSON ETags and block safe conditional publication. Weak or missing ETags still fail closed. Reconcile inactive journals recorded with compression-weakened revisions only when the current strong ETag and exact pointer reproduce the recorded revision and local content and baseline are unchanged; this equivalence never authorizes publication or apply.
+  
+  Show bounded, terminal-safe, credential-redacted failure details for interrupted merged transfers while preserving journals, backups, and existing recovery behavior.
+
+## 0.53.0
+
+### Minor Changes
+
+- d22b0b1: Support automatic transfer for R2/S3 using verified ETag conditional publication. Verify conditional-write behavior with an isolated temporary object before publication, protect active-pointer and history writes against concurrent writers, and preserve unknown-outcome recovery for transport failures. Credentials now require delete access for probe cleanup; unsupported conditional writes fail closed.
+
+## 0.52.1
+
+### Patch Changes
+
+- 1e2df4b: Prevent reviewed case-only renames from deadlocking on case-insensitive filesystems while retaining file mutation queue protection for both spellings.
+
 ## 0.52.0
 
 ### Minor Changes

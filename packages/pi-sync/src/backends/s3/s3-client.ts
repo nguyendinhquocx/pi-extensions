@@ -132,17 +132,27 @@ export class S3Client {
     throw lastError;
   }
 
-  async putJson(key: string, value: unknown) {
+  async putJson(key: string, value: unknown, options: { ifAbsent?: boolean; ifMatch?: string } = {}) {
     const body = Buffer.from(JSON.stringify(value, null, "\t"), "utf8");
-    await this.putBuffer(key, body, "application/json");
+    await this.putBuffer(key, body, "application/json", options);
   }
 
-  async putBuffer(key: string, body: Buffer, contentType: string, options: { ifAbsent?: boolean } = {}) {
+  async putBuffer(
+    key: string,
+    body: Buffer,
+    contentType: string,
+    options: { ifAbsent?: boolean; ifMatch?: string } = {},
+  ) {
     const headers: Record<string, string> = { "content-type": contentType };
     if (options.ifAbsent) headers["if-none-match"] = "*";
+    if (options.ifMatch) headers["if-match"] = options.ifMatch;
     const response = await this.request("PUT", key, body, headers);
-    if (options.ifAbsent && response.status === 412) {
-      throw new S3ObjectAlreadyExistsError(key);
+    if ((options.ifAbsent || options.ifMatch) && (response.status === 412 || response.status === 409)) {
+      await response.body?.cancel();
+      if (options.ifAbsent && response.status === 412) throw new S3ObjectAlreadyExistsError(key);
+      if (options.ifAbsent || options.ifMatch) {
+        throw new S3HttpError(`S3 conditional PUT rejected (${response.status}).`, response.status);
+      }
     }
     if (!response.ok) {
       throw new S3HttpError(
@@ -150,9 +160,26 @@ export class S3Client {
         response.status,
       );
     }
+    await response.body?.cancel();
   }
 
-  private async request(method: "GET" | "PUT", key: string, body?: Buffer, extraHeaders: Record<string, string> = {}) {
+  async delete(key: string) {
+    const response = await this.request("DELETE", key);
+    if (!response.ok && response.status !== 404) {
+      throw new S3HttpError(
+        `S3 DELETE failed (${response.status}): ${await this.readErrorText(response)}`,
+        response.status,
+      );
+    }
+    await response.body?.cancel();
+  }
+
+  private async request(
+    method: "GET" | "PUT" | "DELETE",
+    key: string,
+    body?: Buffer,
+    extraHeaders: Record<string, string> = {},
+  ) {
     const url = new URL(this.endpoint.toString());
     url.pathname = posixJoin(url.pathname, this.config.destination.bucket, encodeKey(key));
     const send = async (sessionToken: string | undefined) => {
@@ -161,7 +188,9 @@ export class S3Client {
         method,
         url,
         body,
-        extraHeaders,
+        // Transfer compression can weaken an object's ETag (R2 JSON responses).
+        // Read the original representation for exact checksums and strong If-Match tokens.
+        extraHeaders: method === "GET" ? { ...extraHeaders, "accept-encoding": "identity" } : extraHeaders,
         accessKeyId: this.config.profile.accessKeyId,
         secretAccessKey: this.config.profile.secretAccessKey,
         sessionToken,

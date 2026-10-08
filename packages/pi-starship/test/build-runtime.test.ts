@@ -1,10 +1,10 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { SourceMap } from "node:module";
 import { join } from "node:path";
 import { DefaultResourceLoader, SettingsManager } from "@earendil-works/pi-coding-agent";
 import { test } from "vitest";
-import { registerRuntimeBuilderContract } from "../../../test/runtime-builder-contract.js";
+import { listFiles, registerRuntimeBuilderContract } from "../../../test/runtime-builder-contract.js";
 
 const { packageRoot, loadBuilder } = registerRuntimeBuilderContract({
   packageId: "pi-starship",
@@ -109,13 +109,3 @@ test("generated runtime is loadable by Pi's Jiti resource loader", async () => {
     await rm(root, { force: true, recursive: true });
   }
 });
-
-async function listFiles(directory: string, prefix = ""): Promise<string[]> {
-  const files: string[] = [];
-  for (const entry of await readdir(join(directory, prefix), { withFileTypes: true })) {
-    const relativePath = join(prefix, entry.name);
-    if (entry.isDirectory()) files.push(...(await listFiles(directory, relativePath)));
-    else if (entry.isFile()) files.push(relativePath.replaceAll("\\", "/"));
-  }
-  return files.sort();
-}

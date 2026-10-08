@@ -143,6 +143,53 @@ test("the existing affected-test selector retains reverse-dependent behavior", (
   assert.deepEqual(selection.workspaceDirectories, ["app", "feature"]);
 });
 
+test("shared root test support selects all workspaces regardless of change order", () => {
+  for (const sharedPath of [
+    "test/generated-runtime-fixture.ts",
+    "test/runtime-builder-contract.ts",
+    "test/support.ts",
+    "test/vitest.global-setup.ts",
+    "test/vitest.runner.ts",
+    "test/vitest.setup.ts",
+    "test/test-timeout-policy.ts",
+  ]) {
+    for (const changedFiles of [
+      [sharedPath],
+      ["packages/feature/src/index.ts", sharedPath],
+      [sharedPath, "packages/feature/src/index.ts"],
+    ]) {
+      const selection = testSelector.selectAffectedTests(fixtureRoot, changedFiles);
+      assert.equal(selection.mode, "full", changedFiles.join(", "));
+      assert.equal(selection.includeRootTests, true);
+      assert.deepEqual(selection.workspaceDirectories, ["app", "feature", "library", "registry-consumer", "unrelated"]);
+    }
+  }
+});
+
+test("the shared generated-runtime fixture selects its real package consumers", () => {
+  const selection = testSelector.selectAffectedTests(repositoryRoot, ["test/generated-runtime-fixture.ts"]);
+  assert.equal(selection.mode, "full");
+  assert.equal(selection.includeRootTests, true);
+  for (const consumer of ["pi-analytics", "pi-chat", "pi-fleet", "pi-lsp", "pi-tool"]) {
+    assert.ok(selection.workspaceDirectories.includes(consumer), `missing fixture consumer: ${consumer}`);
+  }
+});
+
+test("individual root test cases retain root-only affected selection", () => {
+  const selection = testSelector.selectAffectedTests(fixtureRoot, ["test/generated-runtime-fixture.test.ts"]);
+  assert.equal(selection.mode, "affected");
+  assert.equal(selection.includeRootTests, true);
+  assert.deepEqual(selection.workspaceDirectories, []);
+
+  const mixed = testSelector.selectAffectedTests(fixtureRoot, [
+    "test/generated-runtime-fixture.test.ts",
+    "packages/feature/src/index.ts",
+  ]);
+  assert.equal(mixed.mode, "affected");
+  assert.equal(mixed.includeRootTests, true);
+  assert.deepEqual(mixed.workspaceDirectories, ["app", "feature"]);
+});
+
 test("staged file discovery tracks both rename paths and rejects unstaged manifests", () => {
   const gitRoot = mkdtempSync(path.join(os.tmpdir(), "pi-precommit-git-"));
   try {

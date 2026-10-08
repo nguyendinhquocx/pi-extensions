@@ -3,7 +3,11 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { DefaultResourceLoader, SettingsManager } from "@earendil-works/pi-coding-agent";
 import { afterAll, describe, test } from "vitest";
-import { type BuildMetadata, registerRuntimeBuilderContract } from "../../../test/runtime-builder-contract.js";
+import {
+  type BuildMetadata,
+  listFiles,
+  registerRuntimeBuilderContract,
+} from "../../../test/runtime-builder-contract.js";
 import { createMockContext } from "../../../test/support.js";
 import { v3WebDavSettings } from "./helpers.js";
 import { deferred } from "./startup-check-helpers.js";
@@ -366,15 +370,4 @@ function assertSourceBoundaries(metadata: BuildMetadata) {
     visited.add(file);
   }
   for (const file of Object.keys(inputs)) visit(file);
-}
-
-async function listFiles(directory: string, prefix = ""): Promise<string[]> {
-  const { readdir } = await import("node:fs/promises");
-  const files: string[] = [];
-  for (const entry of await readdir(join(directory, prefix), { withFileTypes: true })) {
-    const relativePath = join(prefix, entry.name);
-    if (entry.isDirectory()) files.push(...(await listFiles(directory, relativePath)));
-    else if (entry.isFile()) files.push(relativePath.replaceAll("\\", "/"));
-  }
-  return files.sort();
 }

@@ -15,6 +15,7 @@ import {
   removeWorktree,
   resolveCommit,
   validateBranch,
+  type WorktreeRecord,
   worktreeAdministrativeDirectory,
   worktreeInventory,
 } from "../src/git.js";
@@ -55,7 +56,7 @@ test("Git service creates a nested-root worktree, inventories it, and removes it
     const startOid = await resolveCommit(pi, main, "main");
     await addWorktree(pi, main, { path: linked, branch: "feature/test", startOid });
     assert.equal(await localBranchExists(pi, main, "feature/test"), true);
-    assert.equal((await listWorktrees(pi, main))[1]?.branch, "feature/test");
+    await assertListedBranches(main, ["main", "feature/test"]);
 
     writeFileSync(join(linked, "draft.txt"), "draft\n");
     writeFileSync(join(linked, "cache.ignored"), "cache\n");
@@ -75,11 +76,11 @@ test("Git service creates a nested-root worktree, inventories it, and removes it
     assert.ok(ignoredInventory.some((line) => line.includes("cache.ignored")));
     assert.ok(ignoredInventory.every((line) => line.startsWith("!! ")));
     await removeWorktree(pi, main, linked);
-    assert.equal((await listWorktrees(pi, main)).length, 1);
+    await assertListedBranches(main, ["main"]);
     assert.equal(await localBranchExists(pi, main, "feature/test"), true);
 
     await addWorktree(pi, main, { path: linked, branch: "feature/test" });
-    assert.equal((await listWorktrees(pi, main))[1]?.branch, "feature/test");
+    await assertListedBranches(main, ["main", "feature/test"]);
     await removeWorktree(pi, main, linked);
   } finally {
     rmSync(temporary, { recursive: true, force: true });
@@ -99,7 +100,12 @@ test("worktree status cards report clean and changed real linked worktrees from 
     git(main, ["commit", "-m", "initial"]);
     git(main, ["worktree", "add", "-b", "feature", linked, "HEAD"]);
 
-    const records = await listWorktrees(pi, main);
+    // Status loading is independent of the newer worktree list -z capability.
+    const head = git(main, ["rev-parse", "HEAD"]).stdout.trim();
+    const records: WorktreeRecord[] = [
+      { path: main, branch: "main", branchRef: "refs/heads/main", isMain: true },
+      { path: linked, branch: "feature", branchRef: "refs/heads/feature", isMain: false },
+    ].map((record) => ({ ...record, head, bare: false, detached: false }));
     const clean = await loadWorktreeStatusCards(pi, records, main);
     assert.equal(clean.length, 2);
     assert.ok(clean.every((card) => /clean/i.test(card.statusText)));
@@ -113,7 +119,7 @@ test("worktree status cards report clean and changed real linked worktrees from 
     const feature = changed.find((card) => card.id === linked);
     assert.ok(feature);
     assert.match(feature.statusText, /1 staged.*1 unstaged.*1 untracked/i);
-    const head = git(linked, ["rev-parse", "HEAD"]).stdout.trim();
+    assert.equal(git(linked, ["rev-parse", "HEAD"]).stdout.trim(), head);
     assert.ok(feature.details.some((line) => line === `Snapshot HEAD: ${head}`));
   } finally {
     rmSync(temporary, { recursive: true, force: true });
@@ -199,7 +205,7 @@ test("worktree inventory reports assume-unchanged and skip-worktree index flags"
   }
 });
 
-test("worktree inventory ignores clean sparse-checkout-managed index flags", async () => {
+test("worktree inventory ignores sparse-managed flags only when Git can check rules", async () => {
   const temporary = realpathSync(mkdtempSync(join(tmpdir(), "pi-worktree-sparse-inventory-")));
   const main = join(temporary, "repo");
   const linked = join(temporary, "repo-feature");
@@ -218,7 +224,17 @@ test("worktree inventory ignores clean sparse-checkout-managed index flags", asy
 
     assert.equal(git(linked, ["status", "--porcelain=v1"]).stdout, "");
     assert.match(git(linked, ["ls-files", "-v"]).stdout, /^S drop\/b\.txt$/m);
-    assert.deepEqual(await worktreeInventory(pi, linked), []);
+    const rules = gitResult(linked, ["sparse-checkout", "check-rules", "-z"], "drop/b.txt\0");
+    if (rules.status === 0) {
+      assert.equal(rules.stdout, "");
+      assert.deepEqual(await worktreeInventory(pi, linked), []);
+    } else {
+      // Older Git cannot distinguish sparse-managed flags from manually hidden changes.
+      assert.equal(rules.status, 129, rules.stderr);
+      assert.match(rules.stderr, /usage: git sparse-checkout/);
+      assert.doesNotMatch(rules.stderr, /check-rules/);
+      assert.deepEqual(await worktreeInventory(pi, linked), ["index flag skip-worktree: drop/b.txt"]);
+    }
   } finally {
     rmSync(temporary, { recursive: true, force: true });
   }
@@ -316,7 +332,7 @@ test("administrative prune scanning finds an unreachable detached HEAD omitted f
     const old = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
     utimesSync(admin, old, old);
 
-    assert.equal((await listWorktrees(pi, main)).length, 1);
+    await assertListedBranches(main, ["main"]);
     const preview = git(main, ["worktree", "prune", "--dry-run", "--verbose"]);
     assert.match(`${preview.stdout}${preview.stderr}`, /Removing/);
     assert.deepEqual(await administrativePruneCandidates(pi, main), [
@@ -394,12 +410,39 @@ test("durableRefsContaining distinguishes an unreachable detached commit", async
   }
 });
 
-function git(cwd: string, args: string[]) {
+async function assertListedBranches(cwd: string, branches: string[]) {
+  const result = gitResult(cwd, ["worktree", "list", "--porcelain", "-z"]);
+  if (result.status === 129 && /unknown switch [`']z'/u.test(result.stderr)) {
+    // Do not skip the surrounding mutation/prune coverage on older Git.
+    await assert.rejects(listWorktrees(pi, cwd), /unknown switch [`']z'/u);
+    const listing = git(cwd, ["worktree", "list", "--porcelain"]).stdout;
+    assert.equal(listing.split("\n").filter((line) => line.startsWith("worktree ")).length, branches.length);
+    assert.deepEqual(
+      listing.split("\n").filter((line) => line.startsWith("branch ")),
+      branches.map((branch) => `branch refs/heads/${branch}`),
+    );
+    return;
+  }
+  assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual(
+    (await listWorktrees(pi, cwd)).map((record) => record.branch),
+    branches,
+  );
+}
+
+function gitResult(cwd: string, args: string[], input?: string) {
   const result = spawnSync("git", args, {
     cwd,
+    input,
     encoding: "utf8",
     env: { ...process.env, GIT_CONFIG_NOSYSTEM: "1" },
   });
+  if (result.error) throw result.error;
+  return result;
+}
+
+function git(cwd: string, args: string[]) {
+  const result = gitResult(cwd, args);
   if (result.status !== 0) {
     throw new Error(`git ${args.join(" ")} failed: ${result.stderr}`);
   }

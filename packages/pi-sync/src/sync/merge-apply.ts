@@ -244,8 +244,31 @@ export async function applyMergedSnapshot(
     protectedTarget,
     new Set(Object.keys(afterHashes)),
   );
+  // Existing case aliases share Pi's non-reentrant realpath queue. Reserve the
+  // missing destination separately only after deleting its reviewed preimage.
+  const targetsByQueue = new Map<string, string[]>();
+  const queueTargets: string[] = [];
+  const deferredTargets: string[] = [];
+  for (const target of targets) {
+    let key = path.resolve(target);
+    try {
+      key = await fs.realpath(target);
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code !== "ENOENT" && code !== "ENOTDIR") throw error;
+    }
+    options.signal?.throwIfAborted();
+    options.validateMutation?.();
+    const aliases = targetsByQueue.get(key) ?? [];
+    aliases.push(target);
+    targetsByQueue.set(key, aliases);
+  }
+  for (const [key, aliases] of targetsByQueue) {
+    queueTargets.push(key);
+    if (aliases.length > 1) deferredTargets.push(...aliases.filter((target) => path.resolve(target) !== key));
+  }
   async function acquire(index: number): Promise<void> {
-    const target = targets[index];
+    const target = queueTargets[index];
     if (target) return withFileMutationQueue(target, () => acquire(index + 1));
     await validate();
     await assertCanonicalMergedTargets(root, changed, options);
@@ -341,40 +364,65 @@ export async function applyMergedSnapshot(
       }
       await syncDirectory(path.dirname(target));
     }
-    for (const item of plan.writes) {
+    const requireAbsentDestinations = async () => {
       await validate();
-      const relative = relativeByTarget.get(item.target);
-      if (!relative) throw new Error("Unowned merge write target.");
-      await assertFilesystemTarget(root, relative, options, new Set());
-      await fs.mkdir(path.dirname(item.target), { recursive: true });
-      const temporary = path.join(path.dirname(item.target), `.pi-sync.json.${randomUUID()}.apply`);
-      let mode = 0o600;
-      try {
-        mode = (await fs.stat(item.target)).mode & 0o777;
-      } catch (error) {
-        if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-      }
-      try {
-        const handle = await fs.open(temporary, "wx", mode);
+      for (const target of deferredTargets) {
         try {
-          await handle.writeFile(item.content);
-          await handle.sync();
-        } finally {
-          await handle.close();
+          await fs.lstat(target);
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+          continue;
         }
-        await revalidateTarget(item.target);
-        await fs.rename(temporary, item.target);
-        await syncDirectory(path.dirname(item.target));
-      } finally {
-        await fs.rm(temporary, { force: true });
+        throw new Error("Case replacement destination changed before queue reservation; journal retained for review.");
       }
+      await validate();
+    };
+    async function acquireDestinations(index: number): Promise<void> {
+      const target = deferredTargets[index];
+      if (target) return withFileMutationQueue(target, () => acquireDestinations(index + 1));
+      // Writers registered after deletion must finish first; never accept their
+      // bytes as our own, even if they match a recognizable pre/postimage.
+      await requireAbsentDestinations();
+      await writeTargets();
     }
-    await syncMutationParents(
-      targets,
-      [root, ...(options.sessionDir ? [sessionStorageRoot(root, options.sessionDir)] : [])],
-      options,
-    );
-    await validate();
+    await requireAbsentDestinations();
+    await acquireDestinations(0);
+    async function writeTargets() {
+      for (const item of plan.writes) {
+        await validate();
+        const relative = relativeByTarget.get(item.target);
+        if (!relative) throw new Error("Unowned merge write target.");
+        await assertFilesystemTarget(root, relative, options, new Set());
+        await fs.mkdir(path.dirname(item.target), { recursive: true });
+        const temporary = path.join(path.dirname(item.target), `.pi-sync.json.${randomUUID()}.apply`);
+        let mode = 0o600;
+        try {
+          mode = (await fs.stat(item.target)).mode & 0o777;
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+        }
+        try {
+          const handle = await fs.open(temporary, "wx", mode);
+          try {
+            await handle.writeFile(item.content);
+            await handle.sync();
+          } finally {
+            await handle.close();
+          }
+          await revalidateTarget(item.target);
+          await fs.rename(temporary, item.target);
+          await syncDirectory(path.dirname(item.target));
+        } finally {
+          await fs.rm(temporary, { force: true });
+        }
+      }
+      await syncMutationParents(
+        targets,
+        [root, ...(options.sessionDir ? [sessionStorageRoot(root, options.sessionDir)] : [])],
+        options,
+      );
+      await validate();
+    }
   }
   await acquire(0);
 }

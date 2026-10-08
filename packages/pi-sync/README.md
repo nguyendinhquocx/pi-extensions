@@ -166,7 +166,7 @@ Shutdown behavior is unchanged: when **Automatic sync** is On and sessions are i
 
 **Settings → Automatic transfer at startup** controls the separate per-setup `sync.automaticTransfer` boolean, which defaults to `false`. It authorizes one conflict-free startup transfer at a validated idle boundary in TUI/RPC, including session replacement and `/reload`. Busy startup waits for `agent_settled`; foreground commands, a new agent run, replacement, and shutdown cancel and drain owned work. Changing the setting affects authorization immediately; enabling it schedules the next attempt on the next session start. There is no watcher or polling loop.
 
-A baseline and matching authoritative content list are required. First-source choice, changed selection, missing established remote, secrets, and real conflicts remain review barriers. Automatic transfer requires conditional or lease-protected publication: Git and verified WebDAV are supported; R2/S3 remains manual because its publication is read-check-write-verify. The existing **Automatic sync** setting and shutdown policy are unchanged when this new opt-in is absent.
+A baseline and matching authoritative content list are required. First-source choice, changed selection, missing established remote, secrets, and real conflicts remain review barriers. Automatic transfer requires conditional or lease-protected publication: Git, verified WebDAV, and R2/S3 with verified conditional writes are supported. The existing **Automatic sync** setting and shutdown policy are unchanged when this new opt-in is absent.
 
 Successful transfers show one summary. They do not reload resources, activate extension code, or rewrite model context. After local resources change, reload or restart when ready; newly pulled conversations still require explicit resume. Headless print/JSON skip this new startup feature. Reviewed directional settings/session-root transitions record both roots and verified settings evidence so interrupted apply can recover before or after settings installation. Older pending journals without transition evidence retain their original root-ownership checks and may require reviewed recovery; preserve their backups rather than downgrading. See [merge safety and recovery](./docs/merge-implementation-audit.md) for journal boundaries, external-writer limits, and downgrade guidance.
 
@@ -264,7 +264,7 @@ Review [Settings](#-settings) for included-content privacy and [Manager, conflic
 | --- | --- | --- | --- |
 | Git | Exact expected-ref lease | Existing SSH/configured credential helper | `<branch>:<storage.path>` |
 | WebDAV | Verified strong conditional requests | Private settings username/app password | `<url>/<storage.path>` |
-| R2/S3 | Read-check-write-verify | Private settings credentials | `<bucket>/<storage.path>` |
+| R2/S3 | Verified strong conditional requests | Private settings credentials | `<bucket>/<storage.path>` |
 
 Git requires Git 2.30 or newer and a SHA-1-format remote repository.
 HTTPS userinfo, URL passwords, local paths, `file`, `git`, `ext`, and remote-helper transports are rejected.
@@ -275,8 +275,7 @@ WebDAV requires HTTPS except loopback tests.
 URL credentials, query strings, fragments, unsafe redirects, weak/missing ETags, and ignored conditional headers fail closed.
 `/sync doctor` verifies collection and conditional-write behavior with an isolated probe, then repairs a missing active-snapshot history entry.
 
-S3/R2 stages immutable bundles, rechecks the visible head before publication, and verifies afterward.
-Unlike Git/WebDAV, generic S3 does not provide an atomic compare-and-swap for `latest.json`; status review remains important for simultaneous writers.
+S3/R2 publishes `latest.json` and history using ETag `If-Match`, or `If-None-Match: *` for first creation, then verifies the active pointer. Before each publication, an isolated `.pi-sync-probes/<random-id>` object verifies that the server rejects stale ETags and create-only writes to existing objects and rotates strong ETags. Credentials must allow read, write, and delete under the selected storage path; the probe is deleted even after cancellation. Missing/weak ETags, ignored conditions, and probe or cleanup failures stop publication. A failed cleanup reports the probe key for manual removal; bucket versioning may retain probe versions. `/sync doctor` remains read-only for S3/R2 and does not verify write support.
 
 Snapshot recovery is guarded: new journals record before/after images, older journals are retired only when their unchanged preimages are provable, and unrecognized bytes remain untouched for manual review. Current-session targets are never restored during startup. Preserve a blocked transaction and its backup, close Pi, and review the private evidence before restoring selected paths; malformed/unsupported journals are not disposable. Pi may have loaded resources before lifecycle recovery, so reload or restart explicitly after recovery if loaded resources need to match the restored files.
 

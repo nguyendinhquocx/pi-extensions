@@ -220,7 +220,7 @@ test("both credentials and registration ID participate in cache identity", async
   assert.equal(new Set([a?.fingerprint, b?.fingerprint, c?.fingerprint, d?.fingerprint, e?.fingerprint]).size, 5);
 });
 
-test("app usage changes never affect visible percentages, including multiple windows and missing resets", () => {
+test("statusline omits app windows while reports retain app reset details without percentages", () => {
   const now = 2_000_000_000_000;
   const makeReport = (remaining: number) => ({
     providerId: "openai",
@@ -262,8 +262,16 @@ test("app usage changes never affect visible percentages, including multiple win
   });
   const first = makeReport(99);
   const second = makeReport(91);
-  assert.equal(formatUsageStatusline(first, undefined, now), "chatgpt plan 96% ↻ 6d14h · app ↻ 6d16h 5h");
+  assert.equal(formatUsageStatusline(first, undefined, now), "chatgpt plan 96% ↻ 6d14h");
   assert.equal(formatUsageStatusline(first, undefined, now), formatUsageStatusline(second, undefined, now));
+  assert.equal(
+    formatUsageStatusline(
+      { ...first, buckets: first.buckets.filter((bucket) => bucket.groupId === "chatgpt-plan") },
+      undefined,
+      now,
+    ),
+    formatUsageStatusline(first, undefined, now),
+  );
   for (const display of ["current", "configured"] as const) {
     const text = formatUsageReport(first, display);
     assert.equal(text, formatUsageReport(second, display));
@@ -343,13 +351,13 @@ test("quota query uses only companion GET auth and keeps raw plan/app values, al
     assert.match(text, /companion/i);
     assert.doesNotMatch(text, /oaiapp_fixture|account-fixture/);
     const status = formatUsageStatusline(report);
-    assert.match(status ?? "", /plan.*70%.*app.*↻/);
+    assert.match(status ?? "", /^chatgpt plan 70% ↻ [\ddhms]+$/);
     assert.match(
       formatUsageStatusline({
         ...report,
         buckets: report.buckets.map((bucket) => ({ ...bucket, remaining: undefined })),
       }) ?? "",
-      /plan unavailable.*app.*↻/,
+      /^chatgpt plan unavailable ↻ [\ddhms]+$/,
     );
     assert.ok(guard.mock.calls.length >= 3);
   } finally {

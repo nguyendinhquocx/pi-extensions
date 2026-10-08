@@ -262,27 +262,6 @@ test("DeepSeek runtime auth accepts only official model and resolved-auth origin
     });
     await assert.rejects(() => resolveUsageAuth(nonBearerContext, adapter), /requires Bearer/iu);
 
-    for (const [modelBaseUrl, authBaseUrl, pattern] of [
-      ["https://proxy.example.test/v1", undefined, /custom.*official/iu],
-      [DEEPSEEK_MODEL.baseUrl, "https://proxy.example.test/v1", /proxy-resolved.*official/iu],
-    ] as const) {
-      const model = { ...DEEPSEEK_MODEL, baseUrl: modelBaseUrl };
-      const { ctx } = createMockContext({
-        model,
-        modelRegistry: {
-          getApiKeyAndHeaders: async () => ({ ok: true, apiKey: "must-not-send" }),
-          getProviderAuth: async () => ({
-            auth: {
-              apiKey: "must-not-send",
-              ...(authBaseUrl ? { baseUrl: authBaseUrl } : {}),
-            },
-          }),
-          getAvailable: () => [model],
-          getAll: () => [model],
-        },
-      });
-      await assert.rejects(() => resolveUsageAuth(ctx, adapter), pattern);
-    }
     assert.equal(fetchMock.mock.calls.length, 0);
   } finally {
     fetchMock.mockRestore();

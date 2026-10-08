@@ -62,6 +62,37 @@ test("adapts widget rows, prioritizes active work, and honors display settings",
   for (const line of lines) assert.ok(visibleWidth(line) <= 10);
 });
 
+test("blocked text stays visible, prioritized, and incomplete without scheduling completion", async () => {
+  vi.useFakeTimers();
+  const harness = createHarness();
+  const current = createContext();
+  try {
+    await harness.emit("session_start", current.ctx);
+    const steps: ProgressStep[] = [
+      { text: "finished", status: "completed" },
+      { text: "next", status: "pending" },
+      { text: "deploy — waiting for approval", status: "blocked" },
+    ];
+    const { theme, calls } = identityTheme();
+    assert.deepEqual(renderProgressWidget(steps, theme, 80, { terminalRows: 12 }), [
+      "─".repeat(80),
+      "Progress · 1/3 complete",
+      "⚠ deploy — waiting for approval",
+      "✓ 1 completed · … 1 more",
+    ]);
+    assert.ok(calls.some(([kind, role]) => kind === "fg" && role === "warning"));
+    await setProgress(harness, current.ctx, [{ text: "deploy", status: "completed" }]);
+    const result = await setProgress(harness, current.ctx, steps);
+    assert.equal(result.content[0]?.text, "Progress updated: 1 of 3 complete; 1 blocked.");
+    assert.equal(vi.getTimerCount(), 0, "a blocker cancels the old completion summary");
+    await vi.advanceTimersByTimeAsync(COMPLETION_SUMMARY_MS);
+    assert.equal(typeof current.widgets.at(-1)?.content, "function");
+  } finally {
+    await harness.emit("session_shutdown", current.ctx);
+    vi.useRealTimers();
+  }
+});
+
 test("shows a transient completion summary while retaining Progress state", async () => {
   vi.useFakeTimers();
   try {

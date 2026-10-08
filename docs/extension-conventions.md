@@ -113,7 +113,9 @@ These conventions preserve cache-eligible request prefixes but cannot guarantee 
   Append model-required per-turn state in a new message or tool result, and persist non-model state with `pi.appendEntry()` or tool-result `details`.
   **Verification:** `Review` of state publication paths and `Test` when mutable state contributes model-visible content.
 - **MUST:** Append a durable model contract once when it becomes active instead of recreating it before existing conversation history on every request.
-  If compaction removes a required contract, restore exactly one deterministic canonical message after leading compaction or branch summaries and only when an equivalent retained message is absent.
+  If compaction removes a required contract, restore exactly one deterministic canonical message at the conversation tail, after all retained messages (including compaction or branch summaries), and only when an equivalent retained message is absent.
+  Persist the restored contract rather than regenerating it at a moving tail on every ordinary request.
+  When Pi defers that publication past newer output, show the persisted contract at the turn boundary where it was sent; test immediate and deferred publication separately.
   Keep mutable accounting out of that canonical contract.
   **Verification:** `Test` activation and idempotence plus applicable reload, resume, branch, and compaction restoration paths for deterministic content and exactly one retained contract.
 - **MUST:** Keep ordered active tool names and provider-visible definitions stable within each prefix epoch.

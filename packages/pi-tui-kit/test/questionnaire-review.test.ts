@@ -150,30 +150,32 @@ async function keyCycleRun(bindings: KeybindingsConfig = {}) {
   const held = new Set<string>();
   let text = "";
   let disposed = 0;
-  const editor: EditorComponent & { wantsKeyRelease: boolean; dispose(): void } = {
-    wantsKeyRelease: true,
-    getText: () => text,
-    setText(value) {
-      text = value;
-    },
-    render: () => [text],
-    invalidate: noop,
-    handleInput(data) {
-      events.push(data);
-      const key = parseKey(data)?.replace(/^(?:(?:shift|ctrl|alt|super)\+)+/u, "");
-      if (isKeyRelease(data)) {
-        if (key) held.delete(key);
-        return;
-      }
-      if (key) held.add(key);
-      if (!isKeyRepeat(data) && keybindings.matches(data, "tui.input.submit")) this.onSubmit?.("answer");
-    },
-    dispose() {
-      disposed++;
-      held.clear();
-    },
+  ctx.ui.getEditorComponent = () => () => {
+    const editor: EditorComponent & { wantsKeyRelease: boolean; dispose(): void } = {
+      wantsKeyRelease: true,
+      getText: () => text,
+      setText(value) {
+        text = value;
+      },
+      render: () => [text],
+      invalidate: noop,
+      handleInput(data) {
+        events.push(data);
+        const key = parseKey(data)?.replace(/^(?:(?:shift|ctrl|alt|super)\+)+/u, "");
+        if (isKeyRelease(data)) {
+          if (key) held.delete(key);
+          return;
+        }
+        if (key) held.add(key);
+        if (!isKeyRepeat(data) && keybindings.matches(data, "tui.input.submit")) this.onSubmit?.("answer");
+      },
+      dispose() {
+        disposed++;
+        held.clear();
+      },
+    };
+    return editor;
   };
-  ctx.ui.getEditorComponent = () => () => editor;
   const running = runQuestionnaire(ctx, { questions: [question, { ...question, id: "second" }], allowNotes: true });
   await harness.waitForOpen();
   host.start();
@@ -221,7 +223,7 @@ for (const [name, bindings, submit, repeat, release] of [
       assert.equal(run.events.length, beforeReopen, "reopening note must not introduce orphan release");
       run.emit("\u0003");
       assert.deepEqual(await run.running, { kind: "closed", reason: "close" });
-      assert.equal(run.disposed, 1);
+      assert.equal(run.disposed, 2);
     });
   }
 }
@@ -245,6 +247,24 @@ test("real Pi TUI forwards ordinary text containing release/repeat-like substrin
   assert.deepEqual(run.events, ["text:3u", "text:2F"]);
   run.emit("\u0003");
   await run.running;
+});
+
+test("real Pi TUI drains old editor key cycles after a new editor opens", async (t) => {
+  const run = await keyCycleRun();
+  t.onTestFinished(() => run.host.stop());
+  run.emit("n");
+  run.emit("\u001b[97;1:1u");
+  run.emit("\u001b[13;1:1u");
+  run.emit("n");
+  assert.equal(run.disposed, 0, "old editor remains alive while it owns pending releases");
+  run.emit("\u001b[13;1:3u");
+  assert.equal(run.disposed, 0);
+  run.emit("\u001b[97;1:3u");
+  assert.equal(run.disposed, 1, "retired editor is disposed once its final cycle drains");
+  assert.equal(run.held.size, 0);
+  run.emit("\u0003");
+  await run.running;
+  assert.equal(run.disposed, 2);
 });
 
 test("real Pi TUI retains submission releases after note editor closes", async (t) => {

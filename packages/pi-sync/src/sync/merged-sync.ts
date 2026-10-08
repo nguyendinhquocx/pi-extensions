@@ -52,6 +52,7 @@ import {
   readMergeJournal,
   writeMergeJournal,
 } from "./merge-journal.js";
+import { mergeTransferError } from "./merge-transfer-error.js";
 import { acceptedMergeFiles, type PartialProgress, progressState } from "./partial-progress.js";
 import {
   formatRemoteSelectionStatus,
@@ -497,10 +498,7 @@ export async function mergeSync(
         }
         // Cancellation before publication is safe only if no backend attempt began.
         // Every uncertain/after-commit outcome retains evidence and is never blindly retried.
-        throw new Error(
-          "Merged transfer interrupted; journal and backup retained. Run /sync sync to reconcile before further mutations.",
-          { cause: error },
-        );
+        throw mergeTransferError(error, config.backend);
       }
       const completed = await completeJournal(ctx, config, backend, journal, validate, options.signal, options.auto);
       if (!completed) {
@@ -557,7 +555,12 @@ async function completeJournal(
   }
   const snapshotOptions = { ...snapshotOptionsForContext(ctx, config), sessionDir: sessionRoot, signal };
   const head = await backend.readHead(signal);
-  if (!journal.committedHead && head && backend.sameRevision(head.revision, journal.expectedHead.revision)) {
+  if (
+    !journal.committedHead &&
+    head &&
+    (backend.sameRevision(head.revision, journal.expectedHead.revision) ||
+      backend.matchesUncommittedRecoveryHead?.(head, journal.expectedHead))
+  ) {
     await validate();
     const local = await createSnapshot(config.snapshotIdentity, snapshotOptions);
     if (

@@ -70,14 +70,14 @@ test("generated runtime is loadable by Pi's Jiti resource loader", async () => {
     assert.ok(tool);
     const updated = await tool.definition.execute(
       "generated-progress",
-      { steps: [{ text: "Verify generated runtime", status: "in_progress" }] },
+      { steps: [{ text: "Verify generated runtime — waiting for approval", status: "blocked" }] },
       undefined,
       undefined,
       runner.createToolContext("generated-progress", undefined),
     );
     assert.deepEqual(updated.details, {
-      version: 4,
-      steps: [{ text: "Verify generated runtime", status: "in_progress" }],
+      version: 5,
+      steps: [{ text: "Verify generated runtime — waiting for approval", status: "blocked" }],
     });
     assert.equal(typeof widgets.at(-1)?.content, "function");
     const cleared = await tool.definition.execute(
@@ -87,7 +87,7 @@ test("generated runtime is loadable by Pi's Jiti resource loader", async () => {
       undefined,
       runner.createToolContext("generated-progress-clear", undefined),
     );
-    assert.deepEqual(cleared.details, { version: 4, steps: [] });
+    assert.deepEqual(cleared.details, { version: 5, steps: [] });
     assert.deepEqual(widgets.at(-1), { key: "progress", content: undefined });
 
     await emit(extension.handlers, "session_shutdown", ctx);

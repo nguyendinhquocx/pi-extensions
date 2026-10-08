@@ -6,6 +6,7 @@ import { expectedRemoteHead } from "../src/backends/sync-backend.js";
 import { historyPath, latestPath, snapshotPath, WebDavSyncBackend } from "../src/backends/webdav/webdav-backend.js";
 import { snapshot } from "./helpers.js";
 import { MockWebDavServer, webDavConfig } from "./mock-webdav-server.js";
+import { S3ProbeHarness } from "./s3-probe-harness.js";
 
 test("WebDAV root publications and probe cleanup stay under the configured collection", async () => {
   const server = await new MockWebDavServer().start();
@@ -80,8 +81,11 @@ for (const kind of ["r2", "s3-compatible"] as const) {
     const basePath = kind === "r2" ? "/bucket" : "/storage/bucket";
     const objects = new Map<string, Buffer>([[`${basePath}/unrelated.txt`, Buffer.from("keep")]]);
     const requests: string[] = [];
+    const probes = new S3ProbeHarness();
     const original = globalThis.fetch;
     globalThis.fetch = async (input: string | URL | Request, init?: RequestInit) => {
+      const probe = probes.handle(input, init);
+      if (probe) return probe;
       const url = new URL(String(input));
       requests.push(url.pathname);
       if (init?.method === "PUT") {

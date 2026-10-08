@@ -52,6 +52,8 @@ export interface SyncBackend {
   readonly capability: PublicationCapability;
   /** Compare opaque revisions produced by this backend identity. */
   sameRevision(left: string, right: string): boolean;
+  /** Recovery-only equivalence for retiring an inactive candidate; never authorizes publication or apply. */
+  matchesUncommittedRecoveryHead?(current: RemoteHead, recorded: RemoteHead): boolean;
   readHead(signal?: AbortSignal): Promise<RemoteHead | undefined>;
   readSnapshot(reference: string, signal?: AbortSignal): Promise<Snapshot>;
   publishSnapshot(

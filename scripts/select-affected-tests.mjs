@@ -46,6 +46,12 @@ export function selectAffectedTests(root, changedFiles) {
       continue;
     }
 
+    // Root test cases are independent; shared fixtures and harness files can affect any package.
+    if (normalized.startsWith("test/") && !normalized.endsWith(".test.ts")) {
+      fullReason = `shared test support changed: ${normalized}`;
+      break;
+    }
+
     if (normalized.startsWith("test/") || normalized === ".changeset/config.json") {
       includeRootTests = true;
       continue;

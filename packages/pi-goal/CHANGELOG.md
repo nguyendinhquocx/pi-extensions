@@ -1,5 +1,19 @@
 # @narumitw/pi-goal
 
+## 0.54.11
+
+### Patch Changes
+
+- 42ee79c: Show a Goal contract that Pi persisted after newer output, because it was sent while the agent was streaming, at the turn boundary where it was sent. Mid-run compaction now keeps the restored contract's request position once the persisted copy arrives, so the next request reuses the retained prefix.
+- Updated dependencies [178e2e4]
+  - @narumitw/pi-tui-kit@0.65.3
+
+## 0.54.10
+
+### Patch Changes
+
+- 847a17f: Append missing Goal contracts after retained history following compaction so transient restoration and immediately persisted contracts use the same message position, preserving the retained request prefix. Persist missing inactive contracts at the compaction boundary instead of repeatedly restoring them at a moving tail.
+
 ## 0.54.9
 
 ### Patch Changes

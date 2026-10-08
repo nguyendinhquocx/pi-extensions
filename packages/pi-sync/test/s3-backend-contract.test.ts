@@ -2,6 +2,7 @@ import type { LatestPointer } from "../src/backends/backend-types.js";
 import type { SyncConfig } from "../src/settings/settings-types.js";
 import { registerSyncBackendContractSuite } from "./backend-contract-suite.js";
 import { createSyncBackend } from "./backend-factory-eager.js";
+import { S3ProbeHarness } from "./s3-probe-harness.js";
 
 for (const prefix of ["pi-sync", "./"]) {
   registerSyncBackendContractSuite(`s3 (${prefix})`, () => {
@@ -27,7 +28,10 @@ class ContractS3Harness {
     };
   }
 
+  private probes = new S3ProbeHarness();
   private fetch = async (input: URL | RequestInfo, init?: RequestInit) => {
+    const probe = this.probes.handle(input, init);
+    if (probe) return probe;
     const url = new URL(String(input));
     const method = init?.method ?? "GET";
     if (url.pathname.endsWith("/latest.json")) {
@@ -47,7 +51,7 @@ class ContractS3Harness {
         return new Response(null, { status: 200 });
       }
       return this.history.length > 0
-        ? Response.json({ version: 1, snapshots: this.history })
+        ? Response.json({ version: 1, snapshots: this.history }, { headers: { etag: '"history"' } })
         : new Response(null, { status: 404 });
     }
     if (url.pathname.includes("/snapshots/")) {

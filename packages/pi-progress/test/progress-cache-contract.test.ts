@@ -3,12 +3,14 @@ import type { JsonValue } from "@earendil-works/pi-ai";
 import type { ContextEvent, ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { convertToLlm } from "@earendil-works/pi-coding-agent";
 import { test } from "vitest";
+import { ProgressParameters } from "../src/progress-state.js";
 import progressWidgetExtension, {
   PROGRESS_DETAILS_VERSION,
   type ProgressStep,
   reconcileProgressContext,
   TOOL_NAME,
 } from "../src/progress-widget.js";
+import { progressToolCallMessage } from "./progress-harness.js";
 
 interface RegisteredTool {
   name: string;
@@ -95,7 +97,6 @@ function progressJson(steps: readonly ProgressStep[]): JsonValue {
   return steps.map((step) => ({
     text: step.text,
     status: step.status,
-    ...(step.reason === undefined ? {} : { reason: step.reason }),
   }));
 }
 
@@ -136,6 +137,74 @@ test("the Progress rename starts one intentional provider-prefix epoch", () => {
   assert.notDeepEqual(
     { activeToolNames: first.activeToolNames, toolName: first.toolDefinitions[0]?.name, payload: "steps[].text" },
     predecessorIdentity,
+  );
+});
+
+test("removing reason starts one tool-definition and guidance epoch with stable tool order", () => {
+  const initial = normalizedRequest([userMessage("start")]);
+  const stepSchema = ProgressParameters.properties.steps.items;
+  const predecessorParameters = {
+    ...ProgressParameters,
+    properties: {
+      steps: {
+        ...ProgressParameters.properties.steps,
+        items: {
+          anyOf: [
+            {
+              ...stepSchema,
+              properties: {
+                ...stepSchema.properties,
+                text: { ...stepSchema.properties.text, maxLength: 300 },
+                status: { type: "string", enum: ["pending", "in_progress", "completed"] },
+              },
+            },
+            {
+              ...stepSchema,
+              required: ["text", "status", "reason"],
+              properties: {
+                ...stepSchema.properties,
+                text: { ...stepSchema.properties.text, maxLength: 300 },
+                status: { type: "string", enum: ["blocked"] },
+                reason: { type: "string", minLength: 1, maxLength: 200 },
+              },
+            },
+          ],
+        },
+      },
+    },
+  };
+  const predecessor = {
+    ...initial,
+    effectiveSystemGuidance: [
+      "Use blocked with a concise reason only when progress depends on an external action or condition; blocked does not mean completed.",
+    ],
+    toolDefinitions: initial.toolDefinitions.map((tool) => ({ ...tool, parameters: predecessorParameters })),
+  };
+  assert.notDeepEqual(initial.toolDefinitions, predecessor.toolDefinitions);
+  assert.deepEqual(initial.activeToolNames, predecessor.activeToolNames);
+  assert.notDeepEqual(initial.effectiveSystemGuidance, predecessor.effectiveSystemGuidance);
+  assert.deepEqual(stepSchema.required, ["text", "status"]);
+  assert.equal("reason" in stepSchema.properties, false);
+  assert.match(initial.effectiveSystemGuidance.join("\n"), /include what is needed to continue in the step text/u);
+
+  const steps: ProgressStep[] = [{ text: "work", status: "in_progress" }];
+  const raw = [
+    { role: "compactionSummary", summary: "Earlier work", tokensBefore: 100, timestamp: 0 } as const,
+    progressToolCallMessage([{ ...steps[0], reason: "checking code" }]),
+    progressToolResult(steps, "progress-call"),
+    userMessage("continue"),
+  ];
+  const baselineMessages = reconcileProgressContext(raw, steps);
+  assert.equal(baselineMessages, raw, "a retained normalized call/result pair needs no synthetic boundary");
+  const baseline = normalizedRequest(baselineMessages);
+  assert.deepEqual(baseline.toolDefinitions, initial.toolDefinitions);
+  const nextRaw = [...raw, assistantText("working"), userMessage("again")];
+  const next = normalizedRequest(reconcileProgressContext(nextRaw, steps));
+  assertPrefix(next, baseline);
+  assert.deepEqual(
+    normalizedRequest(reconcileProgressContext(nextRaw, steps)),
+    next,
+    "reload keeps the new baseline stable",
   );
 });
 
@@ -192,7 +261,7 @@ test("compaction restoration keeps its old epoch byte-stable and later epochs ca
   assertPrefix(ordinary, first);
   assert.equal(reconcileProgressContext(ordinaryMessages, steps, oldContent), ordinaryMessages);
 
-  const updatedSteps: ProgressStep[] = [{ text: "continue", status: "blocked", reason: "approval" }];
+  const updatedSteps: ProgressStep[] = [{ text: "continue — approval", status: "blocked" }];
   const updatedRaw = [
     ...ordinaryRaw,
     progressToolCall(updatedSteps, "update-2"),
@@ -210,6 +279,6 @@ test("compaction restoration keeps its old epoch byte-stable and later epochs ca
     updatedSteps,
   );
   const canonical = nextEpochMessages[1];
-  assert.match(canonical?.role === "custom" ? String(canonical.content) : "", /PI PROGRESS STATUS v4/u);
+  assert.match(canonical?.role === "custom" ? String(canonical.content) : "", /PI PROGRESS STATUS v5/u);
   assert.doesNotMatch(canonical?.role === "custom" ? String(canonical.content) : "", /PI TODO STATUS/u);
 });

@@ -437,7 +437,9 @@ Its `onSubmit` value is authoritative, including intentional whitespace normaliz
 Editing hints defer to the custom editor's keybindings instead of advertising selector cancellation or standard submission keys it may consume.
 The questionnaire does not replace the main editor, alter its draft, or copy its application action handlers.
 Without a custom factory, the existing Editor and cancellation behavior remain unchanged; selector and Review cancellation also remain unchanged.
-Questionnaire-owned editor instances receive focus and optional mouse/key-release input, and their optional `dispose()` method runs when the interaction ends.
+Questionnaire-owned editor instances receive focus and optional mouse/key-release input.
+Each later answer or note edit gets a fresh custom editor instance so earlier asynchronous submissions cannot affect it.
+Retired instances receive any pending owned key releases before their optional `dispose()` method runs; interaction cleanup disposes every remaining instance.
 For release-aware editors, key cycles stay with the editor that received the press across answer/note submission; selector-owned opening releases and repeats are not forwarded.
 RPC preserves the existing sequential `select()` and `editor()` fallback for choices and free-form answers, but does not collect TUI-only notes or show the final review.
 RPC preserves the editor response verbatim, including an empty string, for compatibility with existing Pi dialogs.

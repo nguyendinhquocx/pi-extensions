@@ -6,6 +6,7 @@ import { pathToFileURL } from "node:url";
 import { DefaultResourceLoader, SettingsManager } from "@earendil-works/pi-coding-agent";
 import { getLangfuseTracerProvider, setLangfuseTracerProvider } from "@langfuse/tracing";
 import { test } from "vitest";
+import { listFiles } from "../../../test/runtime-builder-contract.js";
 import { createMockContext } from "../../../test/support.js";
 
 const packageRoot = resolve("packages/pi-langfuse");
@@ -381,14 +382,4 @@ async function snapshotDirectory(directory: string): Promise<Record<string, stri
     snapshot[path] = await readFile(join(directory, path), "base64");
   }
   return snapshot;
-}
-
-async function listFiles(directory: string, prefix = ""): Promise<string[]> {
-  const files: string[] = [];
-  for (const entry of await readdir(join(directory, prefix), { withFileTypes: true })) {
-    const relativePath = join(prefix, entry.name);
-    if (entry.isDirectory()) files.push(...(await listFiles(directory, relativePath)));
-    else if (entry.isFile()) files.push(relativePath.replaceAll("\\", "/"));
-  }
-  return files.sort();
 }

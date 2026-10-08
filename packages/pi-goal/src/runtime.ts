@@ -917,13 +917,18 @@ export class GoalRuntime {
   }
 
   ensureGoalContextContract(ctx: StatusContext, goal: ActiveGoal) {
-    const contract = this.goalContextContractForPrompt(ctx, goal);
-    if (contract) this.pi.sendMessage(contract, { triggerTurn: false });
+    this.publishGoalContextContract(this.goalContextContractForPrompt(ctx, goal));
   }
 
   ensureInactiveGoalContextContract(ctx: StatusContext) {
-    const contract = this.goalContextContractForPrompt(ctx);
-    if (contract) this.pi.sendMessage(contract, { triggerTurn: false });
+    this.publishGoalContextContract(this.goalContextContractForPrompt(ctx));
+  }
+
+  private publishGoalContextContract(contract: ReturnType<GoalRuntime["goalContextContractForPrompt"]>) {
+    if (!contract) return;
+    // Pi may persist this after newer output when the agent is streaming; sentAt lets
+    // context reconciliation show it where it was sent.
+    this.pi.sendMessage({ ...contract, details: { ...contract.details, sentAt: Date.now() } }, { triggerTurn: false });
   }
 
   goalContextContractForPrompt(ctx: StatusContext, goal?: ActiveGoal) {

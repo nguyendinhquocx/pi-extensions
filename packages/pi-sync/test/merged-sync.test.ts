@@ -4,6 +4,7 @@ import path from "node:path";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { test, vi } from "vitest";
 import { createMockContext } from "../../../test/support.js";
+import { S3SyncBackend } from "../src/backends/s3/s3-backend.js";
 import {
   type ExpectedRemoteHead,
   type PublishSnapshotOptions,
@@ -866,6 +867,24 @@ test("automatic transfer rejects missing baseline and nonconditional publication
       syncBoth(f.ctx, { ...options, auto: true }, () => weak),
       /requires conditional/,
     );
+  }));
+
+test("automatic transfer accepts the S3 conditional-required capability at an established baseline", async () =>
+  withTempHome(async (agentDir) => {
+    const f = await fixture(agentDir);
+    const settings = JSON.parse(await fs.readFile(localConfigPath(), "utf8"));
+    settings.syncSetups.home.sync.automaticTransfer = true;
+    await fs.writeFile(localConfigPath(), JSON.stringify(settings));
+    assert.equal(f.config.backend.type, "s3");
+    if (f.config.backend.type !== "s3") throw new Error("expected S3 fixture");
+    const capability = new S3SyncBackend(f.config.backend).capability;
+    const backend = { ...backendFacade(f.backend), capability };
+    await fs.writeFile(path.join(agentDir, "AGENTS.md"), "local instructions\n");
+    assert.equal(await syncBoth(f.ctx, { ...options, auto: true }, () => backend), "applied");
+    const head = await f.backend.readHead();
+    assert.notEqual(head?.snapshotId, f.baseHead.snapshotId);
+    assert.equal((await readStateForConfig(f.config)).lastAppliedSnapshot, head?.snapshotId);
+    assert.equal(await readMergeJournal(f.config), undefined);
   }));
 
 test("merge journal is private and snapshots cannot select the operational files", async () =>

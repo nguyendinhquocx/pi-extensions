@@ -14,7 +14,7 @@ It restores valid progress after reloads, branch navigation, and compaction with
 ## ✨ Features
 
 - Registers only `update_progress` with the canonical `steps[].text` payload.
-- Keeps at most one step in progress and requires a reason for blocked work.
+- Keeps at most one step in progress and distinguishes blocked work from completion.
 - Adapts the themed TUI widget to terminal height while prioritizing active and blocked steps.
 - Shows a transient completion summary when every tracked step becomes complete.
 - Restores the latest valid state from current and historical session results on the active branch.
@@ -82,6 +82,7 @@ For local checkout loading, update the checkout, build `packages/pi-progress`, a
 Restart Pi after migration and do not load both package names.
 To roll back, remove `pi-progress` from the same persistent scope or restore the old temporary/local source, then reinstall or load `pi-todo`.
 Neither migration direction rewrites session or settings files.
+Older packages cannot restore new version 5 results; after new updates, prefer a forward fix or resume a branch before the first version 5 update rather than relying on a downgrade to preserve current progress.
 
 ## 🚀 Quick start
 
@@ -106,20 +107,22 @@ The sole registered model tool accepts this exact payload:
       "status": "in_progress"
     },
     {
-      "text": "Publish the package",
-      "status": "blocked",
-      "reason": "Waiting for approval"
+      "text": "Publish the package — waiting for approval",
+      "status": "blocked"
     }
   ]
 }
 ```
 
 Statuses are `pending`, `in_progress`, `completed`, and `blocked`.
-A blocked step requires a non-whitespace `reason`; every other status must omit `reason`.
-The array supports at most 50 steps, text supports at most 300 characters, reasons support at most 200 characters, and at most one step may be `in_progress`.
+Every step contains only `text` and `status`. For blocked work, include what is needed to continue in the text; blocked does not mean completed.
+The array supports at most 50 steps, text supports at most 503 grapheme clusters, and at most one step may be `in_progress`.
+The runtime enforces this limit before schema validation because JSON Schema counts code points rather than grapheme clusters.
+The text limit accommodates the old 300-character text plus ` — ` and a 200-character reason without truncation.
+For compatibility, valid old-style blocked inputs merge `reason` into text; redundant non-blocked reasons are ignored before validation. New stored state never contains a separate reason.
 Unknown fields are rejected.
 
-Successful results store version 4 `{ steps: [{ text, status, reason? }] }` details.
+Successful results store version 5 `{ steps: [{ text, status }] }` details.
 New calls, results, context messages, widget output, and settings use Progress terminology only.
 
 ### Session and compaction behavior
@@ -127,17 +130,21 @@ New calls, results, context messages, widget output, and settings use Progress t
 Startup and tree navigation rebuild state from successful, valid results on the active branch.
 The compatibility decoder accepts only these historical contracts:
 
+- `update_progress` version 4 `{ steps: [{ text, status, reason? }] }`;
 - `update_todo_list` version 3 `{ todos: [{ step, status, reason? }] }`;
 - `update_todo_list` or `todo_widget` version 2 `{ todos: [{ step, status }] }`; and
 - `update_todo_list` or `todo_widget` version 1 `{ items: [{ text, status }] }`.
 
-Historical names are read-only session inputs and are not registered as tool aliases.
+Historical Todo names are read-only session inputs and are not registered as tool aliases.
+Valid historical blocked reasons are merged into text as `text — reason`, after validation under their original limits; session history is never rewritten.
 Wrong name/version combinations, malformed shapes, errored results, exceeded limits, and invalid invariants are ignored.
 A later valid empty snapshot clears earlier state.
 
-Ordinary turns rely on the retained matching tool call and result, so the extension does not prepend or rewrite model-visible history.
+Upgrading or reloading into the text-only step schema intentionally changes the model-visible tool definition and guidance once; subsequent ordinary turns keep both stable.
+The tool does not enable strict constrained sampling.
+Ordinary turns rely on the retained matching tool call and result, including calls with ignored redundant reasons, so the extension does not prepend or rewrite model-visible history.
 When leading compaction or branch summaries remove that evidence, the extension inserts one deterministic hidden Progress state message after the summaries.
-A Todo boundary already established before upgrade remains byte-stable for that summary epoch, including after updates, clears, reloads, and branch navigation.
+A Progress version 4 or Todo boundary already established before upgrade remains byte-stable for that summary epoch, including after updates, clears, reloads, and branch navigation.
 A later summary epoch uses only canonical Progress context for the then-current state.
 
 In TUI mode, the widget appears above the editor and starts with a full-width themed separator.
@@ -145,7 +152,8 @@ Adaptive mode uses up to one third of terminal height, bounded between four and 
 It prioritizes the in-progress step, blocked steps, and pending steps before summarizing completed or hidden rows.
 Completing every non-empty step shows a three-second summary, then hides the widget without clearing session state.
 Updates, clears, tree navigation, replacement, and shutdown cancel stale summaries.
-RPC, print, and JSON modes retain structured tool behavior without creating a widget.
+RPC mode publishes progress and completion summaries as string-line snapshots at 80 columns using the default 36-row budget because Pi does not expose client dimensions.
+Print and JSON modes retain structured tool behavior without creating a widget.
 
 ## ⚙️ Settings
 
@@ -177,12 +185,12 @@ This read-only fallback intentionally differs from the repository's usual copy-a
 
 The extension reads only the optional canonical or legacy user settings file and never writes either file.
 It does not start processes, access credentials, or make network requests.
-Pi stores progress text and blocked reasons in normal session tool results, so they follow the user's session persistence choices.
+Pi stores progress text in normal session tool results, so they follow the user's session persistence choices.
 Terminal escape sequences, control characters, and bidirectional display controls are stripped only at the display boundary; stored tool payloads remain unchanged.
 
 ## 🚧 Limitations
 
-- The visual widget and completion summary appear only in TUI mode.
+- RPC widgets use fixed-size snapshots rather than adapting to the client viewport.
 - The extension provides a model tool rather than a slash command, SettingsList, or manual progress editor.
 - It reminds the model to update progress but cannot infer completion or force a tool call.
 - Compatibility restores only the documented, valid historical result contracts from the active branch.

@@ -141,7 +141,7 @@ for (const obsolete of [undefined, true, false, "obsolete"] as const) {
     const calls = mockFetch();
     try {
       await state.emit("session_start");
-      await vi.waitFor(() => assert.match(state.context.statuses.get("usage") ?? "", /plan.*80%.*app.*↻/));
+      await vi.waitFor(() => assert.match(state.context.statuses.get("usage") ?? "", /^chatgpt plan 80% ↻ [\ddhms]+$/));
       await state.run();
       assert.equal(calls.length, 2);
       assert.equal(state.runtime.get().settings.codexFastMode, false);
@@ -167,7 +167,7 @@ for (const mode of ["tui", "rpc"] as const) {
     try {
       await state.run();
       assert.match(state.titles.join("\n"), /Plan limits[\s\S]*80%[\s\S]*App limits[\s\S]*resets/);
-      assert.match(state.context.statuses.get("usage") ?? "", /plan.*80%.*app.*↻/);
+      assert.match(state.context.statuses.get("usage") ?? "", /^chatgpt plan 80% ↻ [\ddhms]+$/);
       assert.doesNotMatch(state.titles.join("\n"), /native-access|account-test|oaiapp_test|90%/);
       assert.doesNotMatch(state.context.statuses.get("usage") ?? "", /app[^%]*%/);
       assert.ok(!state.actions.some((action) => /Turn Fast|Redeem usage/.test(action)));
@@ -410,12 +410,52 @@ for (const change of ["rotation", "removal"] as const) {
   });
 }
 
-test("automatic refresh publishes both domains and releases its HTTP/timers on shutdown", async () => {
+for (const reset of ["missing", "expired", "future"] as const) {
+  test(`companion countdown follows ${reset} plan reset, not future app resets`, async () => {
+    const state = await setup();
+    const now = new Date("2026-10-06T00:00:00Z").getTime();
+    vi.useFakeTimers({ now });
+    const setStatus = vi.spyOn(state.context.ctx.ui, "setStatus");
+    const fetch = vi.fn(async (input: string | URL | Request) => {
+      const url = String(input);
+      const window = {
+        used_percent: 20,
+        limit_window_seconds: 18000,
+        ...(reset === "missing" ? {} : { reset_at: now / 1000 + (reset === "future" ? 90 : -60) }),
+      };
+      return new Response(JSON.stringify(url.endsWith("/apps") ? apps : { rate_limit: { primary_window: window } }));
+    });
+    vi.stubGlobal("fetch", fetch);
+    try {
+      await state.emit("session_start");
+      await state.run();
+      assert.equal(vi.getTimerCount(), reset === "future" ? 2 : 1);
+      const publications = setStatus.mock.calls.length;
+      const requests = fetch.mock.calls.length;
+      await vi.advanceTimersByTimeAsync(60_000);
+      assert.equal(setStatus.mock.calls.length, publications + (reset === "future" ? 1 : 0));
+      if (reset === "future") assert.equal(state.context.statuses.get("usage"), "chatgpt plan 80% ↻ 1m");
+      await vi.advanceTimersByTimeAsync(60_000);
+      const completedPublications = setStatus.mock.calls.length;
+      assert.equal(completedPublications, publications + (reset === "future" ? 2 : 0));
+      assert.equal(vi.getTimerCount(), 1); // Only the five-minute endpoint refresh remains.
+      await vi.advanceTimersByTimeAsync(60_000);
+      assert.equal(setStatus.mock.calls.length, completedPublications);
+      assert.equal(fetch.mock.calls.length, requests);
+      await state.emit("session_shutdown");
+      assert.equal(vi.getTimerCount(), 0);
+    } finally {
+      await state.emit("session_shutdown");
+    }
+  });
+}
+
+test("automatic refresh publishes only plan limits and releases its HTTP/timers on shutdown", async () => {
   const state = await setup();
   const calls = mockFetch();
   try {
     await state.emit("session_start");
-    await vi.waitFor(() => assert.match(state.context.statuses.get("usage") ?? "", /plan.*80%.*app.*↻/));
+    await vi.waitFor(() => assert.match(state.context.statuses.get("usage") ?? "", /^chatgpt plan 80% ↻ [\ddhms]+$/));
     assert.equal(calls.length, 2);
     vi.useFakeTimers();
     await state.run();

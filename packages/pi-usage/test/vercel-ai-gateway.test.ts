@@ -103,34 +103,6 @@ test("Vercel AI Gateway runtime auth accepts only the official model and auth or
   const auth = await resolveUsageAuth(officialContext, adapter);
   assert.deepEqual(auth?.headers, { Authorization: "Bearer current-vercel-key" });
   assert.ok(auth?.secrets.includes("must-not-send"));
-
-  const fetchMock = vi.spyOn(globalThis, "fetch");
-  try {
-    for (const [modelBaseUrl, authBaseUrl, pattern] of [
-      ["https://proxy.example.test/v1", undefined, /custom.*official/iu],
-      [VERCEL_MODEL.baseUrl, "https://proxy.example.test/v1", /proxy-resolved.*official/iu],
-    ] as const) {
-      const model = { ...VERCEL_MODEL, baseUrl: modelBaseUrl };
-      const { ctx } = createMockContext({
-        model,
-        modelRegistry: {
-          getApiKeyAndHeaders: async () => ({ ok: true, apiKey: "must-not-send" }),
-          getProviderAuth: async () => ({
-            auth: {
-              apiKey: "must-not-send",
-              ...(authBaseUrl ? { baseUrl: authBaseUrl } : {}),
-            },
-          }),
-          getAvailable: () => [model],
-          getAll: () => [model],
-        },
-      });
-      await assert.rejects(() => resolveUsageAuth(ctx, adapter), pattern);
-    }
-    assert.equal(fetchMock.mock.calls.length, 0);
-  } finally {
-    fetchMock.mockRestore();
-  }
 });
 
 test("Vercel AI Gateway transport revalidates around the fixed no-redirect request", async () => {

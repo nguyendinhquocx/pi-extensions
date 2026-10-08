@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import fs from "node:fs/promises";
 import path from "node:path";
+import { withFileMutationQueue } from "@earendil-works/pi-coding-agent";
 import { test, vi } from "vitest";
 import { createSnapshot } from "../src/snapshot/snapshot.js";
 import { readStateForConfig, syncStateFingerprint } from "../src/state/sync-state-store.js";
@@ -219,3 +220,47 @@ test("merged apply rechecks spelling after awaited validation", async () =>
     );
     assert.equal(await fs.readFile(path.join(root, "agents.md"), "utf8"), "before");
   }));
+
+for (const incoming of ["concurrent writer", "before", "after"])
+  test(`case rename refuses a queued destination writer with ${incoming} bytes`, async () =>
+    withTempHome(async (root) => {
+      await fs.mkdir(path.join(root, "prompts"), { recursive: true });
+      const source = path.join(root, "prompts/Foo.md");
+      const destination = path.join(root, "prompts/foo.md");
+      await fs.writeFile(source, "before");
+      const realpath = fs.realpath.bind(fs);
+      vi.spyOn(fs, "realpath").mockImplementation(async (target, ...args) => {
+        if (String(target) === destination) {
+          try {
+            return await realpath(source, ...args);
+          } catch (error) {
+            if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+          }
+        }
+        return realpath(target, ...args);
+      });
+      const rm = fs.rm.bind(fs);
+      let writer: Promise<void> | undefined;
+      vi.spyOn(fs, "rm").mockImplementation(async (target, options) => {
+        await rm(target, options);
+        if (String(target) === source) {
+          writer = withFileMutationQueue(destination, async () => {
+            await fs.writeFile(destination, incoming);
+          });
+          await writer;
+        }
+      });
+      await assert.rejects(
+        applyMergedSnapshot(
+          snapshot([{ path: "prompts/Foo.md", content: Buffer.from("before") }]),
+          snapshot([{ path: "prompts/foo.md", content: Buffer.from("after") }]),
+          new Set(),
+          { include: ["prompts"] },
+          async () => {},
+        ),
+        /destination changed before queue reservation/,
+      );
+      assert.ok(writer);
+      await writer;
+      assert.equal(await fs.readFile(destination, "utf8"), incoming);
+    }));

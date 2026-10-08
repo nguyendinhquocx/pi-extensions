@@ -18,7 +18,8 @@ import {
   SyncBackendConflictError,
   SyncBackendPublicationOutcomeUnknownError,
 } from "../sync-backend.js";
-import { S3Client, S3ObjectAlreadyExistsError } from "./s3-client.js";
+import { S3Client, S3HttpError, S3ObjectAlreadyExistsError } from "./s3-client.js";
+import { requireS3Etag, verifyS3Conditions } from "./s3-conditions.js";
 
 const VERSION = 1;
 const POST_COMMIT_TIMEOUT_MS = 30_000;
@@ -26,8 +27,9 @@ const POST_COMMIT_TIMEOUT_MS = 30_000;
 export class S3SyncBackend implements SyncBackend {
   readonly identity: string;
   readonly destination: string;
-  readonly capability = "read-check-write-verify" as const;
+  readonly capability = "conditional-required" as const;
   private readonly checksums = new Map<string, string>();
+  private recoveryHead?: { current: string; legacy: string };
 
   constructor(
     private readonly config: ResolvedS3Backend,
@@ -42,7 +44,18 @@ export class S3SyncBackend implements SyncBackend {
     return left === right;
   }
 
+  matchesUncommittedRecoveryHead(current: RemoteHead, recorded: RemoteHead) {
+    return (
+      this.sameRevision(current.revision, recorded.revision) ||
+      (current.snapshotId === recorded.snapshotId &&
+        current.snapshotRef === recorded.snapshotRef &&
+        current.revision === this.recoveryHead?.current &&
+        recorded.revision === this.recoveryHead?.legacy)
+    );
+  }
+
   async readHead(signal?: AbortSignal): Promise<RemoteHead | undefined> {
+    this.recoveryHead = undefined;
     const object = await new S3Client(this.config, signal).getJson<LatestPointer>(latestKey(this.config));
     throwIfAborted(signal);
     if (object.missing) return undefined;
@@ -52,7 +65,16 @@ export class S3SyncBackend implements SyncBackend {
       this.config.destination.namespace,
     );
     this.registerChecksum(pointer.snapshot, pointer.sha256);
-    return remoteHead(pointer, this.identity, object.etag);
+    const head = remoteHead(pointer, this.identity, object.etag);
+    if (object.etag && /^"[^"\r\n]+"$/u.test(object.etag)) {
+      // Old clients hashed R2's compression-weakened ETag. Bind the alias to the
+      // exact current pointer and strong ETag, solely for inactive-journal retirement.
+      this.recoveryHead = {
+        current: head.revision,
+        legacy: remoteHead(pointer, this.identity, `W/${object.etag}`).revision,
+      };
+    }
+    return head;
   }
 
   async readSnapshot(reference: string, signal?: AbortSignal): Promise<Snapshot> {
@@ -78,6 +100,8 @@ export class S3SyncBackend implements SyncBackend {
   ): Promise<PublishSnapshotResult> {
     throwIfAborted(options.signal);
     assertSnapshotIdentity(snapshot, this.config.destination.namespace);
+    await verifyS3Conditions(this.config, options.signal);
+    throwIfAborted(options.signal);
     const stagedKey = snapshotKey(this.config, snapshot.id);
     const encoded = await encodeSnapshot(snapshot);
     throwIfAborted(options.signal);
@@ -113,6 +137,7 @@ export class S3SyncBackend implements SyncBackend {
         currentHead: current,
       });
     }
+    const condition = currentObject.missing ? { ifAbsent: true } : { ifMatch: requireS3Etag(currentObject.etag) };
     throwIfAborted(options.signal);
     options.onCommit?.();
 
@@ -120,8 +145,16 @@ export class S3SyncBackend implements SyncBackend {
     // verification to a user-cancellation signal after the boundary begins.
     const commitClient = new S3Client(this.config, AbortSignal.timeout(this.postCommitTimeoutMs));
     try {
-      await commitClient.putJson(latestKey(this.config), pointer);
+      await commitClient.putJson(latestKey(this.config), pointer, condition);
     } catch (error) {
+      if (
+        error instanceof S3ObjectAlreadyExistsError ||
+        (error instanceof S3HttpError && (error.status === 412 || error.status === 409))
+      ) {
+        throw new SyncBackendConflictError("Remote conditional publication was rejected; reread and retry.", {
+          cause: error,
+        });
+      }
       throw new SyncBackendPublicationOutcomeUnknownError(
         `Remote publication outcome is unknown: ${errorMessage(error)}`,
         { cause: error },
@@ -256,8 +289,14 @@ export class S3SyncBackend implements SyncBackend {
   private async updateHistory(client: S3Client, pointer: LatestPointer) {
     const object = await client.getJson<{ version: number; snapshots: LatestPointer[] }>(historyKey(this.config));
     const snapshots = object.missing ? [] : requireHistory(object.value, this.config.destination.namespace);
-    const next = [...snapshots.filter((snapshot) => snapshot.snapshot !== pointer.snapshot), pointer].slice(-100);
-    await client.putJson(historyKey(this.config), { version: VERSION, snapshots: next });
+    const existing = snapshots.find((snapshot) => snapshot.snapshot === pointer.snapshot);
+    if (existing) {
+      if (!samePointer(existing, pointer)) throw new Error("Remote history rebound an immutable snapshot reference.");
+      return;
+    }
+    const next = [...snapshots, pointer].slice(-100);
+    const condition = object.missing ? { ifAbsent: true } : { ifMatch: requireS3Etag(object.etag) };
+    await client.putJson(historyKey(this.config), { version: VERSION, snapshots: next }, condition);
   }
 }
 

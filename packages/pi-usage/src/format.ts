@@ -37,6 +37,7 @@ export function formatUsageReport(report: UsageReport, displayState: UsageDispla
   else if (report.providerId === "github-copilot") formatGitHubCopilotReport(lines, report);
   else if (report.providerId === "openrouter") formatOpenRouterReport(lines, report);
   else if (report.providerId === "opencode-go") formatOpenCodeZenReport(lines, report);
+  else if (report.providerId === "command-code") formatCommandCodeReport(lines, report);
   else if (report.providerId === "kimi-coding") formatKimiCodingReport(lines, report);
   else if (report.providerId === "moonshotai" || report.providerId === "moonshotai-cn") {
     formatMoonshotReport(lines, report);
@@ -62,19 +63,14 @@ export function formatUsageStatusline(
 ): string | undefined {
   if (report.providerId === "openai" && report.source === "openai-chatgpt-auth") return "chatgpt usage: web only";
   if (report.source === "openai-chatgpt-companion") {
-    return `chatgpt ${["chatgpt-plan", "chatgpt-app"]
-      .map((group) => {
-        const windows = report.buckets
-          .filter((bucket) => bucket.groupId === group)
-          .map((bucket) => {
-            const reset = formatResetCountdown(bucket.resetsAt, now);
-            const window = reset ? `↻ ${reset}` : formatWindowLabel(bucket.windowMinutes, "weekly", true);
-            if (group === "chatgpt-app") return window;
-            return `${bucket.remaining === undefined ? "unavailable" : `${bucket.remaining.toFixed(0)}%`} ${window}`;
-          });
-        return `${group === "chatgpt-plan" ? "plan" : "app"} ${windows.join(" ")}`;
-      })
-      .join(" · ")}`;
+    const windows = report.buckets
+      .filter((bucket) => bucket.groupId === "chatgpt-plan")
+      .map((bucket) => {
+        const reset = formatResetCountdown(bucket.resetsAt, now);
+        const window = reset ? `↻ ${reset}` : formatWindowLabel(bucket.windowMinutes, "weekly", true);
+        return `${bucket.remaining === undefined ? "unavailable" : `${bucket.remaining.toFixed(0)}%`} ${window}`;
+      });
+    return `chatgpt plan ${windows.join(" ")}`;
   }
   if (report.providerId === "baseten") return formatBasetenStatusline(report);
   if (report.providerId === "openai-codex") {
@@ -91,6 +87,7 @@ export function formatUsageStatusline(
     if (typeof total?.value === "number") return `openrouter ${formatUsd(total.value)} used`;
   }
   if (report.providerId === "opencode-go") return formatOpenCodeZenStatusline(report);
+  if (report.providerId === "command-code") return formatCommandCodeStatusline(report);
   if (report.providerId === "kimi-coding") return formatKimiCodingStatusline(report);
   if (report.providerId === "moonshotai" || report.providerId === "moonshotai-cn") {
     return formatMoonshotStatusline(report);
@@ -294,6 +291,36 @@ function formatOpenCodeZenStatusline(report: UsageReport): string | undefined {
     if (bucket.used === undefined) continue;
     const compact = bucket.id === "rolling" ? "r" : bucket.id === "weekly" ? "w" : "m";
     parts.push(`${clampPercent(bucket.used).toFixed(0)}% ${compact}`);
+  }
+  return parts.length > 1 ? parts.join(" ") : undefined;
+}
+
+function formatCommandCodeReport(lines: string[], report: UsageReport): void {
+  for (const bucket of report.buckets) {
+    const reset = bucket.resetsAt ? ` (resets ${formatReset(bucket.resetsAt)})` : "";
+    if (bucket.used === undefined || bucket.limit === undefined) {
+      lines.push(`${`${bucket.label}:`.padEnd(VALUE_COLUMN)}unavailable${reset}`);
+      continue;
+    }
+    lines.push(
+      `${`${bucket.label}:`.padEnd(VALUE_COLUMN)}${formatUsd(bucket.used)} of ${formatUsd(bucket.limit)} used · ${percentRemaining(bucket)}% left${reset}`,
+    );
+  }
+  for (const metric of report.metrics) {
+    lines.push(`${`${metric.label}:`.padEnd(VALUE_COLUMN)}${formatMetricValue(metric.value, metric.unit)}`);
+  }
+}
+
+function formatCommandCodeStatusline(report: UsageReport): string | undefined {
+  const parts = ["cmd"];
+  for (const [id, label] of [
+    ["five-hour", "5h"],
+    ["weekly", "wk"],
+    ["monthly", "mo"],
+  ] as const) {
+    const bucket = report.buckets.find((candidate) => candidate.id === id);
+    if (bucket?.unit !== "usd" || bucket.limit === undefined || bucket.remaining === undefined) continue;
+    parts.push(`${percentRemaining(bucket)}% ${label}`);
   }
   return parts.length > 1 ? parts.join(" ") : undefined;
 }

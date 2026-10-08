@@ -6,6 +6,7 @@ import { createMockContext, createMockPi } from "../../../test/support.js";
 import { localConfigPath } from "../src/settings/config-file.js";
 import sync from "../src/sync.js";
 import { v3S3Settings, v3WebDavSettings, withTempHome } from "./helpers.js";
+import { S3ProbeHarness } from "./s3-probe-harness.js";
 import { observeCheckCompletion } from "./startup-check-helpers.js";
 
 test("session replacement aborts an in-flight backend operation owned by the old session", async () => {
@@ -107,7 +108,10 @@ test("session shutdown owns an opt-in session publication with a bounded signal"
     let snapshotSignal: AbortSignal | null | undefined;
     let latestPuts = 0;
     const originalFetch = globalThis.fetch;
+    const probes = new S3ProbeHarness();
     globalThis.fetch = (async (input, init) => {
+      const probe = probes.handle(input, init);
+      if (probe) return probe;
       const url = new URL(String(input));
       const method = init?.method ?? "GET";
       if (url.pathname.includes("/snapshots/") && method === "PUT") {

@@ -273,42 +273,62 @@ test("remote collision dependency group is retained while an independent path pr
       snapshotFile("prompts/a.md", Buffer.from("lower\n")).sha256,
     );
   }));
-test("reviewed remote case rename deletes its preimage before applying the selected path", async () =>
-  withTempHome(async (root) => {
-    const f = await fixture(root);
-    const upper = path.join(root, "prompts/Foo.md");
-    await fs.writeFile(upper, "base\n");
-    await push(f.context.ctx, options, undefined, () => f.backend);
-    await fs.writeFile(upper, "local\n");
-    const head = await f.backend.readHead();
-    assert.ok(head);
-    const remote = await f.backend.readSnapshot(head.snapshotRef);
-    await f.backend.publishSnapshot(
-      {
-        ...remote,
-        id: "case-rename",
-        files: [
-          ...remote.files.filter((file) => file.path !== "prompts/Foo.md"),
-          snapshotFile("prompts/foo.md", Buffer.from("remote\n")),
-        ],
-      },
-      expectedRemoteHead(head),
-    );
-    await mergeSync(f.context.ctx, options, () => f.backend);
-    const state = await readStateForConfig(f.config);
-    const group = state.unresolved?.find((item) => item.paths.includes("prompts/Foo.md"));
-    assert.ok(group);
-    const artifact = await readConflictArtifact(f.config, f.backend.identity, group.artifact);
-    await mergeSync(f.context.ctx, options, () => f.backend, {
-      token: group.artifact,
-      group: artifact.groups.findIndex((item) => item.paths.includes("prompts/Foo.md")),
-      source: "remote",
-      stateIdentity: syncStateFingerprint(state),
-      artifactIdentity: conflictArtifactFingerprint(artifact),
-    });
-    await assert.rejects(fs.access(upper), { code: "ENOENT" });
-    assert.equal(await fs.readFile(path.join(root, "prompts/foo.md"), "utf8"), "remote\n");
-  }));
+for (const simulateAlias of [false, true])
+  for (const [beforePath, afterPath] of [
+    ["prompts/Foo.md", "prompts/foo.md"],
+    ["prompts/foo.md", "prompts/Foo.md"],
+  ])
+    test(`reviewed remote case rename ${beforePath} to ${afterPath} deletes its preimage (${simulateAlias ? "simulated alias" : "native filesystem"})`, async () =>
+      withTempHome(async (root) => {
+        const f = await fixture(root);
+        const upper = path.join(root, beforePath);
+        if (simulateAlias) {
+          const realpath = fs.realpath.bind(fs);
+          vi.spyOn(fs, "realpath").mockImplementation(async (target, ...args) => {
+            if (String(target) === path.join(root, afterPath)) {
+              try {
+                return await realpath(upper, ...args);
+              } catch (error) {
+                if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+              }
+            }
+            return realpath(target, ...args);
+          });
+        }
+        await fs.writeFile(upper, "base\n");
+        await push(f.context.ctx, options, undefined, () => f.backend);
+        await fs.writeFile(upper, "local\n");
+        const head = await f.backend.readHead();
+        assert.ok(head);
+        const remote = await f.backend.readSnapshot(head.snapshotRef);
+        await f.backend.publishSnapshot(
+          {
+            ...remote,
+            id: "case-rename",
+            files: [
+              ...remote.files.filter((file) => file.path !== beforePath),
+              snapshotFile(afterPath, Buffer.from("remote\n")),
+            ],
+          },
+          expectedRemoteHead(head),
+        );
+        await mergeSync(f.context.ctx, options, () => f.backend);
+        const state = await readStateForConfig(f.config);
+        const group = state.unresolved?.find((item) => item.paths.includes(beforePath));
+        assert.ok(group);
+        const artifact = await readConflictArtifact(f.config, f.backend.identity, group.artifact);
+        await mergeSync(f.context.ctx, options, () => f.backend, {
+          token: group.artifact,
+          group: artifact.groups.findIndex((item) => item.paths.includes(beforePath)),
+          source: "remote",
+          stateIdentity: syncStateFingerprint(state),
+          artifactIdentity: conflictArtifactFingerprint(artifact),
+        });
+        const names = await fs.readdir(path.join(root, "prompts"));
+        assert.ok(!names.includes(path.basename(beforePath)));
+        assert.ok(names.includes(path.basename(afterPath)));
+        assert.equal(await fs.readFile(path.join(root, afterPath), "utf8"), "remote\n");
+      }));
 
 test("reviewed file-to-directory transition installs its child after deleting the file", async () =>
   withTempHome(async (root) => {

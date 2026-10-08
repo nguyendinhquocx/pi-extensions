@@ -8,6 +8,7 @@ import { createMockContext, createMockPi } from "../../../test/support.js";
 import { localConfigPath } from "../src/settings/config-file.js";
 import sync from "../src/sync.js";
 import { v3S3Settings as requiredConfig, snapshot, withTempHome } from "./helpers.js";
+import { S3ProbeHarness } from "./s3-probe-harness.js";
 
 test("snapshot staging failure leaves the prior latest pointer active", async () => {
   await withPublicationHarness({ failSnapshot: true }, async ({ counts, notifications }) => {
@@ -76,7 +77,10 @@ async function withPublicationHarness(
     let replaceOnNextLatestRead = false;
     const counts = { snapshotPuts: 0, latestPuts: 0, historyPuts: 0 };
     const originalFetch = globalThis.fetch;
+    const probes = new S3ProbeHarness();
     globalThis.fetch = (async (input, init) => {
+      const probe = probes.handle(input, init);
+      if (probe) return probe;
       const url = new URL(String(input));
       const method = init?.method ?? "GET";
       if (url.pathname.endsWith("/latest.json")) {

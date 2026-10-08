@@ -192,6 +192,7 @@ export function registerGoalLifecycle(
     if (!sessionActive) return;
     if (runtime.activeGoal?.status !== "active" || !runtime.ownsWorkflow(runtime.activeGoal)) {
       runtime.clearGoalRecovery();
+      runtime.ensureInactiveGoalContextContract(ctx);
       return;
     }
 

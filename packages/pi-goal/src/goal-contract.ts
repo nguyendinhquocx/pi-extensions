@@ -14,6 +14,8 @@ interface ContractMessage {
   role?: string;
   customType?: string;
   content?: unknown;
+  details?: { sentAt?: unknown };
+  timestamp?: unknown;
 }
 
 interface ContractSessionEntry extends ContractMessage {
@@ -82,12 +84,50 @@ function reconcileContract(
     timestamp: number;
   },
 ) {
-  if (latestGoalContractContent(messages) === expected.content) return messages;
-  const summaryBoundary = leadingSummaryBoundary(messages);
-  if (!hasGoalContextContractHistory(messages) && hasLeadingSummary(messages, summaryBoundary)) {
-    return [...messages.slice(0, summaryBoundary), expected, ...messages.slice(summaryBoundary)];
+  const placed = placeDeferredContracts(messages);
+  if (latestGoalContractContent(placed) === expected.content) return placed;
+  // Match Pi's immediate persisted-message position after retained history.
+  // A deferred publication is moved back to this position by placeDeferredContracts.
+  return [...placed, expected];
+}
+
+/**
+ * Pi queues a contract sent while the agent is streaming until the current turn ends, so it can be
+ * persisted after output that started later. Show it where it was sent instead: before the earliest
+ * assistant message of the run of messages that are all newer than `details.sentAt`. That is where the
+ * transient restoration sat on the previous request, so the request prefix survives the delivery.
+ * An assistant message is always a complete turn boundary, so a contract is never placed between a tool
+ * call and its result. Contracts without `sentAt` stay where Pi put them.
+ */
+function placeDeferredContracts(messages: unknown[]) {
+  let placed = messages;
+  for (let index = 0; index < placed.length; index += 1) {
+    const sentAt = deferredSentAt(placed[index]);
+    if (sentAt === undefined) continue;
+    const boundary = turnBoundaryAfter(placed, index, sentAt);
+    if (boundary === undefined) continue;
+    // Carry the send time so timestamps stay ordered: Pi's context estimate ignores the usage of an
+    // assistant message older than a message placed before it.
+    const contract = { ...(placed[index] as object), timestamp: sentAt };
+    placed = [...placed.slice(0, boundary), contract, ...placed.slice(boundary, index), ...placed.slice(index + 1)];
   }
-  return [...messages, expected];
+  return placed;
+}
+
+function turnBoundaryAfter(messages: readonly unknown[], contractIndex: number, sentAt: number) {
+  let boundary: number | undefined;
+  for (let index = contractIndex - 1; index >= 0; index -= 1) {
+    const message = unwrapMessage(messages[index]);
+    if (isGoalContextContract(message) || typeof message.timestamp !== "number" || message.timestamp <= sentAt) break;
+    if (message.role === "assistant") boundary = index;
+  }
+  return boundary;
+}
+
+function deferredSentAt(message: unknown) {
+  if (!isGoalContextContract(message)) return undefined;
+  const sentAt = unwrapMessage(message).details?.sentAt;
+  return typeof sentAt === "number" && Number.isFinite(sentAt) ? sentAt : undefined;
 }
 
 function latestGoalContractContent(messages: readonly unknown[]) {
@@ -96,21 +136,6 @@ function latestGoalContractContent(messages: readonly unknown[]) {
     if (isGoalContextContract(message)) return unwrapMessage(message).content;
   }
   return undefined;
-}
-
-function leadingSummaryBoundary(messages: readonly unknown[]) {
-  let index = unwrapMessage(messages[0]).role === "system" ? 1 : 0;
-  while (index < messages.length) {
-    const role = unwrapMessage(messages[index]).role;
-    if (role !== "compactionSummary" && role !== "branchSummary") break;
-    index += 1;
-  }
-  return index;
-}
-
-function hasLeadingSummary(messages: readonly unknown[], boundary: number): boolean {
-  const summaryStart = unwrapMessage(messages[0]).role === "system" ? 1 : 0;
-  return boundary > summaryStart;
 }
 
 function unwrapMessage(message: unknown): ContractMessage {

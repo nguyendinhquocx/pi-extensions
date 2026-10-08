@@ -112,7 +112,7 @@ test("generated runtime is loadable by Pi's Jiti resource loader", async () => {
       await command.handler("", context.ctx);
       assert.match(title, /Plan limits/);
       assert.match(title, /App limits/);
-      assert.equal(context.statuses.get("usage"), "chatgpt plan 80% 5h · app 5h");
+      assert.equal(context.statuses.get("usage"), "chatgpt plan 80% 5h");
       assert.match(title, /Reset time unavailable/);
       assert.doesNotMatch(title.split("App limits:")[1]?.split("App allowance:")[0] ?? "", /%|█|░/);
       assert.ok(requests.some((url) => url.endsWith("/apps")));

@@ -1,5 +1,11 @@
 # @narumitw/pi-tui-kit
 
+## 0.65.3
+
+### Patch Changes
+
+- 178e2e4: Request a render after deferred custom-answer submission, and isolate answer and note editor generations so earlier asynchronous callbacks cannot overwrite a later edit. Preserve pending key-release delivery to its owning editor and dispose retired editor instances after their key cycles drain.
+
 ## 0.65.2
 
 ### Patch Changes

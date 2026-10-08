@@ -10,6 +10,7 @@ import {
   type ProgressDetails,
   ProgressParameters,
   type ProgressStep,
+  prepareProgressArguments,
   progressBoundaryContent,
   reconcileProgressContext,
   reconstructProgress,
@@ -27,6 +28,8 @@ import {
 export const WIDGET_KEY = "progress";
 export const COMPLETION_SUMMARY_MS = 3_000;
 const WIDGET_OPTIONS = { placement: "aboveEditor" } as const;
+// RPC provides no terminal dimensions and ignores component factories.
+const RPC_WIDGET_WIDTH = 80;
 
 export interface ProgressWidgetDependencies {
   loadSettings?: typeof loadProgressSettings;
@@ -63,7 +66,7 @@ export default function progressWidgetExtension(pi: ExtensionAPI, dependencies: 
   };
 
   const publish = (ctx: ExtensionContext): void => {
-    if (!ownsSession(ctx) || ctx.mode !== "tui") return;
+    if (!ownsSession(ctx) || !ctx.hasUI) return;
     if (!settings.widget.enabled || steps.length === 0 || completionSummaryHidden) {
       ctx.ui.setWidget(WIDGET_KEY, undefined);
       return;
@@ -71,6 +74,14 @@ export default function progressWidgetExtension(pi: ExtensionAPI, dependencies: 
 
     const snapshot = cloneProgressSteps(steps);
     const widgetSettings = { ...settings.widget };
+    if (ctx.mode === "rpc") {
+      ctx.ui.setWidget(
+        WIDGET_KEY,
+        renderProgressWidget(snapshot, ctx.ui.theme, RPC_WIDGET_WIDTH, { settings: widgetSettings }),
+        WIDGET_OPTIONS,
+      );
+      return;
+    }
     ctx.ui.setWidget(
       WIDGET_KEY,
       (tui, theme) => ({
@@ -88,20 +99,24 @@ export default function progressWidgetExtension(pi: ExtensionAPI, dependencies: 
   const publishCompletionSummary = (ctx: ExtensionContext): void => {
     cancelCompletionSummary();
     completionSummaryHidden = false;
-    if (!ownsSession(ctx) || ctx.mode !== "tui" || !settings.widget.enabled) {
+    if (!ownsSession(ctx) || !ctx.hasUI || !settings.widget.enabled) {
       publish(ctx);
       return;
     }
 
     const total = steps.length;
-    ctx.ui.setWidget(
-      WIDGET_KEY,
-      (_tui, theme) => ({
-        render: (width) => renderCompletionSummary(total, theme, width),
-        invalidate: () => {},
-      }),
-      WIDGET_OPTIONS,
-    );
+    if (ctx.mode === "rpc") {
+      ctx.ui.setWidget(WIDGET_KEY, renderCompletionSummary(total, ctx.ui.theme, RPC_WIDGET_WIDTH), WIDGET_OPTIONS);
+    } else {
+      ctx.ui.setWidget(
+        WIDGET_KEY,
+        (_tui, theme) => ({
+          render: (width) => renderCompletionSummary(total, theme, width),
+          invalidate: () => {},
+        }),
+        WIDGET_OPTIONS,
+      );
+    }
     const ownerSession = activeSession;
     const token = completionToken;
     completionTimer = scheduleTimeout(() => {
@@ -124,17 +139,17 @@ export default function progressWidgetExtension(pi: ExtensionAPI, dependencies: 
     name: TOOL_NAME,
     label: "Progress",
     description:
-      "Replace the current session progress state with the complete supplied steps. Call update_progress whenever actual step state changes; keep at most one step in_progress, require a reason for each blocked step, and send an empty steps array to clear it.",
+      "Replace the current session progress state with the complete supplied steps. Call update_progress whenever actual step state changes; keep at most one step in_progress and send an empty steps array to clear it.",
     promptSnippet: "Maintain the complete session progress state as multi-step work progresses",
     promptGuidelines: [
       "Use update_progress to track work with multiple meaningful steps; skip it for simple, single-step tasks.",
       "Use update_progress to keep the progress state aligned with actual work: mark a step in_progress before starting it, mark it completed as soon as it finishes, and revise the steps before continuing when the plan changes.",
-      "Use blocked with a concise reason only when progress depends on an external action or condition; blocked does not mean completed.",
+      "Use blocked only when progress depends on an external action or condition, and include what is needed to continue in the step text; blocked does not mean completed.",
       "Before a progress report or final response, call update_progress to reconcile every step with actual work; do not report completion while the progress state is stale.",
       "On every update_progress call, send the complete current steps array, keep at most one step in_progress, and send an empty steps array when no tracked work remains.",
     ],
     parameters: ProgressParameters,
-    prepareArguments: validateProgressArguments,
+    prepareArguments: prepareProgressArguments,
     async execute(_toolCallId, params, signal, _onUpdate, ctx) {
       signal?.throwIfAborted();
       if (!ownsSession(ctx)) {
@@ -192,7 +207,7 @@ export default function progressWidgetExtension(pi: ExtensionAPI, dependencies: 
     generation += 1;
     const ownerGeneration = generation;
     activeSession = ctx.sessionManager;
-    if (ctx.mode === "tui") {
+    if (ctx.hasUI) {
       const ownerSession = ctx.sessionManager;
       activeWidgetOwner = {
         sessionManager: ownerSession,
@@ -270,7 +285,6 @@ export default function progressWidgetExtension(pi: ExtensionAPI, dependencies: 
 export {
   LEGACY_TODO_CONTEXT_MESSAGE_TYPE,
   LEGACY_TODO_RESTORED_BOUNDARY_ENTRY_TYPE,
-  MAX_PROGRESS_REASON_LENGTH,
   MAX_PROGRESS_STEPS,
   MAX_PROGRESS_TEXT_LENGTH,
   PROGRESS_CONTEXT_MESSAGE_TYPE,

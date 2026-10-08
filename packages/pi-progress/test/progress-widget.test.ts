@@ -50,12 +50,12 @@ test("registers only the canonical progress tool and strict steps-by-text schema
   assert.equal(tool.name, "update_progress");
   assert.equal(tool.label, "Progress");
   assert.match(tool.description, /whenever actual step state changes/u);
-  assert.match(tool.description, /require a reason for each blocked step/u);
+  assert.doesNotMatch(tool.description, /require a reason/u);
   assert.match(tool.promptSnippet, /multi-step work progresses/u);
   assert.deepEqual(tool.promptGuidelines, [
     "Use update_progress to track work with multiple meaningful steps; skip it for simple, single-step tasks.",
     "Use update_progress to keep the progress state aligned with actual work: mark a step in_progress before starting it, mark it completed as soon as it finishes, and revise the steps before continuing when the plan changes.",
-    "Use blocked with a concise reason only when progress depends on an external action or condition; blocked does not mean completed.",
+    "Use blocked only when progress depends on an external action or condition, and include what is needed to continue in the step text; blocked does not mean completed.",
     "Before a progress report or final response, call update_progress to reconcile every step with actual work; do not report completion while the progress state is stale.",
     "On every update_progress call, send the complete current steps array, keep at most one step in_progress, and send an empty steps array when no tracked work remains.",
   ]);
@@ -75,23 +75,16 @@ test("registers only the canonical progress tool and strict steps-by-text schema
   assert.equal(stepsSchema.maxItems, 50);
   assert.equal(stepsSchema.items?.additionalProperties, false);
   assert.deepEqual(stepsSchema.items?.required, ["text", "status"]);
-  assert.deepEqual(Object.keys(stepsSchema.items?.properties ?? {}), ["text", "status", "reason"]);
+  assert.deepEqual(Object.keys(stepsSchema.items?.properties ?? {}), ["text", "status"]);
   assert.deepEqual(stepsSchema.items?.properties?.text, {
-    description: "A concise, action-oriented step",
+    description: "A concise, action-oriented step (at most 503 grapheme clusters)",
     type: "string",
     minLength: 1,
-    maxLength: 300,
   });
   assert.deepEqual(stepsSchema.items?.properties?.status, {
     type: "string",
     enum: ["pending", "in_progress", "completed", "blocked"],
     description: "The step's current status",
-  });
-  assert.deepEqual(stepsSchema.items?.properties?.reason, {
-    description: "Required only for blocked steps; explain what must unblock the step",
-    type: "string",
-    minLength: 1,
-    maxLength: 200,
   });
 });
 
@@ -107,10 +100,9 @@ test("validates canonical progress input and rejects every invalid invariant", (
     [{ steps: [{ text: 1, status: "pending" }] }, /text must be a string/iu],
     [{ steps: [{ text: " \n ", status: "pending" }] }, /non-whitespace text/iu],
     [{ steps: [{ text: "x", status: "unknown" }] }, /status must be/iu],
-    [{ steps: [{ text: "x", status: "blocked" }] }, /blocked.*reason/iu],
-    [{ steps: [{ text: "x", status: "blocked", reason: " " }] }, /non-whitespace reason/iu],
-    [{ steps: [{ text: "x", status: "blocked", reason: "x".repeat(201) }] }, /reason exceeds 200/iu],
-    [{ steps: [{ text: "x", status: "pending", reason: "not allowed" }] }, /reason only when status is blocked/iu],
+    [{ steps: [{ text: "x", status: "blocked", reason: " " }] }, /unsupported field/iu],
+    [{ steps: [{ text: "x", status: "blocked", reason: "x".repeat(201) }] }, /unsupported field/iu],
+    [{ steps: [{ text: "x", status: "pending", reason: "not allowed" }] }, /unsupported field/iu],
     [
       {
         steps: [
@@ -124,18 +116,17 @@ test("validates canonical progress input and rejects every invalid invariant", (
   for (const [input, pattern] of cases) assert.throws(() => validateProgressArguments(input), pattern);
 
   const text = "e\u0301".repeat(151);
-  const reason = "👨‍👩‍👧‍👦".repeat(101);
-  assert.deepEqual(validateProgressArguments({ steps: [{ text, status: "blocked", reason }] }), {
-    steps: [{ text, status: "blocked", reason }],
+  assert.deepEqual(validateProgressArguments({ steps: [{ text, status: "blocked" }] }), {
+    steps: [{ text, status: "blocked" }],
   });
   assert.throws(
-    () => validateProgressArguments({ steps: [{ text: "e\u0301".repeat(301), status: "pending" }] }),
-    /text exceeds 300/iu,
+    () => validateProgressArguments({ steps: [{ text: "e\u0301".repeat(504), status: "pending" }] }),
+    /text exceeds 503/iu,
   );
   assert.deepEqual(validateProgressArguments({ steps: [] }), { steps: [] });
 });
 
-test("writes only version 4 Progress details, updates the widget, and clears state", async () => {
+test("writes only version 5 Progress details, updates the widget, and clears state", async () => {
   const harness = createHarness();
   const current = createContext();
   await harness.emit("session_start", current.ctx);
@@ -151,11 +142,11 @@ test("writes only version 4 Progress details, updates the widget, and clears sta
   const steps: ProgressStep[] = [
     { text: "task 1", status: "completed" },
     { text: "task 2", status: "in_progress" },
-    { text: "task 3", status: "blocked", reason: "approval" },
+    { text: "task 3 — approval", status: "blocked" },
   ];
   const result = await setProgress(harness, current.ctx, steps);
   assert.equal(result.content[0]?.text, "Progress updated: 1 of 3 complete; 1 in progress; 1 blocked.");
-  assert.deepEqual(result.details, { version: 4, steps });
+  assert.deepEqual(result.details, { version: 5, steps });
   assert.equal("todos" in result.details, false);
   const firstDetailStep = result.details.steps[0];
   assert.ok(firstDetailStep);
@@ -171,14 +162,20 @@ test("writes only version 4 Progress details, updates the widget, and clears sta
 
   const cleared = await setProgress(harness, current.ctx, []);
   assert.equal(cleared.content[0]?.text, "Progress cleared.");
-  assert.deepEqual(cleared.details, { version: 4, steps: [] });
+  assert.deepEqual(cleared.details, { version: 5, steps: [] });
   assert.deepEqual(current.widgets.at(-1), { key: WIDGET_KEY, content: undefined, options: undefined });
 });
 
 test("restores every supported historical result contract", async () => {
   const cases: Array<{ name: string; toolName: string; details: unknown; expected: string }> = [
     {
-      name: "canonical v4",
+      name: "canonical v5",
+      toolName: "update_progress",
+      details: { version: 5, steps: [{ text: "canonical — approval", status: "blocked" }] },
+      expected: "⚠ canonical — approval",
+    },
+    {
+      name: "historical v4",
       toolName: "update_progress",
       details: { version: 4, steps: [{ text: "canonical", status: "blocked", reason: "approval" }] },
       expected: "⚠ canonical — approval",
@@ -251,6 +248,7 @@ test("tree navigation reconstructs only the active branch and accepts valid clea
 
 test("historical clears replace stale state", async () => {
   const clears = [
+    { toolName: "update_progress", details: { version: 5, steps: [] } },
     { toolName: "update_progress", details: { version: 4, steps: [] } },
     { toolName: "update_todo_list", details: { version: 3, todos: [] } },
     { toolName: "update_todo_list", details: { version: 2, todos: [] } },
@@ -356,7 +354,7 @@ test("restores canonical Progress context only after summaries remove matching e
   assert.equal(message?.role === "custom" ? message.customType : undefined, PROGRESS_CONTEXT_MESSAGE_TYPE);
   assert.equal(
     message?.role === "custom" ? message.content : undefined,
-    `[PI PROGRESS STATUS v4]\nCurrent progress steps as JSON data:\n${JSON.stringify({ steps })}`,
+    `[PI PROGRESS STATUS v5]\nCurrent progress steps as JSON data:\n${JSON.stringify({ steps })}`,
   );
   assert.deepEqual(message?.role === "custom" ? message.details : undefined, { version: PROGRESS_CONTEXT_VERSION });
   assert.equal(reconcileProgressContext(restored, steps), restored);
@@ -421,7 +419,7 @@ test("requires exact historical tool-call arguments before treating state as mod
       argumentName: "todos" as const,
       arguments: [{ step: "wait", status: "blocked" }],
       details: { version: 3, todos: [{ step: "wait", status: "blocked", reason: "approval" }] },
-      expected: [{ text: "wait", status: "blocked", reason: "approval" }] as ProgressStep[],
+      expected: [{ text: "wait — approval", status: "blocked" }] as ProgressStep[],
     },
     {
       name: "v2 wrong argument key",
@@ -566,7 +564,7 @@ test("deduplicates old and new owned context messages and canonicalizes a new ep
 
   const newEpoch = reconcileProgressContext([summary("new epoch")], steps);
   assert.equal(newEpoch[1]?.role === "custom" ? newEpoch[1].customType : undefined, PROGRESS_CONTEXT_MESSAGE_TYPE);
-  assert.match(newEpoch[1]?.role === "custom" ? String(newEpoch[1].content) : "", /PI PROGRESS STATUS v4/u);
+  assert.match(newEpoch[1]?.role === "custom" ? String(newEpoch[1].content) : "", /PI PROGRESS STATUS v5/u);
 });
 
 test("renders Progress terminology, sanitizes hostile text, and bounds every line", () => {
@@ -576,7 +574,7 @@ test("renders Progress terminology, sanitizes hostile text, and bounds every lin
   const steps: ProgressStep[] = [
     { text: "done", status: "completed" },
     { text: hostile, status: "in_progress" },
-    { text: "blocked", status: "blocked", reason: "approval\u202e" },
+    { text: "blocked — approval\u202e", status: "blocked" },
   ];
   const before = structuredClone(steps);
   for (const width of [0, 1, 2, 6, 80]) {
@@ -598,7 +596,7 @@ test("renders Progress terminology, sanitizes hostile text, and bounds every lin
   ]);
 });
 
-test("clears the exact widget key on replacement and shutdown and avoids non-TUI widgets", async () => {
+test("clears the exact widget key on replacement and shutdown and avoids headless widgets", async () => {
   const harness = createHarness();
   const previous = createContext();
   await harness.emit("session_start", previous.ctx);
@@ -615,7 +613,7 @@ test("clears the exact widget key on replacement and shutdown and avoids non-TUI
   await harness.emit("session_shutdown", current.ctx);
   assert.deepEqual(current.widgets.at(-1), { key: WIDGET_KEY, content: undefined, options: undefined });
 
-  for (const mode of ["rpc", "print", "json"] as const) {
+  for (const mode of ["print", "json"] as const) {
     const headlessHarness = createHarness();
     const headless = createContext({ mode });
     await headlessHarness.emit("session_start", headless.ctx);
@@ -634,5 +632,5 @@ test("restored boundary metadata uses the Progress-owned entry type", async () =
   await harness.context([summary()], current.ctx);
   assert.equal(harness.entries.length, 1);
   assert.equal(harness.entries[0]?.customType, PROGRESS_RESTORED_BOUNDARY_ENTRY_TYPE);
-  assert.match(JSON.stringify(harness.entries[0]?.data), /PI PROGRESS STATUS v4/u);
+  assert.match(JSON.stringify(harness.entries[0]?.data), /PI PROGRESS STATUS v5/u);
 });
