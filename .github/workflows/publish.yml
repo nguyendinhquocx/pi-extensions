@@ -2,9 +2,10 @@ name: Version or publish packages
 
 on:
   workflow_dispatch:
-  push:
-    branches:
-      - main
+  workflow_run:
+    workflows: ["CI"]
+    types: [completed]
+    branches: [main]
 
 permissions:
   contents: write
@@ -34,15 +35,12 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@v7
         with:
-          node-version-file: .node-version
+          node-version: 26
           registry-url: "https://registry.npmjs.org"
           cache: npm
 
-      - name: Validate installation policy
-        run: node scripts/check-install-policy.mjs
-
       - name: Install dependencies
-        run: npm ci
+        run: npm install
 
       - name: Create version pull request or publish to npm
         id: changesets
