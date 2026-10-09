@@ -268,6 +268,12 @@ export function fitCompactHintSegments(segments: readonly string[], width: numbe
   return result;
 }
 
+export function restoreSearchInput(input: Input, query: string) {
+  // Restore content, not keystrokes: printable bindings must not consume saved text.
+  // Sanitize before adding paste markers so untrusted text cannot terminate the paste.
+  handleSearchInput(input, `\u001b[200~${replaceTerminalControls(query)}\u001b[201~`);
+}
+
 export function handleSearchInput(input: Input, data: string) {
   input.handleInput(data);
   const value = replaceTerminalControls(input.getValue());

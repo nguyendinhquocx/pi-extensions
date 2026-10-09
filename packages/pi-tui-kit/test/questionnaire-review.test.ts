@@ -134,6 +134,7 @@ async function keyCycleRun(bindings: KeybindingsConfig = {}) {
     clearScreen: noop,
     setTitle: noop,
     setProgress: noop,
+    setProgramStatus: noop,
   };
   const host = new TuiMainScreen(terminal);
   const keybindings = new KeybindingsManager(TUI_KEYBINDINGS, bindings);

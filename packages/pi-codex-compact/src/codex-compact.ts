@@ -1,13 +1,11 @@
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { Api, Context, Model, Tool } from "@earendil-works/pi-ai";
 import {
-  buildContextEntries,
   buildSessionContext,
   convertToLlm,
   type ExtensionAPI,
   type ExtensionContext,
   type SessionBeforeCompactEvent,
-  sessionEntryToContextMessages,
 } from "@earendil-works/pi-coding-agent";
 import {
   buildReplacementHistory,
@@ -18,9 +16,9 @@ import {
   fingerprintMessage,
   hasActiveCheckpointClaim,
   latestCheckpoint,
-  projectCheckpointContext,
   REPLACEMENT_BYTE_BUDGET,
 } from "./checkpoint.js";
+import { projectedKeptMessages, projectSessionCheckpointContext } from "./checkpoint-projection.js";
 import { recoverCheckpoint, summaryPrefix } from "./checkpoint-recovery.js";
 import {
   compactionFailureDetail,
@@ -66,12 +64,7 @@ function isCheckpointCompatible(
 
 function keptMessages(event: SessionBeforeCompactEvent): AgentMessage[] {
   const leafId = event.branchEntries.at(-1)?.id ?? null;
-  const contextEntries = buildContextEntries(event.branchEntries, leafId);
-  const keptIndex = contextEntries.findIndex((entry) => entry.id === event.preparation.firstKeptEntryId);
-  if (keptIndex < 0) {
-    throw new Error("Pi compaction cut point is not present in the active context");
-  }
-  return contextEntries.slice(keptIndex).flatMap(sessionEntryToContextMessages);
+  return projectedKeptMessages(event.branchEntries, leafId, event.preparation.firstKeptEntryId);
 }
 
 function activeTools(pi: ExtensionAPI): Tool[] {
@@ -106,9 +99,12 @@ function projectedCurrentMessages(
   ) {
     throw new Error("The active opaque checkpoint belongs to a different Responses model");
   }
-  const projected = projectCheckpointContext(session.messages, prior.details, prior.entry.summary);
+  const projected = projectSessionCheckpointContext(session.messages, event.branchEntries, prior);
   if (!projected) {
-    throw new Error("The previous opaque checkpoint could not be projected safely");
+    throw new Error(
+      "The saved transcript cannot verify the previous opaque checkpoint projection. History preserved; " +
+        "use /tree to branch before that checkpoint and compact the saved transcript there. Opaque state cannot be decoded locally.",
+    );
   }
   return { messages: projected, prior: prior.details };
 }
@@ -531,7 +527,7 @@ export function createCodexCompactExtension(
       const settings = settingsRuntime.get().settings;
       const checkpoint = activeCheckpoint(ctx);
       if (!checkpoint || !isCheckpointCompatible(checkpoint.details, ctx.model, settings)) return undefined;
-      const messages = projectCheckpointContext(event.messages, checkpoint.details, checkpoint.entry.summary);
+      const messages = projectSessionCheckpointContext(event.messages, ctx.sessionManager.getBranch(), checkpoint);
       return messages ? { messages } : undefined;
     });
 

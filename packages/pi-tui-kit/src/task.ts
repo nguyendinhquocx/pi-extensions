@@ -137,7 +137,7 @@ async function executeTask<Value, Context extends MenuContext>(
       return { kind: "stale" };
     }
     if (ownership.userCancelled || signal.aborted) return abortResult(options, ownership);
-    await reportTaskError(ctx, options, error);
+    await reportTaskError(ctx, options, error, signal);
     if (!isCurrent(options) || options.signal?.aborted || ownership.externallyDisposed) {
       return { kind: "stale" };
     }
@@ -157,6 +157,7 @@ async function reportTaskError<Value, Context extends MenuContext>(
   ctx: Context,
   options: RunTaskOptions<Value, Context>,
   error: unknown,
+  signal: AbortSignal | undefined = options.signal,
 ) {
   const reporting = callErrorReporter(ctx, options, error);
   if (reporting) {
@@ -167,7 +168,7 @@ async function reportTaskError<Value, Context extends MenuContext>(
       // Fall through to Pi's notifier when the custom reporter rejects.
     }
   }
-  if (!ctx.hasUI) return;
+  if (!ctx.hasUI || !isCurrent(options) || options.signal?.aborted || signal?.aborted) return;
   notifyInteractionError(ctx, error, "Task failed: ", safeMenuText);
 }
 

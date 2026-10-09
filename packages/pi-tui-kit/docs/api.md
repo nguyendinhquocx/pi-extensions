@@ -516,7 +516,9 @@ const hint = formatInteractionHints(keybindings, [
 
 For a specialized custom component that does not belong in the declarative screen union, use `runCustomInteraction()`.
 It supplies an interaction-owned signal and classifies owner replacement or external component disposal as stale.
-It disposes exactly once and drains optional `waitForPending()` work before returning.
+It retains asynchronous creation even when Pi closes the dialog before the factory returns, disposes the returned component exactly once, and drains optional `waitForPending()` work before returning.
+Accepted completion aborts the interaction signal immediately, including when `complete()` is called inside the factory.
+A rejection during creation, disposal, or pending-work draining matching that signal's reason, directly or through an `AbortError` cause, preserves the accepted result after draining; unrelated initialization and cleanup errors remain reportable.
 The consumer still owns the component, its Back/Close value, and every domain side effect.
 Async factories and pending work must honor the supplied signal; the helper drains them but does not hide uncooperative work behind a timeout.
 
@@ -931,6 +933,19 @@ The consumer must own and abort the session signal and check its generation or e
 It must not retain or use an `ExtensionContext` after session replacement, reload, or shutdown.
 The Kit does not create lifecycle ownership for the extension.
 `input` uses a signal-aware RPC dialog; a multi-line `editor` screen is intentionally deferred because Pi's current RPC editor contract does not accept an `AbortSignal`.
+
+### Fullscreen input and custom UI limits
+
+Kit screens replace Pi's editor area; they do not own the fullscreen transcript or its layout root.
+Pi processes fullscreen transcript actions before replacement-component input, including default PageUp/PageDown, Ctrl+Home/Ctrl+End, and transcript search.
+Use arrows for Kit document navigation, or configure non-conflicting host viewport bindings when document paging is required.
+Plain Home/End remain available to the focused component, including its search input.
+A focused Pi overlay can own viewport input until its owner explicitly transfers focus.
+Kit does not override these host decisions or expose overlay options through `runCustomInteraction()`.
+
+Custom Kit interactions do not currently receive the blocked program-status reporting provided by Pi's native dialogs.
+Kit does not emit terminal program-status codes on Pi's behalf.
+Review screens return no rows for non-positive or non-finite widths and rebuild their display caches on theme invalidation; raw document content remains unchanged.
 
 ## 🧩 Ownership boundary
 

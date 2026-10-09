@@ -1,5 +1,5 @@
 import { BorderedLoader, type ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { Key, matchesKey, truncateToWidth } from "@earendil-works/pi-tui";
+import { isKeyRelease, Key, matchesKey, truncateToWidth } from "@earendil-works/pi-tui";
 import { formatInteractionHints, runCustomInteraction } from "@narumitw/pi-tui-kit";
 import type { SetupPullOutcome } from "../sync/setup-switch.js";
 import type { SyncDecision } from "../sync/sync-decision.js";
@@ -16,12 +16,14 @@ export type RunRoute = (
   signal?: AbortSignal,
   onCommit?: () => void,
   target?: string,
+  onDialog?: (active: boolean) => void,
 ) => Promise<RunRouteResult | undefined>;
 
 export type CancellableOperationResult = RunRouteResult | { kind: "closed" } | { kind: "cancelled" };
 
 interface CancellableOperationOptions {
   commitAware?: boolean;
+  cancelAcrossDialogs?: boolean;
   cancelledMessage?: string | null;
   target?: string;
   signal?: AbortSignal;
@@ -36,6 +38,7 @@ export async function runCancellableOperation(
 ): Promise<CancellableOperationResult> {
   const {
     commitAware = false,
+    cancelAcrossDialogs = false,
     cancelledMessage = "Check cancelled; no settings or files were changed.",
     target,
     signal,
@@ -56,12 +59,45 @@ export async function runCancellableOperation(
           label: "cancel",
         },
       ]);
-      const operation = runRoute(
-        route,
-        interactionSignal,
-        commitAware ? () => (commitStarted = true) : undefined,
-        target,
-      ).then(
+      const cancel = (data: string) => {
+        // Raw terminal listeners run before Pi filters Kitty key releases.
+        if (isKeyRelease(data)) return false;
+        if (!matchesKey(data, Key.ctrl("c")) && !keybindings.matches(data, "tui.select.cancel")) return false;
+        if (commitStarted) {
+          ctx.ui.notify("Applying or publishing has started and cannot be cancelled safely.", "warning");
+        } else complete({ cancelled: true });
+        return true;
+      };
+      // Pi dialogs replace this loader and restore the normal editor. Defer
+      // ordinary keys while they are open; retain raw cancellation afterward.
+      // Ctrl+C remains the root flow's hard-cancel path regardless of focus.
+      let activeDialogs = 0;
+      const unsubscribe = cancelAcrossDialogs
+        ? ctx.ui.onTerminalInput((data) => {
+            if (isKeyRelease(data)) return;
+            if (activeDialogs > 0 && !matchesKey(data, Key.ctrl("c"))) return;
+            return cancel(data) ? { consume: true } : undefined;
+          })
+        : undefined;
+      let pendingRoute: ReturnType<RunRoute>;
+      try {
+        pendingRoute = runRoute(
+          route,
+          interactionSignal,
+          commitAware ? () => (commitStarted = true) : undefined,
+          target,
+          cancelAcrossDialogs
+            ? (active) => {
+                activeDialogs += active ? 1 : -1;
+              }
+            : undefined,
+        );
+      } catch (error) {
+        unsubscribe?.();
+        loader.dispose();
+        throw error;
+      }
+      const operation = pendingRoute.then(
         (result) => {
           routeResult = result;
           complete({});
@@ -80,17 +116,11 @@ export async function runCancellableOperation(
           ];
         },
         invalidate: () => loader.invalidate(),
-        handleInput(data: string) {
-          if (!matchesKey(data, Key.ctrl("c")) && !keybindings.matches(data, "tui.select.cancel")) {
-            return;
-          }
-          if (commitStarted) {
-            ctx.ui.notify("Applying or publishing has started and cannot be cancelled safely.", "warning");
-            return;
-          }
-          complete({ cancelled: true });
+        handleInput: cancel,
+        dispose() {
+          unsubscribe?.();
+          loader.dispose();
         },
-        dispose: () => loader.dispose(),
         waitForPending: () => operation,
       };
     },

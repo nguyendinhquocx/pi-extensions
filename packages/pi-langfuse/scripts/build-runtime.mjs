@@ -52,8 +52,8 @@ export async function buildRuntime({ outputDirectory = distDirectory, validateOu
       banner: { js: GENERATED_BANNER },
       bundle: true,
       chunkNames: "library-chunks/[name]-[hash]",
-      entryNames: "index",
-      entryPoints: ["src/index.ts"],
+      entryNames: "[name]",
+      entryPoints: ["src/index.ts", "src/durable.ts"],
       format: "esm",
       legalComments: "none",
       outdir: stagingDirectory,
@@ -124,7 +124,16 @@ export async function validateGeneratedFiles(outputDirectory) {
   const runtimeFiles = files.filter((path) => path.endsWith(".ts") && !path.endsWith(".d.ts"));
   const libraryFiles = files.filter((path) => path.endsWith(".js"));
   const declarationFiles = files.filter((path) => path.endsWith(".d.ts"));
-  for (const required of ["index.js", "index.js.map", "index.ts", "index.ts.map", "index.d.ts"]) {
+  for (const required of [
+    "index.js",
+    "index.js.map",
+    "index.ts",
+    "index.ts.map",
+    "index.d.ts",
+    "durable.js",
+    "durable.js.map",
+    "durable.d.ts",
+  ]) {
     if (!files.includes(required)) throw new Error(`Generated runtime is missing ${required}`);
   }
   if (FORBIDDEN_EAGER_INPUTS.length > 0 && !runtimeFiles.some((path) => path.startsWith("chunks/"))) {

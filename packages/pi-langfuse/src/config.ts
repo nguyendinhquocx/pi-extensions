@@ -4,7 +4,10 @@ import { dirname, join } from "node:path";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
 
 const CONFIG_FILE_NAME = "pi-langfuse.json";
-export const DEFAULT_BASE_URL = "https://us.cloud.langfuse.com";
+
+import { DEFAULT_BASE_URL } from "./runtime-defaults.js";
+
+export { DEFAULT_BASE_URL } from "./runtime-defaults.js";
 
 export interface LangfuseConfig {
   publicKey: string;

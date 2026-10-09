@@ -91,7 +91,7 @@ test("stale operation recovery is the first visible manager action", async () =>
     }),
   );
   assert.match(rendered, /Sync paused/u);
-  assert.match(rendered, /Settings and More.*return/u);
+  assert.match(rendered, /Transfer actions and Settings\s+return/u);
   assert.equal(options[0], "Restore sync access… (recommended)");
 });
 
@@ -180,7 +180,7 @@ test("RPC stale recovery confirms the local-only effect and returns directly to 
     assert.equal(await fileExists(lockPath()), false);
     assert.deepEqual(readFileSync(localConfigPath()), settingsBytes);
     assert.match(rpc.dialogs[1]?.title ?? "", /only the local operation lock/iu);
-    assert.ok(rpc.dialogs[2]?.options?.includes("More…"));
+    assert.ok(rpc.dialogs[2]?.options?.includes("Pull from remote…"));
   });
 });
 
@@ -265,7 +265,7 @@ test("refresh returns a finished live operation directly to the normal manager",
     });
     await showSyncManager(ctx, async () => ({ kind: "completed" }));
     assert.equal(optionsSeen[0]?.[0], "Refresh operation status");
-    assert.ok(optionsSeen[1]?.includes("More…"));
+    assert.ok(optionsSeen[1]?.includes("Pull from remote…"));
   });
 });
 
@@ -334,15 +334,14 @@ test("a guard acquired after confirmation blocks the real unlock path", async ()
   });
 });
 
-test("recovery from History returns directly to the normal main manager", async () => {
+test("conditional recovery returns directly to the normal main manager", async () => {
   await withTempHome(async (agentDir) => {
     mkdirSync(agentDir, { recursive: true });
     writeFileSync(localConfigPath(), JSON.stringify(v3S3Settings()), { mode: 0o600 });
     await ensureStateDir();
     writeFileSync(lockPath(), "{broken");
     const rpc = createRpcHarness([
-      { kind: "select", response: "History & recovery…" },
-      { kind: "select", response: "Recover stale operation" },
+      { kind: "select", response: "Restore sync access… (recommended)" },
       { kind: "select", response: "Remove local lock and continue" },
       { kind: "select", response: undefined },
     ]);
@@ -354,11 +353,11 @@ test("recovery from History returns directly to the normal main manager", async 
       return { kind: "completed" };
     });
     rpc.assertConsumed();
-    assert.ok(rpc.dialogs[3]?.options?.includes("More…"));
+    assert.ok(rpc.dialogs[2]?.options?.includes("Pull from remote…"));
   });
 });
 
-test("cancelling recovery from History stays in recovery without calling unlock", async () => {
+test("cancelling conditional recovery stays in main without calling unlock", async () => {
   await withTempHome(async (agentDir) => {
     mkdirSync(agentDir, { recursive: true });
     writeFileSync(localConfigPath(), JSON.stringify(v3S3Settings()), { mode: 0o600 });
@@ -366,10 +365,8 @@ test("cancelling recovery from History stays in recovery without calling unlock"
     const bytes = Buffer.from("{broken");
     writeFileSync(lockPath(), bytes);
     const rpc = createRpcHarness([
-      { kind: "select", response: "History & recovery…" },
-      { kind: "select", response: "Recover stale operation" },
+      { kind: "select", response: "Restore sync access… (recommended)" },
       { kind: "select", response: "Cancel" },
-      { kind: "select", response: "Back" },
       { kind: "select", response: undefined },
     ]);
     const base = createMockContext({ hasUI: true, mode: "rpc" });
@@ -382,7 +379,7 @@ test("cancelling recovery from History stays in recovery without calling unlock"
     rpc.assertConsumed();
     assert.equal(routeCalled, false);
     assert.deepEqual(readFileSync(lockPath()), bytes);
-    assert.ok(rpc.dialogs[3]?.options?.includes("Recover stale operation"));
+    assert.ok(rpc.dialogs[2]?.options?.includes("Restore sync access… (recommended)"));
   });
 });
 

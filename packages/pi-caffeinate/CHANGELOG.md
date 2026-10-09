@@ -1,5 +1,17 @@
 # @narumitw/pi-caffeinate
 
+## 0.49.11
+
+### Patch Changes
+
+- 73a5a41: Resolve Linux D-Bus idle inhibit when a dynamic import of `dbus-native` exposes `sessionBus` only on its CommonJS default export.
+
+## 0.49.10
+
+### Patch Changes
+
+- 2246daa: Update runtime dependencies for D-Bus, peer networking, and tracing.
+
 ## 0.49.9
 
 ### Patch Changes

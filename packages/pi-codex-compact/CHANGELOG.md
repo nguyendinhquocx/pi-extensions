@@ -1,5 +1,11 @@
 # @narumitw/pi-codex-compact
 
+## 0.55.1
+
+### Patch Changes
+
+- 6353f10: Use Pi's finalized retained context for checkpoint fingerprints. Safely replay older raw-fingerprinted checkpoints by verifying their saved transcript snapshot before projecting preexisting context edits and nested compaction summaries. Preserve history and report actionable recovery when projection cannot be verified.
+
 ## 0.55.0
 
 ### Minor Changes

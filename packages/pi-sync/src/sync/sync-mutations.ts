@@ -574,15 +574,17 @@ export async function rollback(
   validateMutation();
   const physical = overlayLocalFields(remote, local, config.localFields);
 
-  if (
-    !options.yes &&
-    !(await ctx.ui.confirm(
+  if (!options.yes) {
+    const confirmed = await ctx.ui.confirm(
       snapshotIncludesSessions(remote) ? "Rollback pi settings and sessions?" : "Rollback pi settings?",
       formatRollbackSummary(config, backend.destination, local, physical, target, protectedSessionPaths(ctx).size),
-    ))
-  ) {
-    ctx.ui.notify("Rollback cancelled.", "info");
-    return;
+      { signal: options.signal },
+    );
+    validateMutation();
+    if (!confirmed) {
+      ctx.ui.notify("Rollback cancelled.", "info");
+      return;
+    }
   }
 
   validateMutation();

@@ -25,11 +25,12 @@ import { countValidSyncSetups } from "./sync-setups-ui.js";
 import { safeTerminalText } from "./terminal-text.js";
 
 export const MAIN_MENU_ACTIONS = [
-  "Sync now (recommended)",
-  "Switch sync setup",
-  "Status & changes",
+  "Sync now",
+  "Pull from remote…",
+  "Push to remote…",
   "Settings",
-  "More…",
+  "History",
+  "Diagnostics",
 ] as const;
 
 export interface ManagerDescription {
@@ -125,7 +126,9 @@ export async function describeManagerState(
           ? "Never synced"
           : "Unavailable";
     const canSwitch = (await countValidSyncSetups(configuredTargets, signal)) > 1;
-    const mainActions = MAIN_MENU_ACTIONS.filter((action) => action !== "Switch sync setup" || canSwitch);
+    const mainActions: string[] = [...MAIN_MENU_ACTIONS];
+    if (canSwitch) mainActions.push("Switch sync setup");
+    if (syncState?.unresolved?.length) mainActions.unshift("Review unresolved conflicts");
     const ordinaryTitle = [
       "Manage sync",
       "",
@@ -137,7 +140,7 @@ export async function describeManagerState(
       `Last applied: ${lastAppliedSnapshot}`,
       ...(syncState?.unresolved?.length
         ? [
-            `Unresolved: ${syncState.unresolved.length} dependency groups · review History & recovery`,
+            `Unresolved: ${syncState.unresolved.length} dependency groups · choose Review unresolved conflicts`,
             `Last observed: ${safeTerminalText(syncState.lastObservedSnapshot ?? "unknown")}`,
           ]
         : []),
@@ -189,7 +192,7 @@ export async function describeManagerState(
         "",
         "What do you want to do?",
       ].join("\n"),
-      actions: ["Sync setups…", "Storage connections…", "History & recovery…", "Help"],
+      actions: ["Sync setups…", "Storage connections…", "History", "Help"],
     };
   }
 }
@@ -201,13 +204,19 @@ function operationActions(
   mainActions: string[],
 ) {
   if (operationCanRecover(operation)) {
-    return ["Restore sync access… (recommended)", "Status & changes", "History & recovery…", "Help"];
+    return ["Restore sync access… (recommended)", "History", "Help"];
   }
   if (operation.kind !== "free") {
-    return ["Refresh operation status", "Status & changes", "History & recovery…", "Help"];
+    return ["Refresh operation status", "History", "Help"];
   }
   return noSyncedContent
-    ? ["Settings", ...(canSwitch ? ["Switch sync setup"] : []), "Status & changes", "More…"]
+    ? [
+        ...(mainActions.includes("Review unresolved conflicts") ? ["Review unresolved conflicts"] : []),
+        "Settings",
+        ...(canSwitch ? ["Switch sync setup"] : []),
+        "History",
+        "Diagnostics",
+      ]
     : mainActions;
 }
 
@@ -217,16 +226,24 @@ function operationStatusLines(operation: OperationAvailability): string[] {
       return [];
     case "live": {
       const command = truncateToWidth(safeTerminalText(operation.lock.command), 16, "…");
-      return [`Running: ${command} (pid ${operation.lock.pid}). Wait, then refresh; Settings and More return.`];
+      return [
+        `Running: ${command} (pid ${operation.lock.pid}). Wait, then refresh; Transfer actions and Settings return.`,
+      ];
     }
     case "busy":
-      return ["Pi-sync may be starting or finishing. Wait, then refresh; Settings and More remain unavailable."];
+      return [
+        "Pi-sync may be starting or finishing. Wait, then refresh; Transfer actions and Settings remain unavailable.",
+      ];
     case "recoverable-stale":
-      return ["Sync paused: old lock remains. Close other Pi sessions then restore; Settings and More return."];
+      return [
+        "Sync paused: old lock remains. Close other Pi sessions then restore; Transfer actions and Settings return.",
+      ];
     case "recoverable-unreadable":
-      return ["Sync paused: owner unknown. Close other Pi sessions then restore; Settings and More return."];
+      return [
+        "Sync paused: owner unknown. Close other Pi sessions then restore; Transfer actions and Settings return.",
+      ];
     case "inspection-error":
-      return ["Lock check failed. Fix path access, then refresh; Settings and More remain unavailable."];
+      return ["Lock check failed. Fix path access, then refresh; Transfer actions and Settings remain unavailable."];
   }
 }
 

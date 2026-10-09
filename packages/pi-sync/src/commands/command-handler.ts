@@ -25,7 +25,13 @@ export async function handleCommand(
 ) {
   await reconcileObservation(attention, sessionSignal);
   if (sessionSignal.aborted) return;
-  const run = (route: string, signal?: AbortSignal, onCommit?: () => void, target?: string) =>
+  const run = (
+    route: string,
+    signal?: AbortSignal,
+    onCommit?: () => void,
+    target?: string,
+    onDialog?: (active: boolean) => void,
+  ) =>
     executeCommand(
       route,
       ctx,
@@ -33,6 +39,7 @@ export async function handleCommand(
       loaders,
       observationCommitCallback(attention, sessionSignal, onCommit),
       target,
+      onDialog,
     );
   if (!rawArgs.trim()) {
     try {

@@ -29,7 +29,7 @@ for (const url of ["https://cloud.example.com/dav/owner-a/", "https://cloud.exam
       const before = JSON.stringify(settings);
       writeFileSync(localConfigPath(), before, { mode: 0o600 });
       const { showSyncManager } = await import("../src/ui/manager-ui.js");
-      const choices = ["More…", "Sync setups…", "work"];
+      const choices = ["Settings", "Manage sync setups", "work"];
       const frames: string[] = [];
       const routes: string[] = [];
       const { ctx, notifications } = createMockContext({
@@ -47,7 +47,8 @@ for (const url of ["https://cloud.example.com/dav/owner-a/", "https://cloud.exam
       assert.ok(frames.some((frame) => frame.includes("Storage location: WebDAV · pi-sync/work")));
       assert.doesNotMatch(frames.join("\n"), /private-password/u);
       assert.deepEqual(routes, []);
-      assert.deepEqual(notifications, []);
+      assert.equal(notifications.length, 1);
+      assert.match(notifications[0]?.message ?? "", /Edit pi-sync settings manually/u);
       assert.equal(readFileSync(localConfigPath(), "utf8"), before);
     });
   });

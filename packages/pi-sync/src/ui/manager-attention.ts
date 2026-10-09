@@ -13,9 +13,7 @@ export interface SyncManagerAttentionOptions {
   onSelectionResolved?: (expected: SyncAttentionState) => void;
 }
 
-export function attentionMainMenuItems(
-  manager: ManagerDescription,
-): ActionMenuItem<"main" | "more" | "recovery", "review-attention">[] {
+export function attentionMainMenuItems(manager: ManagerDescription): ActionMenuItem<"main", "review-attention">[] {
   if (!manager.attention && manager.observation?.inspection.selectionState?.kind !== "different") return [];
   const disabled = manager.attentionReviewDisabled === true;
   return [
@@ -36,8 +34,8 @@ export function attentionMainMenuItems(
 export function blockedSyncMenuItem(
   label: string,
   manager: ManagerDescription,
-): ActionMenuItem<"main" | "more" | "recovery", "sync"> | undefined {
-  if (label !== "Sync now (recommended)" || !manager.attentionBlocksSync) return undefined;
+): ActionMenuItem<"main", "sync"> | undefined {
+  if (label !== "Sync now" || !manager.attentionBlocksSync) return undefined;
   return {
     id: "sync",
     label,

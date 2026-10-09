@@ -3,7 +3,14 @@ import path from "node:path";
 import { expandReverseDependencies, readWorkspaces } from "./workspace-graph.mjs";
 
 const DOCUMENTATION_BASENAMES = new Set(["CHANGELOG.md", "LICENSE", "LICENSE.md", "NOTICES.md", "README.md"]);
-const ROOT_FULL_TEST_FILES = new Set(["package-lock.json", "package.json", "tsconfig.json", "tsconfig.test.json"]);
+const ROOT_FULL_TEST_FILES = new Set([
+  ".node-version",
+  ".npmrc",
+  "package-lock.json",
+  "package.json",
+  "tsconfig.json",
+  "tsconfig.test.json",
+]);
 const ROOT_IGNORED_PREFIXES = [".github/", "docs/"];
 
 export function changedFilesSince(root, base, head = "HEAD") {

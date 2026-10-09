@@ -2,6 +2,15 @@
 
 This changelog retains the published `@narumitw/pi-todo` predecessor history below the first `pi-progress` release.
 
+## 0.5.1
+
+### Patch Changes
+
+- b7a6ac4: Simplify progress guidance to report completed, current, and upcoming work on meaningful changes without requiring tool calls before work or replies. Reserve empty snapshots for intentional clearing rather than requiring completed progress to be cleared.
+- Updated dependencies [6a2f900]
+- Updated dependencies [80eef72]
+  - @narumitw/pi-tui-kit@0.65.5
+
 ## 0.5.0
 
 ### Minor Changes

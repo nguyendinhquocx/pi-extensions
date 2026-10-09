@@ -75,7 +75,11 @@ export function createReviewComponent<ScreenId extends string, ActionId extends 
 
   const component: MenuScreenComponent & Partial<Focusable> = {
     render(width) {
-      const safeWidth = Math.max(1, width);
+      if (!Number.isFinite(width) || width <= 0) {
+        mouseLayout = undefined;
+        return [];
+      }
+      const safeWidth = Math.max(1, Math.floor(width));
       const presentation = documentLineCache.presentation(options.screen.content, options.screen.format, safeWidth);
       const allLines = presentation.lines.some((line) => stripVTControlCharacters(line).trim().length > 0)
         ? presentation.lines

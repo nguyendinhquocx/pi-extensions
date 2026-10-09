@@ -61,7 +61,8 @@ class ManagedLangfuseRuntime implements LangfuseRuntimeInternal {
   shutdown(): Promise<void> {
     if (this.shutdownPromise) return this.shutdownPromise;
     this.state = "closing";
-    this.shutdownPromise = this.shutdownNow();
+    // Publish the promise before invoking controller callbacks, which can reenter shutdown().
+    this.shutdownPromise = Promise.resolve().then(() => this.shutdownNow());
     return this.shutdownPromise;
   }
 

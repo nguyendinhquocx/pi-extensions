@@ -331,6 +331,7 @@ export function createMockContext(overrides: Record<string, unknown> = {}) {
       select: overrides.select ?? (async () => undefined),
       editor: overrides.editor ?? (async () => undefined),
       custom,
+      onTerminalInput: overrides.onTerminalInput ?? (() => () => undefined),
     },
     isIdle: overrides.isIdle ?? (() => true),
     hasPendingMessages: overrides.hasPendingMessages ?? (() => false),

@@ -395,8 +395,8 @@ test.each([3, 4, 5])(
       const mock = createMockPi();
       sync(mock.pi);
       const choices = [
-        "More…",
-        "Sync setups…",
+        "Settings",
+        "Manage sync setups",
         "Add sync setup",
         "r2",
         "Same bucket as “home”",
@@ -725,7 +725,11 @@ test("settings UI persists the global secret-scan override", async () => {
       mode: "tui",
       custom: async (factory: unknown) => {
         const harness = createCustomSelectorHarness(factory, 100);
-        harness.handleInput("tui.select.down");
+        if (notifications.length > 0) {
+          harness.handleInput("\u0003");
+          return harness.result;
+        }
+        harness.handleInput("Skip secret scan");
         harness.handleInput("\r");
         for (let attempt = 0; attempt < 100 && notifications.length === 0; attempt += 1) {
           await new Promise((resolve) => setTimeout(resolve, 10));
@@ -737,7 +741,7 @@ test("settings UI persists the global secret-scan override", async () => {
 
     await showSyncSettings(ctx, async () => undefined);
 
-    assert.equal((await loadConfig()).skipSecretScan, true);
+    assert.equal((await loadConfig()).skipSecretScan, true, JSON.stringify(notifications));
     assert.equal((await readLocalConfigObject())?.skipSecretScan, true);
   });
 });
@@ -751,8 +755,11 @@ test("settings UI disables status globally and applies the saved value immediate
       mode: "tui",
       custom: async (factory: unknown) => {
         const harness = createCustomSelectorHarness(factory, 100);
-        harness.handleInput("tui.select.down");
-        harness.handleInput("tui.select.down");
+        if (context.notifications.length > 0) {
+          harness.handleInput("\u0003");
+          return harness.result;
+        }
+        harness.handleInput("Show status");
         harness.handleInput("\r");
         for (let attempt = 0; attempt < 100 && context.notifications.length === 0; attempt += 1) {
           await new Promise((resolve) => setTimeout(resolve, 10));
@@ -765,7 +772,7 @@ test("settings UI disables status globally and applies the saved value immediate
 
     await showSyncSettings(context.ctx, async () => undefined);
 
-    assert.equal((await loadConfig()).showStatus, false);
+    assert.equal((await loadConfig()).showStatus, false, JSON.stringify(context.notifications));
     assert.equal((await readLocalConfigObject())?.showStatus, false);
     assert.equal(context.statuses.get("sync"), undefined);
     setSyncStatus(context.ctx, "after");
@@ -808,7 +815,7 @@ test("settings UI restores its displayed value when a private atomic save is rej
       mode: "tui",
       custom: async (factory: unknown) => {
         const harness = createCustomSelectorHarness(factory, 80);
-        harness.handleInput("tui.select.down");
+        harness.handleInput("Skip secret scan");
         harness.handleInput("\r");
         for (let attempt = 0; attempt < 100 && notifications.length === 0; attempt += 1) {
           await new Promise((resolve) => setTimeout(resolve, 10));
@@ -845,8 +852,7 @@ test("a rejected status save preserves its displayed, persisted, and runtime val
       mode: "tui",
       custom: async (factory: unknown) => {
         const harness = createCustomSelectorHarness(factory, 80);
-        harness.handleInput("tui.select.down");
-        harness.handleInput("tui.select.down");
+        harness.handleInput("Show status");
         harness.handleInput("\r");
         for (let attempt = 0; attempt < 100 && context.notifications.length === 0; attempt += 1) {
           await new Promise((resolve) => setTimeout(resolve, 10));

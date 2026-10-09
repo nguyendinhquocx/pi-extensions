@@ -221,6 +221,73 @@ test("D-Bus idle inhibit handles transport errors and falls back to the niri pat
   }
 });
 
+test("D-Bus idle inhibit uses sessionBus from the dbus-native default export", async () => {
+  const calls: Array<{ member?: string; path?: string; body?: unknown[] }> = [];
+  const connection = new EventEmitter();
+  let closeCalls = 0;
+  vi.resetModules();
+  vi.doMock("dbus-native", () => ({
+    default: {
+      sessionBus: () => ({
+        connection,
+        invoke(
+          message: { member?: string; path?: string; body?: unknown[] },
+          optionsOrCallback:
+            | { signal?: AbortSignal; timeout?: number }
+            | ((error: Error | null, value?: number) => void),
+          maybeCallback?: (error: Error | null, value?: number) => void,
+        ) {
+          const callback = typeof optionsOrCallback === "function" ? optionsOrCallback : maybeCallback;
+          assert.ok(callback);
+          calls.push(message);
+          callback(null, message.member === "Inhibit" ? 7 : undefined);
+        },
+        async close() {
+          closeCalls += 1;
+        },
+      }),
+    },
+  }));
+
+  try {
+    const { defaultDbusScreenSaverFactory } = await import("../src/dbus-inhibit.js");
+    const client = await defaultDbusScreenSaverFactory();
+    await client.inhibit("test");
+    await client.close();
+
+    assert.deepEqual(
+      calls.map(({ member, path, body }) => ({ member, path, body })),
+      [
+        {
+          member: "Inhibit",
+          path: "/org/freedesktop/ScreenSaver",
+          body: ["pi-caffeinate", "test"],
+        },
+      ],
+    );
+    assert.equal(closeCalls, 1);
+  } finally {
+    vi.doUnmock("dbus-native");
+    vi.resetModules();
+  }
+});
+
+test("D-Bus idle inhibit rejects a dbus-native module without sessionBus", async () => {
+  vi.resetModules();
+  vi.doMock("dbus-native", () => ({ default: {} }));
+
+  try {
+    const { defaultDbusScreenSaverFactory } = await import("../src/dbus-inhibit.js");
+    await assert.rejects(defaultDbusScreenSaverFactory(), {
+      name: "Error",
+      message: "dbus-native did not export sessionBus",
+    });
+  } finally {
+    vi.doUnmock("dbus-native");
+    vi.resetModules();
+  }
+});
+
 test("caffeinate loads the new settings file without a migration warning", async () => {
   await withTempAgentDir(async (agentDir) => {
     writeSettings(agentDir, NEW_SETTINGS_FILE, "sleep");

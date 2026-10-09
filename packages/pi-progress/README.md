@@ -4,7 +4,7 @@
 [![Pi extension](https://img.shields.io/badge/Pi-extension-blue)](https://pi.dev)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](./LICENSE)
 
-Pi Progress gives the model a focused, branch-aware progress list above Pi's editor.
+Pi Progress shows users a focused, branch-aware progress list above Pi's editor.
 It restores valid progress after reloads, branch navigation, and compaction without rewriting ordinary conversation history.
 
 > [!WARNING]
@@ -87,12 +87,15 @@ Older packages cannot restore new version 5 results; after new updates, prefer a
 ## 🚀 Quick start
 
 Ask Pi to perform work with multiple meaningful steps.
-The model uses `update_progress` to replace the complete progress state, updates statuses as work changes, and sends an empty `steps` array to clear it.
+The model uses `update_progress` to show what has been done, what is happening now, and what is planned next.
+Its guidance recommends updates for meaningful progress changes, skips simple tasks and redundant updates, and does not make tool calls prerequisites for work or replies.
 
 ## 🛠️ Tools
 
 ### `update_progress`
 
+Each `update_progress` call replaces the complete current-work snapshot; this is not an exhaustive activity log.
+An empty `steps` array intentionally clears the state, but finishing work does not require clearing completed steps.
 The sole registered model tool accepts this exact payload:
 
 ```json
@@ -140,7 +143,7 @@ Valid historical blocked reasons are merged into text as `text — reason`, afte
 Wrong name/version combinations, malformed shapes, errored results, exceeded limits, and invalid invariants are ignored.
 A later valid empty snapshot clears earlier state.
 
-Upgrading or reloading into the text-only step schema intentionally changes the model-visible tool definition and guidance once; subsequent ordinary turns keep both stable.
+Upgrading or reloading into a changed tool definition or guidance, including this observational guidance, intentionally changes the model-visible prefix once; subsequent ordinary turns keep it stable.
 The tool does not enable strict constrained sampling.
 Ordinary turns rely on the retained matching tool call and result, including calls with ignored redundant reasons, so the extension does not prepend or rewrite model-visible history.
 When leading compaction or branch summaries remove that evidence, the extension inserts one deterministic hidden Progress state message after the summaries.

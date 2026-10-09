@@ -3,6 +3,34 @@ import { test } from "vitest";
 import { MAX_CAPTURE_BYTES, sanitizeTraceValue } from "../src/tracing.js";
 import { serializedBytes } from "./support.js";
 
+test("durable credential-field projection is explicit and preserves the legacy sanitizer default", () => {
+  for (const key of [
+    "apiKey",
+    "API_KEY",
+    "x-api-key",
+    "apiToken",
+    "api-secret",
+    "Authorization",
+    "proxy-authorization",
+    "cookie",
+    "password",
+    "credentials",
+    "secret",
+    "token",
+    "privateKey",
+    "client_secret",
+    "access_token",
+    "refreshToken",
+  ]) {
+    const original = { nested: { [key]: "known-secret", text: "ordinary" } };
+    assert.deepEqual(sanitizeTraceValue(original), original);
+    assert.deepEqual(sanitizeTraceValue(original, true), {
+      nested: { [key]: "[credential field omitted]", text: "ordinary" },
+    });
+    assert.equal(original.nested[key], "known-secret");
+  }
+});
+
 test("sanitizeTraceValue globally bounds adversarial values in UTF-8 bytes", () => {
   const shared = { text: "repeated" };
   const circular: Record<string, unknown> = { label: "cycle" };

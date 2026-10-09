@@ -1,7 +1,7 @@
 import type { ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import { type ActionMenuItem, defineMenu, runMenu } from "@narumitw/pi-tui-kit";
 import { loadConfig } from "../settings/config.js";
-import { operationBlocksChanges, operationCanRecover } from "../state/operation-availability.js";
+import { operationBlocksChanges } from "../state/operation-availability.js";
 import { type RunRoute, runCancellableOperation } from "./cancellable-operation.js";
 import {
   attentionMainMenuItems,
@@ -28,12 +28,11 @@ export async function showSyncManager(
     await runRoute("help");
     return;
   }
-  type Screen = "main" | "more" | "recovery";
+  type Screen = "main";
   type Action =
     | "review-attention"
     | "sync"
     | "switch"
-    | "diff"
     | "settings"
     | "pull"
     | "push"
@@ -42,12 +41,10 @@ export async function showSyncManager(
     | "history"
     | "conflicts"
     | "doctor"
-    | "unlock"
     | "recover"
     | "refresh"
     | "help"
-    | "init"
-    | "back";
+    | "init";
   interface State {
     manager: Awaited<ReturnType<typeof describeManagerState>>;
   }
@@ -63,54 +60,15 @@ export async function showSyncManager(
         return {
           kind: "actions",
           title: "Manage sync",
-          lines: state.manager.title.split("\n").slice(1),
+          // Frequent transfers stay visible; status is advisory and Help remains a direct route.
+          lines: [
+            ...state.manager.title.split("\n").slice(1),
+            "Help: /sync help · Fresh status: /sync status · Differences: /sync diff",
+          ],
           items: operationFirst ? [...managerItems, ...attentionItems] : [...attentionItems, ...managerItems],
           hint: "close",
         };
       },
-      more: () => ({
-        kind: "actions",
-        title: "More options",
-        items: [
-          { id: "pull", label: "Pull from remote…", action: "pull" },
-          { id: "push", label: "Push to remote…", action: "push" },
-          { id: "setups", label: "Sync setups…", action: "setups" },
-          {
-            id: "connections",
-            label: "Storage connections…",
-            action: "connections",
-          },
-          {
-            id: "doctor",
-            label: "Check setup",
-            description: "Check current setup access. WebDAV also probes writes and repairs history.",
-            action: "doctor",
-          },
-          { id: "recovery", label: "History & recovery…", to: "recovery" },
-          { id: "help", label: "Help", action: "help" },
-          { id: "back", label: "Back", action: "back" },
-        ],
-        hint: "back",
-      }),
-      recovery: ({ state }) => ({
-        kind: "actions",
-        title: "History & recovery",
-        items: [
-          { id: "history", label: "Browse history", action: "history" },
-          { id: "conflicts", label: "Review unresolved conflicts", action: "conflicts" },
-          {
-            id: "doctor",
-            label: "Check setup",
-            description: "WebDAV also probes writes and repairs history.",
-            action: "doctor",
-          },
-          ...(state.manager.operation && operationCanRecover(state.manager.operation)
-            ? [{ id: "unlock", label: "Recover stale operation", action: "unlock" as const }]
-            : []),
-          { id: "back", label: "Back", action: "back" },
-        ],
-        hint: "back",
-      }),
     },
     actions: {
       "review-attention": async () => {
@@ -170,15 +128,9 @@ export async function showSyncManager(
         const result = await showSetupSwitcher(ctx, runRoute, undefined, sessionSignal);
         return result === "pull-attempted" || result === "closed" ? { kind: "close" } : { kind: "stay" };
       },
-      diff: async () => {
-        const result = await runCancellableOperation(ctx, "Checking current sync setup…", "diff", runRoute, {
-          signal: sessionSignal,
-        });
-        return result.kind === "closed" ? { kind: "close" } : { kind: "stay" };
-      },
       settings: async () => {
-        await showSyncSettings(ctx, runRoute, sessionSignal);
-        return { kind: "stay" };
+        const result = await showSyncSettings(ctx, runRoute, sessionSignal);
+        return { kind: result === "exit" ? "close" : "stay" };
       },
       pull: async () => {
         const result = await runCancellableOperation(ctx, "Checking remote changes…", "pull", runRoute, {
@@ -207,19 +159,19 @@ export async function showSyncManager(
         return { kind: "stay" };
       },
       history: async () => {
-        await runRoute("history");
-        return { kind: "stay" };
+        const result = await runCancellableOperation(ctx, "Loading sync history…", "history", runRoute, {
+          signal: sessionSignal,
+          commitAware: true,
+          cancelAcrossDialogs: true,
+          cancelledMessage: "History review cancelled; no files were changed.",
+        });
+        return { kind: result.kind === "closed" ? "close" : "stay" };
       },
       doctor: async () => {
         const result = await runCancellableOperation(ctx, "Checking setup access…", "doctor", runRoute, {
           signal: sessionSignal,
         });
         return { kind: result.kind === "closed" ? "close" : "stay" };
-      },
-      unlock: async ({ state, signal: actionSignal }) => {
-        const result = await recoverSyncAccess(ctx, state.manager, runRoute, sessionSignal, actionSignal);
-        if (result === "close") return { kind: "close" };
-        return result === "restored" ? { kind: "to", screen: "main" } : { kind: "stay" };
       },
       recover: async ({ state, signal: actionSignal }) => {
         const result = await recoverSyncAccess(ctx, state.manager, runRoute, sessionSignal, actionSignal);
@@ -242,7 +194,6 @@ export async function showSyncManager(
         const disposition = await dispatchManagerResult(ctx, result, "sync", runRoute, sessionSignal);
         return disposition.kind === "close" ? { kind: "close" } : { kind: "stay" };
       },
-      back: async () => ({ kind: "back" }),
     },
   });
   await runMenu(ctx, menu, {
@@ -273,26 +224,47 @@ export async function showSyncManager(
 function syncMainMenuItem(
   label: string,
 ): ActionMenuItem<
-  "main" | "more" | "recovery",
-  "sync" | "switch" | "diff" | "settings" | "setups" | "connections" | "recover" | "refresh" | "help" | "init"
+  "main",
+  | "sync"
+  | "pull"
+  | "push"
+  | "switch"
+  | "settings"
+  | "setups"
+  | "connections"
+  | "history"
+  | "conflicts"
+  | "doctor"
+  | "recover"
+  | "refresh"
+  | "help"
+  | "init"
 > {
-  if (label === "More…") return { id: "more", label, to: "more" };
-  if (label === "History & recovery…") return { id: "recovery", label, to: "recovery" };
-  const actions = new Map<
-    string,
-    "sync" | "switch" | "diff" | "settings" | "setups" | "connections" | "recover" | "refresh" | "help" | "init"
-  >([
-    ["Sync now (recommended)", "sync"],
-    ["Switch sync setup", "switch"],
-    ["Status & changes", "diff"],
-    ["Settings", "settings"],
-    ["Restore sync access… (recommended)", "recover"],
-    ["Refresh operation status", "refresh"],
-    ["Sync setups…", "setups"],
-    ["Storage connections…", "connections"],
-    ["Help", "help"],
-    ["Set up sync", "init"],
-    ["Use existing settings", "init"],
-  ]);
-  return { id: actions.get(label) ?? "help", label, action: actions.get(label) ?? "help" };
+  const actions = {
+    "Sync now": "sync",
+    "Pull from remote…": "pull",
+    "Push to remote…": "push",
+    "Switch sync setup": "switch",
+    Settings: "settings",
+    History: "history",
+    Diagnostics: "doctor",
+    "Review unresolved conflicts": "conflicts",
+    "Restore sync access… (recommended)": "recover",
+    "Refresh operation status": "refresh",
+    "Sync setups…": "setups",
+    "Storage connections…": "connections",
+    Help: "help",
+    "Set up sync": "init",
+    "Use existing settings": "init",
+  } as const;
+  const action = actions[label as keyof typeof actions];
+  if (!action) throw new Error(`Unknown sync manager action: ${label}`);
+  return {
+    id: action,
+    label,
+    action,
+    ...(action === "doctor"
+      ? { description: "Check setup access; WebDAV also probes writes and repairs history." }
+      : {}),
+  };
 }

@@ -88,6 +88,9 @@ This release exposes and verifies the Kit API without changing that extension; `
 Standalone document review and multi-select are maintainer-requested pre-adoption APIs over existing standard-screen behavior.
 They add lifecycle and mode adapters without exposing component factories; this release does not migrate consumers or move domain state and persistence into Kit.
 
+Kit screens follow Pi's fullscreen input ownership rather than replacing its transcript controls.
+See [Fullscreen input and custom UI limits](./docs/api.md#fullscreen-input-and-custom-ui-limits) for paging, overlay focus, and program-status constraints.
+
 ## ⚡ Runtime performance
 
 The production JavaScript imports Pi TUI at runtime and keeps Pi Coding Agent imports type-only.

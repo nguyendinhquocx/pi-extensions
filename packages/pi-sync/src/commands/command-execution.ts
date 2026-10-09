@@ -12,6 +12,7 @@ import type { SyncLoaders } from "../sync/sync-loaders.js";
 import { RemoteSelectionMismatchError } from "../sync/sync-policy.js";
 import { automaticSyncSummary } from "../ui/automatic-sync-summary.js";
 import type { RunRouteResult } from "../ui/cancellable-operation.js";
+import { trackOperationDialogs } from "../ui/operation-dialogs.js";
 import { setSyncStatus } from "../ui/sync-status.js";
 import { safeTerminalText } from "../ui/terminal-text.js";
 import { parseOptions, resolveSyncCommand, splitArgs, usage, validateCommandOptions } from "./command.js";
@@ -70,7 +71,9 @@ export async function executeCommand(
   loaders: SyncLoaders,
   onCommit?: () => void,
   setup?: string,
+  onDialog?: (active: boolean) => void,
 ): Promise<RunRouteResult> {
+  ctx = trackOperationDialogs(ctx, onDialog);
   try {
     const command = await resolveSyncCommand(rawArgs, ctx);
     if (signal?.aborted || !command) return { kind: "completed" };

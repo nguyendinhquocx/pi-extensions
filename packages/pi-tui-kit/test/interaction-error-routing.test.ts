@@ -22,14 +22,12 @@ const runners = [
   {
     name: "confirmation",
     prefix: "Confirmation failed: ",
-    guardNotification: true,
     run: (ctx: MenuContext, options: ErrorOptions, fail: () => never) =>
       runConfirmation(ctx, { title: "Confirm", message: "Proceed?", ...options, onUnsupportedMode: fail }),
   },
   {
     name: "questionnaire",
     prefix: "Questionnaire failed: ",
-    guardNotification: true,
     run: (ctx: MenuContext, options: ErrorOptions, fail: () => never) =>
       runQuestionnaire(ctx, {
         questions: [{ id: "scope", header: "Scope", prompt: "Which?", options: [{ label: "One" }] }],
@@ -40,35 +38,30 @@ const runners = [
   {
     name: "document review",
     prefix: "Document review failed: ",
-    guardNotification: true,
     run: (ctx: MenuContext, options: ErrorOptions, fail: () => never) =>
       runDocumentReview(ctx, { title: "Review", content: "body", ...options, onUnsupportedMode: fail }),
   },
   {
     name: "multi-select",
     prefix: "Multi-select failed: ",
-    guardNotification: true,
     run: (ctx: MenuContext, options: ErrorOptions, fail: () => never) =>
       runMultiSelect(ctx, { title: "Select", items: [], ...options, onUnsupportedMode: fail }),
   },
   {
     name: "live choice",
     prefix: "Live choice failed: ",
-    guardNotification: true,
     run: (ctx: MenuContext, options: ErrorOptions, fail: () => never) =>
       runLiveChoice(ctx, { title: "Select", items: [], ...options, onUnsupportedMode: fail }),
   },
   {
     name: "custom interaction",
     prefix: "Custom interaction failed: ",
-    guardNotification: false,
     run: (ctx: MenuContext, options: ErrorOptions, fail: () => never) =>
       runCustomInteraction(ctx, { create: fail, ...options, onUnsupportedMode: fail }),
   },
   {
     name: "task",
     prefix: "Task failed: ",
-    guardNotification: false,
     run: (ctx: MenuContext, options: ErrorOptions, fail: () => never) =>
       runTask(ctx, { label: "Working", task: fail, ...options }),
   },
@@ -197,7 +190,7 @@ for (const runner of runners) {
     for (const transition of ["stale", "abort", "no UI"] as const) {
       for (const outcome of ["success", "reject"] as const) {
         for (const mode of ["tui", "rpc"] as const) {
-          test(`${mode}: ${transition} during a pending ${outcome} reporter preserves local policy`, async () => {
+          test(`${mode}: ${transition} during a pending ${outcome} reporter suppresses stale notifications`, async () => {
             const error = new Error("original");
             const { ctx, fail, notifications } = failureContext(mode, error);
             const started = deferred();
@@ -234,12 +227,7 @@ for (const runner of runners) {
             release.resolve();
             assert.deepEqual(await running, transition === "no UI" ? { kind: "error", error } : { kind: "stale" });
             assert.equal(callbackCalls, 1);
-            assert.deepEqual(
-              notifications,
-              outcome === "reject" && transition !== "no UI" && !runner.guardNotification
-                ? [[`${runner.prefix}original`, "error"]]
-                : [],
-            );
+            assert.deepEqual(notifications, []);
           });
         }
       }
@@ -324,6 +312,6 @@ for (const transition of ["cancel", "dispose", "owner abort"] as const) {
     else owner.abort();
     release.resolve();
     assert.deepEqual(await running, { kind: transition === "cancel" ? "cancelled" : "stale" });
-    assert.deepEqual(notifications, [["Task failed: original", "error"]]);
+    assert.deepEqual(notifications, []);
   });
 }

@@ -7,13 +7,18 @@ const BASE64_DATA_URI = /data:[^,\s"'`]*;base64,[^\s"'`]*/gi;
 const BASE64_DATA_URI_OMITTED = "[base64 data URI omitted]";
 const OPAQUE_SIGNATURE_KEYS = new Set(["thinkingSignature", "textSignature", "thoughtSignature"]);
 
-export function sanitizeTraceValue(value: unknown): unknown {
-  const budget = { remaining: MAX_CAPTURE_BYTES };
+export function sanitizeTraceValue(value: unknown, redactCredentialFields = false): unknown {
+  const budget = { remaining: MAX_CAPTURE_BYTES, redactCredentialFields };
   const sanitized = sanitize(value, new WeakSet<object>(), 0, budget);
   return serializedBytes(sanitized) <= MAX_CAPTURE_BYTES ? sanitized : TRUNCATED;
 }
 
-function sanitize(value: unknown, active: WeakSet<object>, depth: number, budget: { remaining: number }): unknown {
+function sanitize(
+  value: unknown,
+  active: WeakSet<object>,
+  depth: number,
+  budget: { remaining: number; redactCredentialFields?: boolean },
+): unknown {
   if (budget.remaining <= byteLength(TRUNCATED)) return TRUNCATED;
   if (value === null || typeof value === "number" || typeof value === "boolean") {
     return consume(value, budget);
@@ -73,7 +78,14 @@ function sanitize(value: unknown, active: WeakSet<object>, depth: number, budget
         const sanitizedKey = sanitizeString(key, keyBudget);
         budget.remaining -= byteLength(sanitizedKey) + 4;
         const property = readProperty(record, key);
-        if (redactData && key === "data") {
+        if (
+          budget.redactCredentialFields &&
+          /^(?:(?:x[-_])?api[-_]?(?:key|token|secret)|authorization|proxy[-_]?authorization|cookies?|password|credentials?|secret|token|bearer|client[-_]?secret|private[-_]?key|secret[-_]?key|public[-_]?key|access[-_]?token|refresh[-_]?token)$/iu.test(
+            key,
+          )
+        ) {
+          output[sanitizedKey] = consume("[credential field omitted]", budget);
+        } else if (redactData && key === "data") {
           output[sanitizedKey] = consume("[base64 omitted]", budget);
         } else if (!property.ok) output[sanitizedKey] = consume("[unreadable property]", budget);
         else output[sanitizedKey] = sanitize(property.value, active, depth + 1, budget);

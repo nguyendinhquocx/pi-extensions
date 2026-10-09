@@ -97,8 +97,8 @@ test("nested new connection remains saved when the surrounding setup is cancelle
     mkdirSync(dir, { recursive: true });
     writeFileSync(localConfigPath(), JSON.stringify(v3S3Settings()));
     const choices = [
-      "More…",
-      "Sync setups…",
+      "Settings",
+      "Manage sync setups",
       "Add sync setup",
       "Add a new storage connection…",
       "Git",

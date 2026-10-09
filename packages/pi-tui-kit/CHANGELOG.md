@@ -1,5 +1,16 @@
 # @narumitw/pi-tui-kit
 
+## 0.65.5
+
+### Patch Changes
+
+- 6a2f900: Drain asynchronous custom-component creation after early host completion, dispose late components exactly once, and abort interaction work immediately on accepted completion without turning completion-triggered factory or cleanup cancellation into an error. Suppress delayed fallback error notifications after interaction or task ownership ends, and keep review rendering within zero-width and non-finite display bounds.
+- 80eef72: Flatten the sync manager: expose reviewed Pull, Push, History, and Diagnostics directly, move destination and catalog management into searchable Settings, and show conflict/access recovery only when applicable. Preserve existing commands, automation policies, and safety confirmations.
+  
+  Require the TUI Kit patch that preserves Settings search and cursor across refreshes, including queries that match printable keybindings.
+  
+  Preserve Settings search and cursor across successful refreshes in TUI Kit, and restore Settings and Choice queries as sanitized pasted content without dispatching printable keybindings.
+
 ## 0.65.3
 
 ### Patch Changes

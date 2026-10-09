@@ -29,6 +29,14 @@ A private `pi-sync.local.json` containing a valid version 3 document is copied b
 The old file remains as a recovery copy.
 If both paths exist, `pi-sync.json` wins and the legacy file remains untouched.
 
+### Editing in the manager
+
+Open `/sync` → **Settings** for one searchable list ordered by content, destination, automation, merge, and global preferences; these are task groups, not submenus. **Included content** and **Compare synced content** are adjacent. **Storage location** edits the current setup's coordinates, while **Manage sync setups** and **Manage storage connections** retain the catalog and affected-setup reviews. Returning from catalog management refreshes the rows; switching or removing the owning setup closes its old Settings screen.
+
+Simple choices save immediately, preserve the selected row and search during refresh, and restore their previous value if saving fails. Escape closes the screen without undoing successful saves. Complex values retain their input/review flows. This navigation change does not alter schema, defaults, automatic-sync behavior, or experimental opt-ins.
+
+RPC reports the manual settings path and offers the existing setup/connection catalog dialogs, not the TUI preference or masked-credential editors. Print/JSON do not support `/sync`; use the private settings file directly. Main-menu summaries remain cached observations; `/sync status`, `/sync diff`, and `/sync help` remain available through the visible command hints.
+
 ### Complete version 3 example
 
 ```json
@@ -157,9 +165,9 @@ When `true`, pushes skip the local secret scan; other safety checks and confirma
 Enable it only after reviewing the destination and selected content because files containing secrets can be uploaded.
 `/sync doctor` still scans and reports possible secrets regardless of this setting.
 
-### Check setup
+### Diagnostics
 
-**More… → Check setup** and `/sync doctor` retain the same route. S3/R2 reads the selected setup's latest pointer with a ten-second deadline and bounded error details; it never writes, deletes, lists buckets, or changes settings. HTTP success does not validate snapshot contents or write access. `NoSuchKey` indicates no snapshot at the path; `NoSuchBucket` indicates a missing bucket; other 404 responses cannot distinguish the two. Authentication and transport failures give credentials/permissions or address/network guidance. Git reads remote snapshots and checks its local cache; write access is not tested. WebDAV retains its isolated conditional-write/cleanup probe and repair of a missing active-snapshot history entry.
+**/sync → Diagnostics** and `/sync doctor` use the same existing route. S3/R2 reads the selected setup's latest pointer with a ten-second deadline and bounded error details; it never writes, deletes, lists buckets, or changes settings. HTTP success does not validate snapshot contents or write access. `NoSuchKey` indicates no snapshot at the path; `NoSuchBucket` indicates a missing bucket; other 404 responses cannot distinguish the two. Authentication and transport failures give credentials/permissions or address/network guidance. Git reads remote snapshots and checks its local cache; write access is not tested. WebDAV retains its isolated conditional-write/cleanup probe and repair of a missing active-snapshot history entry.
 
 ### Included content
 
@@ -232,7 +240,7 @@ Same-session content merge accepts only complete validated Pi v3 histories with 
 
 Partial progress stores per-path accepted hashes separately from the observed remote head. Withheld local versions remain local; the complete published snapshot retains the observed remote versions, never omission/deletion. Their previous verified ancestors survive staging and restart. Resource and collision groups defer together when independence cannot be proved; partially conflicted JSON and sessions remain atomic. Publication/apply/baseline is journaled, and a changed head replans only proven pre-commit attempts; unknown outcomes preserve evidence. Older codecs refuse version-3 partial snapshots and older settings readers refuse version 5, so do not collapse state for downgrade.
 
-`/sync conflicts` (also **History & recovery → Review unresolved conflicts**) shows private versions only when requested, in TUI or paginated RPC. It rejects confirmation/force bypass flags, reviews an entire group, then separately asks for local or remote authority. It revalidates the reviewed artifact fingerprint, group versions, baseline, configuration, ownership and current observed head before apply; stale/cancelled review performs no transfer. The manager always reports unresolved groups and the observed head separately from Last applied. Repeated unchanged conflicts retain one stable opaque identity rather than creating more evidence or modal reviews.
+`/sync conflicts` (also the conditional main **Review unresolved conflicts** action) shows private versions only when requested, in TUI or paginated RPC. It rejects confirmation/force bypass flags, reviews an entire group, then separately asks for local or remote authority. It revalidates the reviewed artifact fingerprint, group versions, baseline, configuration, ownership and current observed head before apply; stale/cancelled review performs no transfer. The manager always reports unresolved groups and the observed head separately from Last applied. Repeated unchanged conflicts retain one stable opaque identity rather than creating more evidence or modal reviews.
 
 Artifacts are private immutable records below denied state storage with a 192 MiB/record cap; accepted ancestor records use the same bound, and actual content strategies have smaller limits. Unresolved and unknown/corrupted evidence is never automatically removed. Completed cleanup retains the newest 32 **proven-common, unreferenced** artifacts; pinned files remain even if other groups in the same record completed. Total evidence can exceed those bounds across unresolved/unknown records: inspect it manually with Pi closed rather than deleting pending evidence. This is not remote-history erasure.
 

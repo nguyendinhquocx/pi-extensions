@@ -19,8 +19,20 @@ export interface DbusScreenSaverClient {
 
 export type DbusScreenSaverFactory = () => Promise<DbusScreenSaverClient>;
 
+type DbusNativeModule = {
+  sessionBus?: () => MessageBus;
+  default?: {
+    sessionBus?: () => MessageBus;
+  };
+};
+
 export async function defaultDbusScreenSaverFactory(): Promise<DbusScreenSaverClient> {
-  const { sessionBus } = await import("dbus-native");
+  const dbus = (await import("dbus-native")) as DbusNativeModule;
+  const namespaceSessionBus = "sessionBus" in dbus ? dbus.sessionBus : undefined;
+  const sessionBus = typeof namespaceSessionBus === "function" ? namespaceSessionBus : dbus.default?.sessionBus;
+  if (typeof sessionBus !== "function") {
+    throw new Error("dbus-native did not export sessionBus");
+  }
   return new NativeScreenSaverClient(sessionBus());
 }
 

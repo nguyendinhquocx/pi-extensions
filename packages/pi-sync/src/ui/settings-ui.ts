@@ -14,7 +14,9 @@ import {
 import { captureMutationOwner } from "../sync/sync-local.js";
 import type { RunRoute } from "./cancellable-operation.js";
 import { dispatchManagerResult } from "./manager-result-dispatcher.js";
+import { showEditSyncSetupStorage, showSyncSetupManager } from "./setup/setup-actions.js";
 import { AUTOMATIC_SYNC_DESCRIPTION } from "./setup/setup-prompts.js";
+import { showStorageConnections } from "./storage-connections-ui.js";
 import { configureSyncStatus } from "./sync-status.js";
 import { safeTerminalText } from "./terminal-text.js";
 
@@ -24,13 +26,46 @@ export async function showSyncSettings(
   ctx: ExtensionCommandContext,
   runRoute: SyncSettingsRoute,
   signal?: AbortSignal,
-) {
+): Promise<"back" | "exit"> {
+  let disposition: "back" | "exit" = "back";
+  const exitSettings = () => {
+    disposition = "exit";
+    return { kind: "close" as const };
+  };
   if (ctx.mode !== "tui") {
     ctx.ui.notify(`Edit pi-sync settings manually: ${safeTerminalText(localConfigPath())}`, "info");
-    return;
+    if (ctx.mode === "rpc" && ctx.hasUI) {
+      // Preserve RPC catalog management; preference/credential editing stays TUI-only.
+      const management = defineMenu<undefined, "management", "setups" | "connections", ExtensionCommandContext>({
+        start: "management",
+        screens: {
+          management: () => ({
+            kind: "actions",
+            title: "Sync settings management",
+            items: [
+              { id: "setups", label: "Manage sync setups", action: "setups" },
+              { id: "connections", label: "Manage storage connections", action: "connections" },
+            ],
+            hint: "back",
+          }),
+        },
+        actions: {
+          setups: async ({ signal: actionSignal }) => {
+            const result = await showSyncSetupManager(ctx, runRoute, actionSignal);
+            return result === "exit" ? exitSettings() : { kind: "stay" };
+          },
+          connections: async ({ signal: actionSignal }) => {
+            await showStorageConnections(ctx, actionSignal);
+            return { kind: "stay" };
+          },
+        },
+      });
+      await runMenu(ctx, management, { getState: () => undefined, signal, isCurrent: () => !signal?.aborted });
+    }
+    return disposition;
   }
   const initial = await loadConfig();
-  if (signal?.aborted) return;
+  if (signal?.aborted) return "back";
   const setupName = initial.setupName;
   type Action =
     | "automatic"
@@ -42,7 +77,10 @@ export async function showSyncSettings(
     | "show-status"
     | "on-switch"
     | "include"
-    | "remote-include";
+    | "remote-include"
+    | "storage-location"
+    | "setups"
+    | "connections";
   const menu = defineMenu<Awaited<ReturnType<typeof loadConfig>>, "settings", Action, ExtensionCommandContext>({
     start: "settings",
     screens: {
@@ -52,7 +90,58 @@ export async function showSyncSettings(
         lines: [
           `Sync setup: ${safeTerminalText(state.setupName)} · Storage connection: ${safeTerminalText(state.connectionName)}`,
         ],
+        // Flat, searchable task ordering: Content, Destination, Automation, Merge, Other.
+        // Kit has no heading rows; avoid focusable fake headings or a new component.
         items: [
+          {
+            id: "include",
+            label: "Included content",
+            description: `${state.include.length} selected path${state.include.length === 1 ? "" : "s"}. Choose which paths this setup syncs.`,
+            currentValue: "Open editor",
+            action: "include",
+          },
+          {
+            id: "remoteInclude",
+            label: "Compare synced content",
+            description: "Review this device and remote content lists before choosing either one.",
+            currentValue: "Review",
+            action: "remote-include",
+          },
+          {
+            id: "localFields",
+            label: "Machine-local settings fields",
+            description:
+              "Root field names omitted from future portable snapshots. Policy changes require directional migration; old history remains.",
+            currentValue: `${state.localFields?.length ?? 0} fields · Edit`,
+            action: "local-fields",
+          },
+          {
+            id: "storageLocation",
+            label: "Storage location",
+            description: "Destination: edit this setup's bucket, branch, or path; remote history is not moved.",
+            currentValue:
+              state.backend.type === "s3"
+                ? `${safeTerminalText(state.backend.destination.bucket)} · ${safeTerminalText(state.backend.destination.prefix)}`
+                : state.backend.type === "git"
+                  ? `${safeTerminalText(state.backend.destination.branch)} · ${safeTerminalText(state.backend.destination.directory)}`
+                  : safeTerminalText(state.backend.destination.path),
+            action: "storage-location",
+          },
+          {
+            id: "setups",
+            label: "Manage sync setups",
+            description: "Destination: add, switch, edit, or remove sync setups.",
+            currentValue: "Open",
+            action: "setups",
+          },
+          {
+            id: "connections",
+            label: "Manage storage connections",
+            description:
+              "Destination: manage shared server addresses and credentials; edits may affect multiple setups.",
+            currentValue: "Open",
+            action: "connections",
+          },
           {
             id: "automatic",
             label: "Automatic sync",
@@ -60,6 +149,47 @@ export async function showSyncSettings(
             currentValue: state.automatic ? "On" : "Off",
             values: ["On", "Off"],
             action: "automatic",
+          },
+          {
+            id: "automaticTransfer",
+            label: "Automatic transfer at startup",
+            description:
+              "May upload, replace, or delete selected files once at idle startup in TUI/RPC. Requires a baseline and conditional/lease publication; never reloads resources. Turning off cancels pending work.",
+            currentValue: state.automaticTransfer ? "On" : "Off",
+            values: ["On", "Off"],
+            action: "automatic-transfer",
+          },
+          {
+            id: "onSwitch",
+            label: "After switching setup (all setups)",
+            description: "All setups: ask before a pull review, open it automatically, or switch without pulling.",
+            currentValue: setupSwitchActionLabel(state.onSwitch),
+            values: SETUP_SWITCH_ACTION_OPTIONS.map(({ label }) => label),
+            action: "on-switch",
+          },
+          {
+            id: "mergeSettings",
+            label: "Settings field merge (experimental)",
+            description:
+              "Combine independent global settings.json fields using a verified private ancestor; arrays and nested objects remain atomic. No reload.",
+            currentValue: state.mergeSettings ? "On" : "Off",
+            values: ["On", "Off"],
+            action: "merge-settings",
+          },
+          {
+            id: "contentPolicy",
+            label: "Content / partial sync (experimental)",
+            description:
+              "Version-5 opt-in: bounded text and prefix-only sessions; partial progress keeps full withheld versions and old baseline hashes.",
+            currentValue: state.mergeContent
+              ? state.partialSync
+                ? "Content & partial"
+                : "Content only"
+              : state.partialSync
+                ? "Partial only"
+                : "Off",
+            values: ["Off", "Content only", "Content & partial", "Partial only"],
+            action: "content-policy",
           },
           {
             id: "skipSecretScan",
@@ -77,73 +207,25 @@ export async function showSyncSettings(
             values: ["On", "Off"],
             action: "show-status",
           },
-          {
-            id: "onSwitch",
-            label: "After switching setup (all setups)",
-            description: "All setups: ask before a pull review, open it automatically, or switch without pulling.",
-            currentValue: setupSwitchActionLabel(state.onSwitch),
-            values: SETUP_SWITCH_ACTION_OPTIONS.map(({ label }) => label),
-            action: "on-switch",
-          },
-          {
-            id: "include",
-            label: "Included content",
-            description: `${state.include.length} selected path${state.include.length === 1 ? "" : "s"}. Choose which paths this setup syncs.`,
-            currentValue: "Open editor",
-            action: "include",
-          },
-          {
-            id: "remoteInclude",
-            label: "Compare synced content",
-            description: "Review this device and remote content lists before choosing either one.",
-            currentValue: "Review",
-            action: "remote-include",
-          },
-          {
-            id: "automaticTransfer",
-            label: "Automatic transfer at startup",
-            description:
-              "May upload, replace, or delete selected files once at idle startup in TUI/RPC. Requires a baseline and conditional/lease publication; never reloads resources. Turning off cancels pending work.",
-            currentValue: state.automaticTransfer ? "On" : "Off",
-            values: ["On", "Off"],
-            action: "automatic-transfer",
-          },
-          {
-            id: "mergeSettings",
-            label: "Settings field merge (experimental)",
-            description:
-              "Combine independent global settings.json fields using a verified private ancestor; arrays and nested objects remain atomic. No reload.",
-            currentValue: state.mergeSettings ? "On" : "Off",
-            values: ["On", "Off"],
-            action: "merge-settings",
-          },
-          {
-            id: "localFields",
-            label: "Machine-local settings fields",
-            description:
-              "Root field names omitted from future portable snapshots. Policy changes require directional migration; old history remains.",
-            currentValue: `${state.localFields?.length ?? 0} fields · Edit`,
-            action: "local-fields",
-          },
-          {
-            id: "contentPolicy",
-            label: "Content / partial sync (experimental)",
-            description:
-              "Version-5 opt-in: bounded text and prefix-only sessions; partial progress keeps full withheld versions and old baseline hashes.",
-            currentValue: state.mergeContent
-              ? state.partialSync
-                ? "Content & partial"
-                : "Content only"
-              : state.partialSync
-                ? "Partial only"
-                : "Off",
-            values: ["Off", "Content only", "Content & partial", "Partial only"],
-            action: "content-policy",
-          },
         ],
       }),
     },
     actions: {
+      "storage-location": async ({ signal: actionSignal }) => {
+        const editorSignal = signal ? AbortSignal.any([signal, actionSignal]) : actionSignal;
+        await showEditSyncSetupStorage(ctx, setupName, editorSignal);
+        return resumeSettings(editorSignal);
+      },
+      setups: async ({ signal: actionSignal }) => {
+        const editorSignal = signal ? AbortSignal.any([signal, actionSignal]) : actionSignal;
+        const result = await showSyncSetupManager(ctx, runRoute, editorSignal);
+        return result === "exit" ? exitSettings() : resumeSettings(editorSignal);
+      },
+      connections: async ({ signal: actionSignal }) => {
+        const editorSignal = signal ? AbortSignal.any([signal, actionSignal]) : actionSignal;
+        await showStorageConnections(ctx, editorSignal);
+        return resumeSettings(editorSignal);
+      },
       "content-policy": async ({ value, signal: actionSignal }) => {
         const mutationSignal = signal ? AbortSignal.any([signal, actionSignal]) : actionSignal;
         const validate = captureMutationOwner(ctx, mutationSignal);
@@ -356,17 +438,29 @@ export async function showSyncSettings(
         if (reviewSignal.aborted) return { kind: "rejected" };
         if (review.kind === "route-result") {
           const disposition = await dispatchManagerResult(ctx, review.result, review.route, runRoute, reviewSignal);
-          return disposition.kind === "close" ? { kind: "close" } : { kind: "stay" };
+          return disposition.kind === "close" ? exitSettings() : { kind: "stay" };
         }
-        return review.kind === "closed" || review.kind === "stale" ? { kind: "close" } : { kind: "stay" };
+        return review.kind === "closed" || review.kind === "stale" ? exitSettings() : { kind: "stay" };
       },
     },
   });
+  async function resumeSettings(editorSignal: AbortSignal) {
+    if (editorSignal.aborted) return { kind: "close" as const };
+    try {
+      const active = await loadConfig();
+      if (editorSignal.aborted || active.setupName !== setupName) return { kind: "close" as const };
+      // Stay reloads authoritative rows without pushing a duplicate screen or clearing search.
+      return { kind: "stay" as const };
+    } catch {
+      return { kind: "close" as const };
+    }
+  }
   await runMenu(ctx, menu, {
     getState: () => loadConfig(setupName),
     signal,
     isCurrent: () => !signal?.aborted,
   });
+  return disposition;
 }
 
 function notifySaveFailure(ctx: ExtensionCommandContext, error: unknown) {

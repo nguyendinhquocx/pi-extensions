@@ -1,10 +1,20 @@
 import assert from "node:assert/strict";
 import * as zlib from "node:zlib";
 import type { Api, Model, Provider } from "@earendil-works/pi-ai";
-import type { SessionBeforeCompactEvent, SessionEntry } from "@earendil-works/pi-coding-agent";
+import {
+  buildSessionContext,
+  type SessionBeforeCompactEvent,
+  type SessionEntry,
+} from "@earendil-works/pi-coding-agent";
 import { test } from "vitest";
 import { createMockContext, createMockPi } from "../../../test/support.js";
-import { checkpointMarker, createCheckpointDetails, fallbackSummary, latestCheckpoint } from "../src/checkpoint.js";
+import {
+  checkpointMarker,
+  createCheckpointDetails,
+  fallbackSummary,
+  fingerprintMessage,
+  latestCheckpoint,
+} from "../src/checkpoint.js";
 import { createCodexCompactExtension } from "../src/codex-compact.js";
 import { resolveCompactionRoute } from "../src/model-api.js";
 import { RejectedRoutes, rejectionRouteKey } from "../src/rejection-state.js";
@@ -113,11 +123,11 @@ async function harness(
   const specifier = options.codex
     ? "@earendil-works/pi-ai/providers/openai-codex"
     : options.azure
-      ? "@earendil-works/pi-ai/providers/azure-openai-responses"
+      ? "@earendil-works/pi-ai/providers/azure"
       : "@earendil-works/pi-ai/providers/openai";
   const module = (await import(specifier)) as Record<string, () => Provider>;
   const nativeProvider =
-    module[options.codex ? "openaiCodexProvider" : options.azure ? "azureOpenAIResponsesProvider" : "openaiProvider"]();
+    module[options.codex ? "openaiCodexProvider" : options.azure ? "azureProvider" : "openaiProvider"]();
   const provider: Provider = options.custom
     ? {
         ...nativeProvider,
@@ -290,6 +300,91 @@ test("default recovery carries encrypted history but not the retained tail, and 
     latestCheckpoint(h.entries),
     undefined,
     "completed plaintext summary intentionally replaces opaque history",
+  );
+});
+
+test("new checkpoints fingerprint the finalized retained suffix, not omitted raw entries", async () => {
+  const h = await harness({
+    response: async () =>
+      Response.json({
+        output: [{ type: "compaction", encrypted_content: "new-synthetic-opaque" }],
+        usage: { input_tokens: 10, output_tokens: 2, total_tokens: 12 },
+      }),
+  });
+  h.entries.splice(
+    0,
+    h.entries.length,
+    ...chain([
+      ...h.entries,
+      user("after-tail", 5),
+      {
+        type: "context_edit",
+        id: "omit-tail",
+        parentId: null,
+        timestamp: new Date(6).toISOString(),
+        targetId: "tail",
+        replacement: null,
+      },
+    ]),
+  );
+  const before = structuredClone(h.entries);
+  const result = (await h.run()) as { compaction: { details: { keptMessageFingerprints: string[] } } };
+  assert.ok(result?.compaction, JSON.stringify(h.notifications));
+  const retained = h.entries.find((entry) => entry.id === "after-tail");
+  assert.ok(retained?.type === "message");
+  assert.deepEqual(result.compaction.details.keptMessageFingerprints, [fingerprintMessage(retained.message)]);
+  assert.deepEqual(h.entries, before);
+});
+
+test("legacy pre-checkpoint omission supports replay and checkpoint-aware recovery without transcript mutation", async () => {
+  const h = await harness({ checkpoint: true, codex: true });
+  const omitted = user("omitted", 1);
+  assert.equal(omitted.type, "message");
+  if (omitted.type !== "message") throw new Error("fixture");
+  const checkpoint = h.entries[1];
+  assert.equal(checkpoint.type, "compaction");
+  if (checkpoint.type !== "compaction") throw new Error("fixture");
+  const parsedCheckpoint = latestCheckpoint(h.entries);
+  assert.ok(parsedCheckpoint);
+  const details = parsedCheckpoint.details;
+  checkpoint.details = {
+    ...details,
+    keptMessageFingerprints: [...details.keptMessageFingerprints, fingerprintMessage(omitted.message)],
+  };
+  h.entries.splice(
+    0,
+    h.entries.length,
+    ...chain([
+      h.entries[0],
+      omitted,
+      {
+        type: "context_edit",
+        id: "omit",
+        parentId: null,
+        timestamp: new Date(1).toISOString(),
+        targetId: "omitted",
+        replacement: null,
+      },
+      ...h.entries.slice(1),
+    ]),
+  );
+  const before = structuredClone(h.entries);
+  const context = (await h.mock.events.get("context")?.[0](
+    { type: "context", messages: buildSessionContext(h.entries).messages },
+    h.ctx,
+  )) as { messages: unknown[] };
+  assert.ok(context?.messages);
+  assert.match(JSON.stringify(context.messages), /PI_CODEX_REMOTE_CHECKPOINT/);
+  assert.doesNotMatch(JSON.stringify(context.messages), /omitted/);
+  const result = (await h.run()) as { compaction: { summary: string } };
+  assert.ok(result.compaction, JSON.stringify(h.notifications));
+  assert.equal(h.payloads.length, 2);
+  assert.match(JSON.stringify(h.payloads[1].payload), /opaque-assistant-only-fact/);
+  assert.doesNotMatch(JSON.stringify(h.payloads[1].payload), /omitted|"text":"tail"/);
+  assert.deepEqual(h.entries, before);
+  assert.equal(
+    h.notifications.some(({ message }) => message.includes("could not be projected")),
+    false,
   );
 });
 

@@ -79,10 +79,10 @@ async function request(api: Api = "openai-responses"): Promise<RemoteCompactionR
   const specifier = codex
     ? "@earendil-works/pi-ai/providers/openai-codex"
     : azure
-      ? "@earendil-works/pi-ai/providers/azure-openai-responses"
+      ? "@earendil-works/pi-ai/providers/azure"
       : "@earendil-works/pi-ai/providers/openai";
   const module = (await import(specifier)) as Record<string, () => Provider>;
-  const provider = module[codex ? "openaiCodexProvider" : azure ? "azureOpenAIResponsesProvider" : "openaiProvider"]();
+  const provider = module[codex ? "openaiCodexProvider" : azure ? "azureProvider" : "openaiProvider"]();
   const model: Model<Api> = {
     id: "gpt-5.5",
     name: "fixture",

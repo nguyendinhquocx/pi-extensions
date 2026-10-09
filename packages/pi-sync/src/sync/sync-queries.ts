@@ -199,6 +199,7 @@ export async function history(
     const selected = await ctx.ui.select(
       `History for sync setup “${safeTerminalText(config.setupName)}”\n\nChoose a snapshot to preview rollback.`,
       [...labels, "Back"],
+      { signal: options.signal },
     );
     if (!selected || selected === "Back") return;
     throwIfAborted(options.signal);

@@ -1,5 +1,22 @@
 # @narumitw/pi-sync
 
+## 0.54.0
+
+### Minor Changes
+
+- 80eef72: Flatten the sync manager: expose reviewed Pull, Push, History, and Diagnostics directly, move destination and catalog management into searchable Settings, and show conflict/access recovery only when applicable. Preserve existing commands, automation policies, and safety confirmations.
+  
+  Require the TUI Kit patch that preserves Settings search and cursor across refreshes, including queries that match printable keybindings.
+  
+  Preserve Settings search and cursor across successful refreshes in TUI Kit, and restore Settings and Choice queries as sanitized pasted content without dispatching printable keybindings.
+
+### Patch Changes
+
+- e32bf5b: Keep History rollback cancellation reachable after snapshot selection and confirmation restore the normal editor. Release the temporary terminal listener when the operation settles or its owner closes, and preserve the existing non-cancellable commit boundary. Ignore Kitty key-release events before matching cancellation so releasing a key does not abort History. Preserve focused dialogs' key priorities, and distinguish aborted or stale rollback confirmations from explicit rejection before notifying.
+- Updated dependencies [6a2f900]
+- Updated dependencies [80eef72]
+  - @narumitw/pi-tui-kit@0.65.5
+
 ## 0.53.1
 
 ### Patch Changes

@@ -9,7 +9,7 @@ import {
 } from "@langfuse/tracing";
 import type { SpanProcessor } from "@opentelemetry/sdk-trace-base";
 import { NodeTracerProvider } from "@opentelemetry/sdk-trace-node";
-import { DEFAULT_BASE_URL, type LangfuseConfig } from "./config.js";
+import type { LangfuseConfig } from "./config.js";
 import {
   type CreateLangfuseRuntimeOptions,
   createLangfuseRuntimeFromBackend,
@@ -17,6 +17,7 @@ import {
   type LangfuseRuntime,
   type LangfuseRuntimeInternal,
 } from "./runtime-core.js";
+import { DEFAULT_BASE_URL } from "./runtime-defaults.js";
 import type { Observation, ObservationAttributes, ObservationType, TraceBackend } from "./tracing.js";
 
 export type {

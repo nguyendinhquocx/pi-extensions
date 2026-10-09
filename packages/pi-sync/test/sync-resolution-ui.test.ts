@@ -8,6 +8,7 @@ import { createMockContext } from "../../../test/support.js";
 import { loadConfig, syncConfigReviewFingerprint, syncConfigReviewIdentity } from "../src/settings/config.js";
 import { localConfigPath } from "../src/settings/config-file.js";
 import { updateLocalConfig } from "../src/settings/settings-store.js";
+import { readStateForConfig, writeStateForConfig } from "../src/state/sync-state-store.js";
 import type { SyncDecision } from "../src/sync/sync-decision.js";
 import { dispatchManagerResult } from "../src/ui/manager-result-dispatcher.js";
 import { showSyncManager } from "../src/ui/manager-ui.js";
@@ -20,7 +21,6 @@ for (const direction of ["push", "pull"] as const) {
   test(`manager preserves an explicit ${direction} direction through conflict resolution`, async () => {
     await withConfiguredDecision(async (decision) => {
       const choices = [
-        "More…",
         direction === "push" ? "Push to remote…" : "Pull from remote…",
         direction === "push" ? "Keep local content and replace remote…" : "Use remote content and replace local…",
       ];
@@ -43,9 +43,8 @@ for (const direction of ["push", "pull"] as const) {
 for (const outcome of ["decision", "selection"] as const)
   test(`manager conflict action dispatches ${outcome} instead of dropping the result`, async () => {
     await withConfiguredDecision(async (decision, configIdentity) => {
+      await recordUnresolvedGroup();
       const choices = [
-        "More…",
-        "History & recovery…",
         "Review unresolved conflicts",
         ...(outcome === "decision" ? ["Keep local content and replace remote…"] : []),
       ];
@@ -77,14 +76,13 @@ for (const outcome of ["decision", "selection"] as const)
       assert.deepEqual(routes, outcome === "decision" ? ["conflicts", "push --force"] : ["conflicts"]);
       if (outcome === "selection")
         assert.ok(context.notifications.some((item) => item.message.includes("models.json")));
-      if (outcome === "decision") assert.equal(titles.length, 4);
+      if (outcome === "decision") assert.equal(titles.length, 2);
     });
   });
 test("cancelled conflict decision keeps the manager usable without forcing a direction", async () => {
   await withConfiguredDecision(async (decision) => {
+    await recordUnresolvedGroup();
     const choices: Array<string | undefined> = [
-      "More…",
-      "History & recovery…",
       "Review unresolved conflicts",
       undefined,
       undefined,
@@ -107,7 +105,7 @@ test("cancelled conflict decision keeps the manager usable without forcing a dir
     });
     assert.deepEqual(routes, ["conflicts"]);
     assert.ok(titles.some((title) => title.includes("Resolve sync conflict")));
-    assert.ok(titles.filter((title) => title.includes("History & recovery")).length >= 2);
+    assert.ok(titles.filter((title) => title.includes("Manage sync")).length >= 2);
   });
 });
 
@@ -625,7 +623,7 @@ test("attention for a non-current setup stays reviewable without blocking curren
     assert.match(frame, /Current sync setup: home/u);
     assert.match(frame, /Review needed for setup work/u);
     assert.match(frame, /Review synced content \(recommended\)/u);
-    assert.match(frame, /Sync now \(recommended\)/u);
+    assert.match(frame, /Sync now/u);
     assert.doesNotMatch(frame, /\[-\] Sync now/u);
     tui.press("tui.select.down");
     tui.press("tui.select.confirm");
@@ -667,6 +665,14 @@ test("the main manager opens conflict recovery instead of ending at an error", a
     await running;
   });
 });
+
+async function recordUnresolvedGroup() {
+  const config = await loadConfig();
+  await writeStateForConfig(config, {
+    ...(await readStateForConfig(config)),
+    unresolved: [{ paths: ["settings.json"], artifact: "fixture" }],
+  });
+}
 
 async function withConfiguredDecision(run: (decision: SyncDecision, selectionConfigIdentity: string) => Promise<void>) {
   await withTempHome(async (agentDir) => {

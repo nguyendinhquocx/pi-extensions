@@ -171,15 +171,19 @@ pi update --extensions
 
 ## 🧑‍💻 Local development
 
-From the repository root:
+Use Node.js from [`.node-version`](./.node-version) with its bundled npm, then run from the repository root:
 
 ```bash
+node scripts/check-install-policy.mjs
 npm install
 npm test
 npm run check
 ```
 
 `npm test` typechecks the test sources and runs the root and workspace suites with Vitest.
+CI and release use `npm ci` with strict dependency script review and a seven-day minimum age for new resolution.
+See [dependency installation policy](./docs/dependency-installation.md) for script approvals, lockfile-age limitations,
+failed-update recovery, urgent-patch review, and toolchain upgrades.
 
 Build generated entries before loading local packages, and use the generic npm pack workflow with an unscoped package name:
 

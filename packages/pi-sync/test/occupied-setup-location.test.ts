@@ -146,8 +146,8 @@ for (const kind of kinds) {
           kind === "Git" ? "work-branch" : "backups/work",
         ];
         const choices = [
-          "More…",
-          "Sync setups…",
+          "Settings",
+          "Manage sync setups",
           "Add sync setup",
           connection,
           ...(kind === "S3" || kind === "R2" ? [alias ? "Use an existing bucket at ./" : "Same bucket as “home”"] : []),
@@ -192,8 +192,8 @@ for (const kind of kinds) {
       const controller = new AbortController();
       const inputs = ["work", ...(kind === "Git" ? ["", ""] : kind === "WebDAV" ? [""] : [])];
       const choices = [
-        "More…",
-        "Sync setups…",
+        "Settings",
+        "Manage sync setups",
         "Add sync setup",
         connection,
         ...(kind === "S3" || kind === "R2" ? ["Same bucket as “home”"] : []),

@@ -2,7 +2,7 @@
 
 [![npm](https://img.shields.io/npm/v/@narumitw/pi-langfuse)](https://www.npmjs.com/package/@narumitw/pi-langfuse) [![Pi extension](https://img.shields.io/badge/Pi-extension-blue)](https://pi.dev) [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](./LICENSE)
 
-Export Pi agent runs, model generations, retries, tools, compaction, usage, and timing to [Langfuse](https://langfuse.com/) through OpenTelemetry.
+Export Pi coding-agent and durable conversation activity to [Langfuse](https://langfuse.com/) through OpenTelemetry.
 
 ## ✨ Features
 
@@ -13,6 +13,7 @@ Export Pi agent runs, model generations, retries, tools, compaction, usage, and 
 - Supports metadata-only tracing when content capture is disabled.
 - Keeps the default extension's credentials in a private local settings file and redacts them from exported data.
 - Supports multiple concurrent Pi sessions through one process-owned runtime without sharing session trace state.
+- Provides an opt-in public `/durable` adapter for committed submissions, model generations and tool activity without `AgentSession`.
 - Batches exports without delaying normal completion and isolates its OpenTelemetry provider from other extensions.
 
 ## 📦 Install
@@ -35,7 +36,8 @@ pi -e ./packages/pi-langfuse
 ```
 
 The package declares `dist/index.ts`, so Pi cannot load an unbuilt local checkout.
-The installed Langfuse SDK dependencies require Node.js 20 or newer.
+The Langfuse SDK requires Node.js 20 or newer; the supported Pi runtimes require Node.js >=22.19.0.
+The durable adapter targets experimental `pi-durable@1.0.4` exactly; review its [compatibility and upgrade checks](./docs/durable.md#compatibility) before enabling or upgrading it.
 Pi extensions run with your user permissions.
 Review this extension and its data-export behavior before installing it.
 
@@ -113,6 +115,44 @@ The default extension always uses its validated `pi-langfuse.json` with `env: fa
 `onTraceId` runs once after each root is created, including automatic-continuation roots, and callback errors are intentionally ignored so host code cannot corrupt tracing cleanup.
 Custom metadata is sanitized, bounded, and exported even when `captureContent` is `false`; package-owned `pi.*` fields cannot be overridden.
 Treat custom metadata, tags, session IDs, user IDs, request IDs, and trace names as exported data.
+
+## 🧱 Durable host applications
+
+**Experimental:** use the dedicated public export with `@earendil-works/pi-durable@1.0.4`, compatible Pi AI, and Chord ^1.0.4.
+Install those host dependencies explicitly; the durable entry does not require or load coding-agent registration.
+
+```ts
+import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
+import {
+  createLangfuseRuntime,
+  createPiLangfuseDurableConversation,
+} from "@narumitw/pi-langfuse/durable";
+
+const runtime = await createLangfuseRuntime(); // Standard Langfuse credentials/environment.
+const tracing = await createPiLangfuseDurableConversation(runtime, {
+  harness, // Existing, authorized host-owned Harness.
+  conversationId: conversation.id,
+  context: BACKGROUND_CONTEXT,
+  sessionId: hostConversationId,
+  userId: accountId,
+  applicationId: "support-service",
+  captureContent: false,
+});
+const submission = await conversation.submit({
+  type: "input", content: userPrompt, requestId: incomingRequestId,
+}, executionContext);
+const result = await submission.wait(executionContext); // Host execution responsibility.
+await tracing.observeSubmission(submission.id); // Optional committed-status reconciliation.
+await tracing.dispose(); // Observation only; does not abort work or close the Harness.
+// After every controller using this shared runtime has ended:
+await runtime.shutdown();
+```
+
+Create one observer per conversation and retain submission IDs for explicit reconciliation after gaps.
+Late attachment and overflow provide snapshots, not complete event replay; interrupted observations are marked uncertain.
+Tracing never resumes paused recovery or controls execution, and capture bounds never change execution data.
+See the installed [durable API guide](./docs/durable.md) for the compatibility matrix, ownership, per-request correlation, privacy projections, recovery semantics and limitations.
+The host remains responsible for authorization, storage, execution cancellation/recovery, callback-owned work and shared-runtime shutdown.
 
 ## ⚙️ Settings
 
@@ -301,15 +341,18 @@ packages/pi-langfuse/
 │   ├── index.ts                       # Thin default and public entrypoint
 │   ├── langfuse.ts                    # Default settings and command adapter
 │   ├── pi-session.ts                  # Per-session Pi lifecycle controller
+│   ├── durable.ts                     # Public durable observer entrypoint
 │   ├── runtime-core.ts                # Process-runtime ownership
 │   ├── runtime.ts                     # Lazy production Langfuse runtime
 │   └── tracing.ts                     # Schema-v2 observation recorder
+├── docs/durable.md                    # Durable API, compatibility and privacy contract
 ├── dist/                              # Generated Node, declaration, and Jiti runtime
 ├── scripts/build-runtime.mjs          # Runtime builder
 └── test/                              # Behavior and lifecycle coverage
 ```
 
-The generated runtime is built from `src/index.ts` and does not import back into `src`.
+The generated extension runtime is built from `src/index.ts`; the Node library also builds `src/durable.ts` as a separate public entry.
+Neither generated runtime imports back into `src`.
 
 ## 🔎 Keywords
 

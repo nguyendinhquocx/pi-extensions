@@ -1810,7 +1810,7 @@ test("component disposal aborts and drains pending setting work before returning
   }
 });
 
-test("settings refreshes preserve the changed row cursor", async () => {
+test("settings refreshes preserve search, changed row cursor, and current values", async () => {
   let customCalls = 0;
   const context = createMockContext({
     mode: "tui",
@@ -1823,7 +1823,8 @@ test("settings refreshes preserve the changed row cursor", async () => {
         assert.doesNotMatch(harness.render().join("\n"), /Automatic mode/);
         harness.handleInput("tui.select.confirm");
       } else {
-        assert.match(harness.render().join("\n"), /→ .*Manual mode/);
+        assert.match(harness.render().join("\n"), /→ .*Manual mode.*On/);
+        assert.doesNotMatch(harness.render().join("\n"), /Automatic mode/);
         harness.handleInput("\u0003");
       }
       for (let turn = 0; harness.result === undefined && turn < 100; turn += 1) {
@@ -1833,6 +1834,7 @@ test("settings refreshes preserve the changed row cursor", async () => {
       return harness.result;
     },
   });
+  let manual = "Off";
   const definition = defineMenu<undefined, "settings", "save">({
     start: "settings",
     screens: {
@@ -1850,14 +1852,19 @@ test("settings refreshes preserve the changed row cursor", async () => {
           {
             id: "manual",
             label: "Manual mode",
-            currentValue: "Off",
+            currentValue: manual,
             values: ["Off", "On"],
             action: "save",
           },
         ],
       }),
     },
-    actions: { save: async () => ({ kind: "stay" }) },
+    actions: {
+      save: async ({ value }) => {
+        manual = value ?? manual;
+        return { kind: "stay" };
+      },
+    },
   });
 
   assert.deepEqual(await runMenu(context.ctx, definition, { getState: () => undefined }), {

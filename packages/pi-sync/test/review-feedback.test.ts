@@ -54,8 +54,8 @@ test("S3 setup edit rejects coordinates changed while its review is open", async
     };
     writeFileSync(localConfigPath(), JSON.stringify(settings), { mode: 0o600 });
     const choices = [
-      "More…",
-      "Sync setups…",
+      "Settings",
+      "Manage sync setups",
       "home (current)",
       "Edit storage location…",
       "Back",

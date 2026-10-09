@@ -208,6 +208,46 @@ test("removing reason starts one tool-definition and guidance epoch with stable 
   );
 });
 
+test("observational guidance starts one prefix epoch without changing tool order, schema, or history", () => {
+  const raw = [userMessage("start")];
+  const baseline = normalizedRequest(reconcileProgressContext(raw, []));
+  const predecessor = {
+    ...baseline,
+    effectiveSystemGuidance: [
+      "Maintain the complete session progress state as multi-step work progresses",
+      "Use update_progress to track work with multiple meaningful steps; skip it for simple, single-step tasks.",
+      "Use update_progress to keep the progress state aligned with actual work: mark a step in_progress before starting it, mark it completed as soon as it finishes, and revise the steps before continuing when the plan changes.",
+      "Use blocked only when progress depends on an external action or condition, and include what is needed to continue in the step text; blocked does not mean completed.",
+      "Before a progress report or final response, call update_progress to reconcile every step with actual work; do not report completion while the progress state is stale.",
+      "On every update_progress call, send the complete current steps array, keep at most one step in_progress, and send an empty steps array when no tracked work remains.",
+    ],
+    toolDefinitions: baseline.toolDefinitions.map((tool) => ({
+      ...tool,
+      description:
+        "Replace the current session progress state with the complete supplied steps. Call update_progress whenever actual step state changes; keep at most one step in_progress and send an empty steps array to clear it.",
+    })),
+  };
+  assert.notDeepEqual(baseline.effectiveSystemGuidance, predecessor.effectiveSystemGuidance);
+  assert.notDeepEqual(baseline.toolDefinitions, predecessor.toolDefinitions);
+  assert.deepEqual(baseline.activeToolNames, predecessor.activeToolNames);
+  assert.deepEqual(baseline.toolDefinitions[0]?.parameters, predecessor.toolDefinitions[0]?.parameters);
+  assert.equal(baseline.toolDefinitions[0]?.constrainedSampling, predecessor.toolDefinitions[0]?.constrainedSampling);
+  assert.deepEqual(baseline.messages, predecessor.messages);
+
+  const steps: ProgressStep[] = [
+    { text: "inspect", status: "completed" },
+    { text: "verify", status: "in_progress" },
+    { text: "report", status: "pending" },
+  ];
+  const updatedRaw = [...raw, progressToolCall(steps, "observational-1"), progressToolResult(steps, "observational-1")];
+  const updated = normalizedRequest(reconcileProgressContext(updatedRaw, steps));
+  assertPrefix(updated, baseline);
+  const ordinaryRaw = [...updatedRaw, assistantText("working"), userMessage("continue")];
+  const ordinary = normalizedRequest(reconcileProgressContext(ordinaryRaw, steps));
+  assertPrefix(ordinary, updated);
+  assert.deepEqual(normalizedRequest(reconcileProgressContext(ordinaryRaw, steps)), ordinary, "reload keeps the epoch");
+});
+
 test("ordinary Progress requests keep normalized provider prefixes stable after the transition", () => {
   const initialRaw = [userMessage("start")];
   const initial = normalizedRequest(reconcileProgressContext(initialRaw, []));

@@ -25,7 +25,7 @@ test("settings local-field input is disposed with owned cancellation and no save
       mode: "tui",
       custom: async (factory: unknown) => {
         const harness = createCustomSelectorHarness(factory, 100);
-        for (let index = 0; index < 8; index++) harness.handleInput("tui.select.down");
+        harness.handleInput("Machine-local");
         harness.handleInput("\r");
         await started;
         controller.abort(new DOMException("Session replaced", "AbortError"));
@@ -74,7 +74,7 @@ for (const confirmed of [false, true]) {
             return harness.result;
           }
           activated = true;
-          for (let index = 0; index < 8; index++) harness.handleInput("tui.select.down");
+          harness.handleInput("Machine-local");
           harness.handleInput("\r");
           await harness.waitForPending();
           seenPolicy = (await loadConfig()).localFields;

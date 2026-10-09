@@ -15,16 +15,16 @@ All seven runners call `onError(ctx, originalError)` only after their local pre-
 | Document review | `hasUI`, current owner, owner signal not aborted | `safeMenuText` | `Document review failed: ` | Recheck current owner and signal; otherwise original `error` |
 | Multi-select | `hasUI`, current owner, owner signal not aborted | `safeMenuText` | `Multi-select failed: ` | Recheck current owner and signal; otherwise original `error` |
 | Live choice | `hasUI`, current owner, owner signal not aborted | `safeMenuText` | `Live choice failed: ` | Recheck current owner and signal; otherwise original `error` |
-| Custom interaction | `hasUI` only | `safeMenuText` | `Custom interaction failed: ` | Recheck current owner and signal; otherwise original `error` |
-| Task | `hasUI` only | `safeMenuText` | `Task failed: ` | Execution failure rechecks owner, signal, external disposal, and user cancellation; custom-UI failure rechecks owner and signal |
+| Custom interaction | `hasUI`, current owner, owner signal not aborted | `safeMenuText` | `Custom interaction failed: ` | Recheck current owner and signal; otherwise original `error` |
+| Task | `hasUI`, current owner, owner signal not aborted; execution failures also check the interaction-owned signal | `safeMenuText` | `Task failed: ` | Execution failure rechecks owner, signal, external disposal, and user cancellation; custom-UI failure rechecks owner and signal |
 
-These differences are intentional compatibility constraints. In particular, custom interaction and task may notify after ownership changes during a failed callback, then return `stale`; do not normalize them to the other five runners. A task cancelled by the user during reporting returns `cancelled` unless owner staleness takes precedence.
+Fallback notifications are suppressed when ownership changes while a callback is pending, including custom interactions and tasks. Task execution also suppresses fallback after user cancellation or external loader disposal. This corrects the earlier internal policy that could notify a later interaction before returning `stale`; current-owner notification payloads, callback timing, and typed results remain unchanged. A task cancelled by the user during reporting returns `cancelled` unless owner staleness takes precedence.
 
 `safeMenuText` replaces C0/C1 controls, collapses whitespace, and trims; it leaves printable escape-sequence remnants and bidirectional characters. `sanitizeTerminalText` removes complete or unterminated escape sequences and bidirectional controls, replaces line separators, and retains other printable whitespace. Keep these existing display policies distinct.
 
 ## Lifecycle boundary
 
-The five dialog runners guard error reporting before and after its await. In TUI mode they delegate disposal and pending-work draining to custom interaction, while providing their own reporting callback. Custom interaction aborts and disposes its component, drains pending work, then checks stale ownership before reporting. Task separately owns user cancellation, external disposal, work draining, and custom-UI failures. Session replacement and shutdown are represented by the caller's owner signal or `isCurrent()` predicate; the reporter owns no session, component, timer, listener, or background task.
+The five dialog runners guard error reporting before and after its await. In TUI mode they delegate disposal and pending-work draining to custom interaction, while providing their own reporting callback. Custom interaction aborts owned work on completion or cancellation, retains asynchronous creation after host close, disposes its returned component, drains pending work, then checks stale ownership before reporting. Task separately owns user cancellation, external disposal, work draining, and custom-UI failures. Session replacement and shutdown are represented by the caller's owner signal or `isCurrent()` predicate; the reporter owns no session, component, timer, listener, or background task.
 
 ## Verification
 

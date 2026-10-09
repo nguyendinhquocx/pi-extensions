@@ -22,7 +22,7 @@ export async function showSyncSetupManager(ctx: ExtensionCommandContext, runRout
         await showAddTarget(ctx, setupSignal);
       },
       edit: async (name, setupSignal) => {
-        await showEditTarget(ctx, name, setupSignal);
+        await showEditSyncSetupStorage(ctx, name, setupSignal);
       },
       makeCurrent: async (name, setupSignal) => {
         const result = await showSetupSwitcher(ctx, runRoute, name, setupSignal);
@@ -84,7 +84,7 @@ async function showAddTarget(ctx: ExtensionCommandContext, signal?: AbortSignal)
   await showAddS3Target(ctx, raw, profile, name, signal);
 }
 
-async function showEditTarget(ctx: ExtensionCommandContext, name: string, signal?: AbortSignal) {
+export async function showEditSyncSetupStorage(ctx: ExtensionCommandContext, name: string, signal?: AbortSignal) {
   const partial = await loadPartialConfig(name);
   if (signal?.aborted) return;
   if (!partial.setupName) {

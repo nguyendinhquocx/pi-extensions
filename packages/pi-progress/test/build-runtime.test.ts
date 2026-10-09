@@ -68,6 +68,16 @@ test("generated runtime is loadable by Pi's Jiti resource loader", async () => {
     runner.setUIContext(ctx.ui, "tui");
     const tool = extension.tools.get("update_progress");
     assert.ok(tool);
+    assert.equal(
+      tool.definition.promptSnippet,
+      "Show users what has been done, what is happening now, and what is planned next",
+    );
+    assert.match(tool.definition.description, /empty steps array only to intentionally clear/u);
+    assert.ok(
+      tool.definition.promptGuidelines?.includes(
+        "Progress reporting does not prescribe the workflow or require tool calls before work or replies.",
+      ),
+    );
     const updated = await tool.definition.execute(
       "generated-progress",
       { steps: [{ text: "Verify generated runtime — waiting for approval", status: "blocked" }] },

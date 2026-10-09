@@ -49,16 +49,27 @@ test("registers only the canonical progress tool and strict steps-by-text schema
   );
   assert.equal(tool.name, "update_progress");
   assert.equal(tool.label, "Progress");
-  assert.match(tool.description, /whenever actual step state changes/u);
-  assert.doesNotMatch(tool.description, /require a reason/u);
-  assert.match(tool.promptSnippet, /multi-step work progresses/u);
+  assert.equal(
+    tool.description,
+    "Replace the current session progress state with the complete supplied steps using update_progress. Keep at most one step in_progress; send an empty steps array only to intentionally clear the state.",
+  );
+  assert.equal(tool.promptSnippet, "Show users what has been done, what is happening now, and what is planned next");
   assert.deepEqual(tool.promptGuidelines, [
-    "Use update_progress to track work with multiple meaningful steps; skip it for simple, single-step tasks.",
-    "Use update_progress to keep the progress state aligned with actual work: mark a step in_progress before starting it, mark it completed as soon as it finishes, and revise the steps before continuing when the plan changes.",
-    "Use blocked only when progress depends on an external action or condition, and include what is needed to continue in the step text; blocked does not mean completed.",
-    "Before a progress report or final response, call update_progress to reconcile every step with actual work; do not report completion while the progress state is stale.",
-    "On every update_progress call, send the complete current steps array, keep at most one step in_progress, and send an empty steps array when no tracked work remains.",
+    "Use update_progress for multi-step work when meaningful progress changes; skip simple tasks and avoid redundant updates.",
+    "Report actual progress. Use blocked when work depends on an external action or condition, include what is needed to continue in the step text, and do not mark blocked work completed.",
+    "Progress reporting does not prescribe the workflow or require tool calls before work or replies.",
   ]);
+  const guidance = [tool.description, tool.promptSnippet, ...tool.promptGuidelines].join("\n");
+  for (const removedObligation of [
+    "whenever actual step state changes",
+    "before starting it",
+    "as soon as it finishes",
+    "revise the steps before continuing",
+    "Before a progress report or final response",
+    "when no tracked work remains",
+  ]) {
+    assert.equal(guidance.includes(removedObligation), false, removedObligation);
+  }
 
   const parameters = tool.parameters as {
     additionalProperties?: boolean;

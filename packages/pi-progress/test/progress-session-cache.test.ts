@@ -112,7 +112,12 @@ test("a real Pi session keeps the full effective prompt and provider prefix stab
     assert.equal(requests.length, 3);
     const baseline = requests[0];
     assert.ok(baseline);
-    assert.match(baseline.systemPrompt, /Use update_progress/u);
+    assert.match(baseline.systemPrompt, /Use update_progress for multi-step work when meaningful progress changes/u);
+    assert.match(
+      baseline.systemPrompt,
+      /Progress reporting does not prescribe the workflow or require tool calls before work or replies/u,
+    );
+    assert.doesNotMatch(baseline.systemPrompt, /Before a progress report or final response/u);
     assert.deepEqual(baseline.names, ["update_progress"]);
     assert.equal(session.systemPrompt, baseline.systemPrompt);
     for (const [index, request] of requests.entries()) {
