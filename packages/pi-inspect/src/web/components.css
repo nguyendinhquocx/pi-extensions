@@ -1,0 +1,261 @@
+.event-glyph {
+  width: 20px;
+  height: 20px;
+  flex-shrink: 0;
+  display: inline-grid;
+  place-items: center;
+  color: var(--secondary);
+}
+.event-glyph svg {
+  width: 15px;
+  height: 15px;
+}
+.glyph-model {
+  color: #b2a4dd;
+}
+.glyph-tool {
+  color: #72b4c2;
+}
+.glyph-custom {
+  color: #af9ecb;
+}
+.glyph-thinking {
+  color: #78bdab;
+}
+.status {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 10px;
+  line-height: 15px;
+  color: var(--muted);
+  white-space: nowrap;
+}
+.status svg {
+  width: 11px;
+  height: 11px;
+}
+.status-success,
+.status-ok {
+  color: #32c48d;
+}
+.status-error,
+.status-cancelled {
+  color: #ed7373;
+}
+.status-running {
+  color: #e5b45c;
+}
+.status-dot {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  display: inline-block;
+  background: currentColor;
+}
+.view-switch {
+  display: inline-flex;
+  gap: 1px;
+  padding: 2px;
+  border-radius: 4px;
+  background: var(--code-bg);
+}
+.view-switch button {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 8px;
+  border: 0;
+  border-radius: 3px;
+  color: var(--secondary);
+  background: transparent;
+  font-size: 11px;
+}
+.view-switch button[aria-pressed="true"] {
+  background: var(--selected-bg);
+  color: var(--blue-11);
+}
+.metadata {
+  margin: 0;
+  font-size: 11px;
+  line-height: 17px;
+}
+.metadata > div {
+  display: grid;
+  grid-template-columns: minmax(85px, 36%) minmax(0, 1fr);
+  gap: 10px;
+  padding: 4px 0;
+}
+.metadata dt {
+  color: var(--secondary);
+}
+.metadata dd {
+  margin: 0;
+  min-width: 0;
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
+}
+.call {
+  padding: 8px 10px;
+  background: var(--code-bg);
+  border-left: 1px solid var(--panel-border);
+}
+.call .rt-Text {
+  font-size: 12px;
+}
+.parent-link {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--blue-11);
+  font-size: 11px;
+  margin: 7px 0;
+}
+.data {
+  border-top: 1px solid var(--panel-border);
+  margin-top: 7px;
+  min-width: 0;
+}
+.data-toolbar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 0;
+  min-width: 0;
+}
+.section-toggle {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  align-items: center;
+  gap: 5px;
+  background: none;
+  border: 0;
+  color: var(--secondary);
+  text-align: left;
+  font-size: 11px;
+  line-height: 16px;
+  padding: 2px 0;
+}
+.section-toggle svg {
+  width: 12px;
+  height: 12px;
+  flex-shrink: 0;
+}
+.chevron-open {
+  transform: rotate(90deg);
+}
+.copy-button {
+  color: var(--muted);
+  font-size: 10px;
+}
+.data-mode {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  font-size: 10px;
+  margin-bottom: 4px;
+  color: var(--muted);
+}
+.data-mode button {
+  border: 0;
+  background: none;
+  color: var(--secondary);
+  padding: 3px 5px;
+  font-size: 10px;
+}
+.data-mode button[aria-pressed="true"] {
+  color: var(--blue-11);
+  background: var(--selected-bg);
+  border-radius: 3px;
+}
+.data-mode > span {
+  margin-left: auto;
+}
+.code-preview {
+  font:
+    11px / 1.6 "Cascadia Code",
+    Consolas,
+    monospace;
+  white-space: pre;
+  overflow-x: auto;
+  margin: 0;
+  padding: 4px 0 8px;
+}
+.code-line {
+  display: flex;
+  min-width: max-content;
+}
+.line-number {
+  width: 32px;
+  text-align: right;
+  padding-right: 10px;
+  flex-shrink: 0;
+  color: var(--muted);
+  user-select: none;
+}
+.code-line code {
+  font: inherit;
+}
+.json-key {
+  color: #82b5e8;
+}
+.json-string {
+  color: #d8b28c;
+}
+.json-number {
+  color: #b7a4d9;
+}
+.light .json-key {
+  color: #245585;
+}
+.light .json-string {
+  color: #885523;
+}
+.light .json-number {
+  color: #6b409c;
+}
+.json-tree {
+  font:
+    11px / 1.7 Consolas,
+    monospace;
+  border: 0;
+  margin: 0;
+  padding: 2px 0 6px;
+  min-width: 0;
+  overflow-x: auto;
+}
+.json-object {
+  min-width: max-content;
+}
+.json-object summary {
+  cursor: pointer;
+  white-space: nowrap;
+  color: var(--secondary);
+}
+.json-summary {
+  color: var(--muted);
+  font-size: 10px;
+}
+.json-children {
+  padding-left: 16px;
+  border-left: 1px solid var(--panel-border);
+  margin-left: 5px;
+}
+.json-leaf {
+  white-space: pre;
+  min-width: max-content;
+}
+.preview-limit {
+  display: block;
+  padding: 6px;
+  color: var(--amber-11);
+  white-space: normal;
+}
+.preview-image {
+  max-width: 100%;
+  max-height: 220px;
+  object-fit: contain;
+  margin-top: 6px;
+}

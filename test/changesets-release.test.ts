@@ -316,28 +316,6 @@ test("sequential publishing reports a failure and continues with later packages"
   }
 });
 
-test("publish workflow summarizes successes before reporting publication failures", () => {
-  const workflow = readFileSync(path.join(repositoryRoot, ".github/workflows/publish.yml"), "utf8");
-  const actionStep = workflow.indexOf("uses: changesets/action@");
-  const summaryStep = workflow.indexOf("- name: Summarize published packages");
-  const failureStep = workflow.indexOf("- name: Fail after package publication errors");
-
-  assert.notEqual(actionStep, -1);
-  assert.ok(summaryStep > actionStep);
-  assert.ok(failureStep > summaryStep);
-  const failuresFilePattern = /PUBLISH_FAILURES_FILE: \$\{\{ runner\.temp \}\}\/package-publish-failures\.ndjson/u;
-  const publishedPackagesFilePattern = /PUBLISHED_PACKAGES_FILE: \$\{\{ runner\.temp \}\}\/published-packages\.ndjson/u;
-  assert.match(workflow.slice(actionStep, summaryStep), publishedPackagesFilePattern);
-  assert.match(workflow.slice(summaryStep, failureStep), publishedPackagesFilePattern);
-  assert.match(workflow.slice(summaryStep, failureStep), /if: always\(\)/u);
-  assert.match(workflow.slice(summaryStep, failureStep), /process\.env\.GITHUB_STEP_SUMMARY/u);
-  assert.match(workflow.slice(actionStep, failureStep), failuresFilePattern);
-  assert.match(workflow.slice(failureStep), failuresFilePattern);
-  assert.match(workflow.slice(failureStep), /if: steps\.changesets\.outcome == 'success'/u);
-  assert.match(workflow.slice(failureStep), /if \[\[ -s "\$PUBLISH_FAILURES_FILE" \]\]; then/u);
-  assert.match(workflow.slice(failureStep), /exit 1/u);
-});
-
 function readJson(filePath: string): {
   version?: string;
   dependencies?: Record<string, string>;

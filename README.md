@@ -111,6 +111,7 @@ The deprecated combined `pi-workflow` package has no atomic Plan-to-Goal replace
 | [`pi-analytics`](./packages/pi-analytics) | Review private, content-free local metrics for model calls, skills, tools, response cycles, and observed provider reliability through `/analytics`. | `pi install npm:@narumitw/pi-analytics` |
 | [`pi-cache-hit-monitor`](./packages/pi-cache-hit-monitor) | Show live prompt-cache reuse, token, and estimated cost diagnostics above the editor. | `pi install npm:@narumitw/pi-cache-hit-monitor` |
 | [`pi-github-pr`](./packages/pi-github-pr) | Show current-branch pull request checks, reviews, and comment counts through the authenticated `gh` CLI. | `pi install npm:@narumitw/pi-github-pr` |
+| [`pi-inspect`](./packages/pi-inspect) | Inspect current session context and live tool calls in a private, read-only browser viewer with `/inspect`. | `pi install ./packages/pi-inspect` |
 | [`pi-langfuse`](./packages/pi-langfuse) | Send agent runs, generations, token usage, costs, and tool activity to Langfuse. | `pi install npm:@narumitw/pi-langfuse` |
 | [`pi-stamp`](./packages/pi-stamp) | Show configurable timestamps with opt-in assistant metadata, response timing, and tool timing in the TUI transcript. | `pi install npm:@narumitw/pi-stamp` |
 | [`pi-starship`](./packages/pi-starship) | Use a native Starship-style TOML footer with Pi-specific modules and no Starship binary dependency. | `pi install npm:@narumitw/pi-starship` |
@@ -141,7 +142,7 @@ Install the repository as one Pi package:
 pi install git:github.com/narumiruna/pi-extensions
 ```
 
-The repository root Pi manifest explicitly lists every extension under `packages/`, so this enables all of them.
+The repository root Pi manifest explicitly lists every extension under `packages/`, so this enables all of them. Its install prepare step builds Inspector browser assets even when Pi omits development dependencies.
 
 To load only selected extensions, replace the installed package entry in `~/.pi/agent/settings.json` with a resource filter:
 

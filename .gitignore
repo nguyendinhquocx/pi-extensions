@@ -201,6 +201,9 @@ vite.config.ts.timestamp-*
 .vite/
 
 # Project
+packages/pi-inspect/dist-staging/
+packages/pi-inspect/test-results/
+packages/pi-inspect/playwright-report/
 .pi/agent/
 .pi/skills/
 .pi/settings.json

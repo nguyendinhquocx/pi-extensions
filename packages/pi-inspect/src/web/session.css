@@ -1,0 +1,114 @@
+.observed-context,
+.preview-context,
+.session-primary {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+}
+.observed-context[hidden],
+.session-primary[hidden],
+.header-actions [hidden] {
+  display: none;
+}
+.context-inventory {
+  flex-shrink: 0;
+  border-top: 1px solid var(--panel-border);
+  padding: 6px 10px;
+  color: var(--secondary);
+}
+.context-inventory summary,
+.session-filters summary {
+  cursor: pointer;
+}
+.inventory-scroll {
+  overflow: auto;
+  max-height: 38dvh;
+}
+.preview-heading,
+.session-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding: 6px 0;
+  color: var(--secondary);
+  font-size: 12px;
+}
+.preview-heading strong {
+  overflow-wrap: anywhere;
+}
+.preview-heading button,
+.session-toolbar > button {
+  background: var(--panel-raised);
+  color: var(--gray-12);
+  border: 1px solid var(--panel-border);
+  border-radius: 4px;
+  padding: 5px;
+}
+.session-toolbar fieldset {
+  margin: 0;
+  border: 0;
+  flex-wrap: wrap;
+}
+.session-toolbar label {
+  display: flex;
+  gap: 4px;
+  align-items: center;
+}
+.session-filters {
+  padding: 8px;
+  overflow: auto;
+}
+.trace-history .trace-item {
+  border-left: 0;
+}
+.trace-history .trace-item::before {
+  display: none;
+}
+.turn-heading {
+  padding: 10px 8px 5px;
+  color: var(--muted);
+  font-weight: 600;
+}
+.execution-primary .live-drawer {
+  flex: 1;
+  max-height: none;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.execution-primary .live-drawer-body {
+  flex: 1;
+  min-height: 0;
+  max-height: none;
+}
+.execution-primary .live-drawer-toggle {
+  flex-wrap: wrap;
+  flex-shrink: 0;
+}
+.call-summary {
+  flex: 2;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--muted);
+}
+.live-controls {
+  flex-wrap: wrap;
+}
+.recorded-content .code-preview {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+@media (max-width: 680px) {
+  .brand .rt-Heading {
+    display: none;
+  }
+  .session-toolbar {
+    font-size: 11px;
+    gap: 4px;
+  }
+}

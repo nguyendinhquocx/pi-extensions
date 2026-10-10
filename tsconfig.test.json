@@ -2,6 +2,7 @@
   "extends": "./tsconfig.json",
   "compilerOptions": {
     "noEmit": false,
+    "jsx": "react-jsx",
     "outDir": "node_modules/.cache/pi-extensions-test",
     "rootDir": "."
   },
