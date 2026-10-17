@@ -1,5 +1,28 @@
 # @narumitw/pi-sync
 
+## 0.57.0
+
+### Minor Changes
+
+- fa985f7: Add the manual-only `configure-pi-sync` skill for configuration questions and safe setup guidance without private settings reads, edits, or sync execution.
+  Bundle the authoritative settings reference with the skill and preserve existing settings documentation anchors.
+
+## 0.56.0
+
+### Minor Changes
+
+- 713eed4: Add default-off experimental Continuous sync with separate consent, local scheduler ownership, automatic detection and recovery, durable request limits, and safe blocked-state reporting. Bind each background cycle to its inspected settings and selected model before transfer, disclosure, publication, and local apply. Show the saved On or Off state in Continuous sync notifications.
+
+## 0.55.0
+
+### Minor Changes
+
+- 1e86ba9: Add default-off experimental Agent mode for autonomous text and atomic settings conflict resolution through an isolated, tool-free Pi SDK session. Revalidate candidates before conditional publication, retain journal recovery, and coordinate local resolver ownership across Pi processes. Require a Pi runtime that supplies the tested public SDK boundary.
+
+### Patch Changes
+
+- e0028ea: Simplify internal settings saves, initial-sync routing, cancellation checkpoints, and object-store snapshot metadata without changing sync behavior.
+
 ## 0.54.3
 
 ### Patch Changes

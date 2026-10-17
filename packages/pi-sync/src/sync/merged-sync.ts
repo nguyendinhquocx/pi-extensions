@@ -37,6 +37,7 @@ import {
 import { confirmMergeReview } from "../ui/merge-review.js";
 import { mergedSyncSummary } from "../ui/merged-sync-summary.js";
 import { safeTerminalText } from "../ui/terminal-text.js";
+import { startupTransferEnabled } from "./agent-policy.js";
 import { releaseConflictArtifacts } from "./conflict-artifact-ownership.js";
 import {
   type CreatedConflictArtifact,
@@ -82,7 +83,11 @@ export async function mergeSync(
   resolution?: ConflictResolution,
 ) {
   const timings = options.startupTimings ?? createStartupTimings();
-  const validateOwner = captureMutationOwner(ctx, options.signal);
+  const sessionOwner = captureMutationOwner(ctx, options.signal);
+  const validateOwner = (config?: AnySyncConfig) => {
+    sessionOwner();
+    options.background?.validate(config);
+  };
   const isCurrent = () => {
     try {
       validateOwner();
@@ -92,7 +97,9 @@ export async function mergeSync(
     }
   };
   const config = await loadConfig(options.setup);
+  validateOwner(config);
   const configToken = syncCheckConfigFingerprint(config);
+  const modelToken = JSON.stringify(ctx.model);
   const sessionRoot = config.include.includes("sessions") ? await effectiveSessionRoot(ctx) : undefined;
   validateOwner();
   const snapshotOptions = {
@@ -104,7 +111,7 @@ export async function mergeSync(
     timings.measure("transfer authorization", async () => {
       validateOwner();
       const latest = await loadConfig(options.setup);
-      validateOwner();
+      validateOwner(latest);
       if (configToken !== syncCheckConfigFingerprint(latest))
         throw new Error("Sync setup or settings changed during transfer; reopen sync.");
       if (sessionRoot !== undefined) {
@@ -113,22 +120,29 @@ export async function mergeSync(
         if (currentRoot !== sessionRoot)
           throw new Error("Session storage root changed during transfer; evidence retained for review.");
       }
-      if (options.auto && (!latest.automaticTransfer || !ctx.isIdle()))
+      if (config.agentMode && JSON.stringify(ctx.model) !== modelToken)
+        throw new Error("Agent mode paused: selected model changed during transfer.");
+      if (options.auto && (!startupTransferEnabled(latest) || !ctx.isIdle()))
         throw new Error("Automatic transfer is no longer authorized at this idle boundary.");
     });
   await validate();
   const backend = await timings.measure("transfer backend initialization", () => factory(config));
   await validate();
-  if (options.auto && backend.capability === "read-check-write-verify") {
-    throw new Error(
-      "Automatic transfer requires conditional publication or a lease; this backend supports only read/check/write/verify. Use manual sync.",
-    );
-  }
   const pending = await timings.measure("transfer journal read", () => readMergeJournal(config));
   await validate();
   if (pending) {
     const recovered = await timings.measure("transfer journal recovery", () =>
-      completeJournal(ctx, config, backend, pending, validate, timings, options.signal, options.auto),
+      completeJournal(
+        ctx,
+        config,
+        backend,
+        pending,
+        validate,
+        timings,
+        options.signal,
+        options.auto,
+        options.background?.validate,
+      ),
     );
     if (!recovered) {
       if ((options.auto || !options.silent) && !options.signal?.aborted)
@@ -141,6 +155,12 @@ export async function mergeSync(
     if ((options.auto || !options.silent) && !options.signal?.aborted)
       ctx.ui.notify("Recovered the committed merged transfer. Run sync again to inspect newer changes.", "info");
     return "applied" as const;
+  }
+  // Recovery above never publishes. This gate applies only to new autonomous transfers.
+  if ((options.auto || config.agentMode) && backend.capability === "read-check-write-verify") {
+    throw new Error(
+      "Automatic transfer requires conditional publication or a lease; this backend supports only read/check/write/verify. Disable Agent mode and use manual sync.",
+    );
   }
   const textBudget = { remaining: TEXT_MERGE_WORK_LIMIT };
   const createdArtifacts: CreatedConflictArtifact[] = [];
@@ -269,7 +289,7 @@ export async function mergeSync(
       );
       await validate();
       let resolved = { plan, fields: [] as string[] };
-      if (config.mergeSettings) {
+      if (config.mergeSettings || config.agentMode) {
         try {
           resolved = await timings.measure("transfer settings merge", () =>
             resolveSettingsConflicts(config, state, local, remote, plan),
@@ -300,7 +320,33 @@ export async function mergeSync(
         );
         await validate();
       }
-      if (plan.kind !== "planned" || (plan.conflicts.length && (!config.partialSync || options.auto))) {
+      if (config.agentMode && !resolution) {
+        const { resolveAgentPlan } = await import("./agent-plan.js");
+        await validate();
+        plan = await resolveAgentPlan(
+          ctx,
+          options,
+          config,
+          backend,
+          state,
+          local,
+          localRaw,
+          remote,
+          head,
+          plan,
+          snapshotOptions,
+          validate,
+        );
+        await validate();
+        if (plan.kind !== "planned" || (plan.conflicts.length && !config.partialSync))
+          throw new Error(
+            "Agent mode paused: unsupported or refused conflict groups remain; no transfer was performed.",
+          );
+      }
+      if (
+        plan.kind !== "planned" ||
+        (plan.conflicts.length && (!config.partialSync || (options.auto && !config.agentMode)))
+      ) {
         const decision = review(
           selectionCompatible
             ? `Conflicting or protected paths require review; no merged transfer was performed. Use /sync diff and an explicit direction.${resolved.fields.length ? ` Settings fields: ${resolved.fields.map(safeTerminalText).join(", ")}` : ""}`
@@ -467,7 +513,7 @@ export async function mergeSync(
       await validate();
       if (!config.skipSecretScan && scanSnapshot(upload).length)
         throw new Error("Refusing to merge possible secrets. Review managed content before syncing.");
-      if (!options.yes) {
+      if (!options.yes && !config.agentMode) {
         const summary = mergedSyncSummary({
           setupName: config.setupName,
           destination: backend.destination,
@@ -585,7 +631,17 @@ export async function mergeSync(
         throw mergeTransferError(error, config.backend);
       }
       const completed = await timings.measure("transfer journal recovery", () =>
-        completeJournal(ctx, config, backend, journal, validate, timings, options.signal, options.auto),
+        completeJournal(
+          ctx,
+          config,
+          backend,
+          journal,
+          validate,
+          timings,
+          options.signal,
+          options.auto,
+          options.background?.validate,
+        ),
       );
       if (!completed) {
         if (!options.signal?.aborted && (options.auto || !options.silent))
@@ -624,6 +680,7 @@ async function completeJournal(
   timings: StartupTimings,
   signal?: AbortSignal,
   auto = false,
+  validateBackground?: () => void,
 ) {
   if (
     journal.identity !== mergeJournalIdentity(config, backend.identity) ||
@@ -734,6 +791,7 @@ async function completeJournal(
   const validateOwner = captureMutationOwner(ctx, signal);
   const validateMutation = () => {
     validateOwner();
+    validateBackground?.();
     if (auto && !ctx.isIdle()) throw new Error("Automatic file apply is no longer idle; evidence retained.");
   };
   await timings.measure("transfer local apply", () =>

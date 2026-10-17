@@ -241,6 +241,8 @@ async function showSelectionDifference(
             include: [...state.decision.remoteInclude],
             automatic: review.config.automatic,
             automaticTransfer: review.config.automaticTransfer,
+            agentMode: review.config.agentMode,
+            continuous: review.config.continuous,
             onSwitch: review.config.onSwitch,
             showStatus: review.config.showStatus,
           };
@@ -593,6 +595,8 @@ function sameContinuationReview(left: PartialConfig, right: PartialConfig) {
     left.storagePath === right.storagePath &&
     left.bucket === right.bucket &&
     left.branch === right.branch &&
+    Boolean(left.agentMode) === Boolean(right.agentMode) &&
+    Boolean(left.continuous) === Boolean(right.continuous) &&
     sameSyncInclude(left.include, right.include)
   );
 }
