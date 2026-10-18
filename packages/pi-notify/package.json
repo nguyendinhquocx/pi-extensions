@@ -1,13 +1,26 @@
 {
   "name": "@narumitw/pi-notify",
-  "version": "0.2.0",
-  "description": "Telegram notifications when Pi settles, with optional inactivity reminders.",
+  "version": "0.4.0",
+  "description": "Multi-provider notifications when Pi settles, with optional inactivity reminders.",
   "type": "module",
   "license": "MIT",
   "keywords": [
     "pi-package",
     "pi-extension",
     "telegram",
+    "gotify",
+    "slack",
+    "ntfy",
+    "pushover",
+    "discord",
+    "bark",
+    "line",
+    "line-messaging-api",
+    "microsoft-teams",
+    "teams-workflows",
+    "power-automate",
+    "webhook",
+    "incoming-webhook",
     "notifications"
   ],
   "files": [

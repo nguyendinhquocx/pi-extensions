@@ -6,7 +6,80 @@ export interface TelegramDestination {
   messageThreadId?: number;
 }
 
-export type Destination = TelegramDestination;
+export interface GotifyDestination {
+  provider: "gotify";
+  label: string;
+  serverUrl: string;
+  appToken: string;
+  priority?: number;
+}
+
+export interface NtfyDestination {
+  provider: "ntfy";
+  label: string;
+  serverUrl: string;
+  topic: string;
+  accessToken?: string;
+  priority?: number;
+}
+
+export interface SlackDestination {
+  provider: "slack";
+  label: string;
+  webhookUrl: string;
+}
+
+export interface PushoverDestination {
+  provider: "pushover";
+  label: string;
+  appToken: string;
+  userKey: string;
+}
+
+export interface DiscordDestination {
+  provider: "discord";
+  label: string;
+  webhookUrl: string;
+}
+
+export interface BarkDestination {
+  provider: "bark";
+  label: string;
+  serverUrl: string;
+  deviceKey: string;
+}
+
+export interface TeamsDestination {
+  provider: "teams";
+  label: string;
+  webhookUrl: string;
+}
+
+export interface LineDestination {
+  provider: "line";
+  label: string;
+  channelAccessToken: string;
+  recipientId: string;
+}
+
+export interface WebhookDestination {
+  provider: "webhook";
+  label: string;
+  webhookUrl: string;
+  bearerToken?: string;
+}
+
+export type Destination =
+  | TelegramDestination
+  | GotifyDestination
+  | SlackDestination
+  | NtfyDestination
+  | PushoverDestination
+  | DiscordDestination
+  | BarkDestination
+  | WebhookDestination
+  | LineDestination
+  | TeamsDestination;
 
 export interface BodyEmphasis {
   style: "bold" | "monospace";
