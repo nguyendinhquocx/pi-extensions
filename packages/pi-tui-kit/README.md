@@ -16,6 +16,7 @@ Consumers reuse its navigation, rendering, cancellation, and mode adaptation ins
 - Handles interaction navigation, cancellation, disposal, horizontal framing, and width-safe rendering.
 - Provides standalone document review, multi-select, task, confirmation, questionnaire, live-choice, secret-input, and custom-interaction helpers.
 - Provides focused Mermaid Markdown, terminal-document, terminal-text, interaction-hint, editor-status-widget, horizontal-rule, and testing helpers.
+- Exposes bounded-frame row mappings and configured-key canonicalization without taking over native input routing.
 - Publishes built ESM and TypeScript declarations for independently installable extensions.
 
 ## 📦 Install
@@ -88,8 +89,13 @@ This release exposes and verifies the Kit API without changing that extension; `
 Standalone document review and multi-select are maintainer-requested pre-adoption APIs over existing standard-screen behavior.
 They add lifecycle and mode adapters without exposing component factories; this release does not migrate consumers or move domain state and persistence into Kit.
 
+Frame row metadata and configured-key canonicalization are prepared for the convergent Progress/Subagents frame wrappers and BTW/Notes configured-key syntax.
+Consumers keep their current implementations until the new Kit APIs are published; protocol-overlap, global shortcut availability, and a second paste parser remain deferred.
+The [native alignment audit](./docs/core-alignment-audit.md#shared-helper-alignment) records the API decisions and publication-dependent follow-up.
+
 Kit screens follow Pi's fullscreen input ownership rather than replacing its transcript controls.
 See [Fullscreen input and custom UI limits](./docs/api.md#fullscreen-input-and-custom-ui-limits) for paging, overlay focus, and program-status constraints.
+The [selector and host-input audit](./docs/core-alignment-audit.md) records corrections, retained contracts, native-renderer tests, and unverified terminal paths.
 
 ## ⚡ Runtime performance
 
@@ -127,11 +133,32 @@ The [API reference](./docs/api.md) contains the complete examples and contracts:
 - [Mermaid Markdown transformers](./docs/api.md#mermaid-markdown-transformers) — lazy preparation, final-message transformation, fallback behavior, and lifecycle ownership.
 - [Public exports and compatibility history](./docs/api.md#-public-api) — helpers, types, focused subpaths, and API-version changes.
 - [Horizontal rules](./docs/api.md#-horizontal-rules) and [editor status widgets](./docs/api.md#-editor-status-widgets) — passive, width-safe presentation components.
+- [Bounded frames](./docs/api.md#bounded-frames) and [configured keys](./docs/api.md#configured-keys) — row mappings and key syntax helpers with caller-owned input policy.
 
 The consuming extension owns domain state, persistence, confirmations, and session signals.
 Abort owned work on replacement or shutdown, honor each supplied signal, and revalidate mutable state after every `await`.
 Keep raw action payloads separate from sanitized terminal display text.
 Kit's UI lifecycle handling does not replace those responsibilities.
+
+## 🧪 Local showcase
+
+From the repository root, build Kit and start Pi with the local demo extension:
+
+```bash
+npm run showcase:tui-kit
+```
+
+You can also run `node packages/pi-tui-kit/scripts/showcase.mjs` directly.
+Both commands build Kit before starting Pi with automatic extension and skill loading disabled and session persistence off.
+Pi must be available on `PATH`; the launcher loads only the trusted repository demo, which runs with Pi's permissions.
+
+In Pi TUI mode, run `/tui-kit-showcase` without arguments to preview action, detail, browse, choice, settings, input, review, and multi-select screens.
+The menu also includes questionnaire, task, confirmation, and live-choice interactions; it reopens after each standalone interaction.
+All demo state stays in memory and resets on each command or session replacement; no settings are written.
+RPC reports that TUI mode is required, while print and JSON modes reject the command without ad hoc output.
+The demo loads Kit only when the command runs and is not registered in the repository's default extension set.
+
+The launcher and demo source are repository-only files, not part of the published library.
 
 ## 🗂️ Package layout
 
@@ -142,7 +169,7 @@ packages/pi-tui-kit/
 │   ├── components/                    # Internal TUI adapters
 │   └── testing/                       # Public test-only drivers
 ├── dist/                              # Published ESM and TypeScript declarations
-├── scripts/build.mjs                  # Library builder
+├── scripts/                           # Library builder and repository-only showcase
 ├── docs/                              # Published reference documentation
 └── test/                              # Behavior and lifecycle coverage
 ```
