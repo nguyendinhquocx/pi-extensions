@@ -1,5 +1,23 @@
 # @narumitw/pi-inspect
 
+## 0.3.3
+
+### Patch Changes
+
+- 3dab482: Improve Environment resource cards with bounded width, complete wrapping descriptions, clear status and navigation states, and consistent Copy actions. Preserve the inspector's original typography, spacing, colors, other surfaces, resource data, and disclosure state.
+
+## 0.3.2
+
+### Patch Changes
+
+- 67d99ca: Replace cache trend meters with a fixed 0–100% vertical bar chart, explicit empty and unknown states, text-labeled rate bands, and known epoch separators. Preserve the 32-point limit, accounting formulas, and keyboard and pointer access to Event details.
+
+## 0.3.1
+
+### Patch Changes
+
+- 1f1c293: Update React to 19.3.1, Langfuse to 6.0, and the TypeSafe SDK to 0.7 in their respective packages. Preserve trace-only input and output updates, metadata encoding, and root observation detection with Langfuse 6. Accept unreported TypeSafe token usage without rejecting valid answers.
+
 ## 0.3.0
 
 ### Minor Changes

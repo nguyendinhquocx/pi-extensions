@@ -90,6 +90,7 @@ export default function piStarship(pi: ExtensionAPI, options: PiStarshipOptions 
   };
   let sessionGeneration = 0;
   let menuController = new AbortController();
+  let commandInFlight: object | undefined;
   let sessionOwner: ExtensionContext["sessionManager"] | undefined;
   let activeTarget: RefreshTarget | undefined;
   let eventDebounceTimer: ReturnType<typeof setTimeout> | undefined;
@@ -241,6 +242,7 @@ export default function piStarship(pi: ExtensionAPI, options: PiStarshipOptions 
 
   const installFooter = (ctx: ExtensionContext) => {
     const generation = ++sessionGeneration;
+    commandInFlight = undefined;
     sessionOwner = ctx.sessionManager;
     previewLoaded = undefined;
     menuController.abort(new DOMException("Starship session context replaced", "AbortError"));
@@ -263,12 +265,12 @@ export default function piStarship(pi: ExtensionAPI, options: PiStarshipOptions 
     workspaceController.start(generation);
     startGithubPr(target);
 
-    ctx.ui.setFooter((tui, _theme, footerData) => {
+    ctx.ui.setFooter((tui, theme, footerData) => {
       runtime.requestRender = () => tui.requestRender();
       runtime.renderPreview = (preview, width) => {
         const snapshot = runtimeSnapshot(ctx, footerData, runtime);
         return wrapFormattedStatusline(
-          renderStatusline(preview.config, snapshot, width, getCapabilities().trueColor).ansi,
+          renderStatusline(preview.config, snapshot, width, getCapabilities().trueColor, theme.colors).ansi,
           width,
         );
       };
@@ -308,6 +310,7 @@ export default function piStarship(pi: ExtensionAPI, options: PiStarshipOptions 
             { ...lastRender.snapshot, now },
             lastRender.width,
             getCapabilities().trueColor,
+            theme.colors,
           ).ansi,
           lastRender.width,
         );
@@ -344,7 +347,7 @@ export default function piStarship(pi: ExtensionAPI, options: PiStarshipOptions 
           if (!current) return [];
           const snapshot = runtimeSnapshot(ctx, footerData, runtime);
           const lines = wrapFormattedStatusline(
-            renderStatusline(current.config, snapshot, width, getCapabilities().trueColor).ansi,
+            renderStatusline(current.config, snapshot, width, getCapabilities().trueColor, theme.colors).ansi,
             width,
           );
           lastRender = { snapshot, lines, config: current.config, width };
@@ -401,9 +404,21 @@ export default function piStarship(pi: ExtensionAPI, options: PiStarshipOptions 
     description: "Customize or inspect the native Starship-style footer",
     getArgumentCompletions: completeStarshipArguments,
     handler: async (args, ctx) => {
-      const commands = await loadStarshipCommands();
-      if (sessionOwner !== ctx.sessionManager) return;
-      await commands.handleStarshipCommand(args, ctx, commandOptions);
+      const interactive = ctx.mode === "tui" && (!args.trim() || args.trim().toLowerCase() === "settings");
+      if (interactive && commandInFlight) {
+        ctx.ui.notify("A pi-starship configuration workflow is already open.", "info");
+        return;
+      }
+      const token = interactive ? {} : undefined;
+      if (token) commandInFlight = token;
+      const generation = sessionGeneration;
+      try {
+        const commands = await loadStarshipCommands();
+        if (sessionOwner !== ctx.sessionManager || generation !== sessionGeneration) return;
+        await commands.handleStarshipCommand(args, ctx, commandOptions);
+      } finally {
+        if (token && commandInFlight === token) commandInFlight = undefined;
+      }
     },
   });
 
@@ -429,6 +444,7 @@ export default function piStarship(pi: ExtensionAPI, options: PiStarshipOptions 
   pi.on("session_shutdown", (_event, ctx) => {
     if (sessionOwner !== ctx.sessionManager) return;
     sessionOwner = undefined;
+    commandInFlight = undefined;
     previewLoaded = undefined;
     sessionGeneration += 1;
     menuController.abort(new DOMException("Starship session shut down", "AbortError"));
