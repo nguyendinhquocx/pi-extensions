@@ -1,6 +1,6 @@
 {
   "name": "@narumitw/pi-notify",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "description": "Multi-provider notifications when Pi settles, with optional inactivity reminders.",
   "type": "module",
   "license": "MIT",
@@ -25,16 +25,20 @@
   ],
   "files": [
     "src",
+    "dist",
     "README.md",
     "LICENSE",
     "docs"
   ],
   "pi": {
     "extensions": [
-      "./src/index.ts"
+      "./dist/index.ts"
     ]
   },
   "scripts": {
+    "build": "node scripts/build-runtime.mjs",
+    "benchmark:first-use": "node scripts/benchmark-first-use.mjs",
+    "prepack": "npm run build",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
