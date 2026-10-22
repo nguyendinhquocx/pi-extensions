@@ -5,17 +5,20 @@
   "description": "Monorepo for @narumitw pi extension packages.",
   "type": "module",
   "workspaces": [
+    "packages/pi-tui-kit",
     "packages/*"
   ],
   "pi": {
     "extensions": [
       "./packages/pi-accounts/src/index.ts",
+      "./packages/pi-agentfs/src/index.ts",
       "./packages/pi-analytics/src/index.ts",
       "./packages/pi-btw/src/index.ts",
       "./packages/pi-cache-hit-monitor/src/index.ts",
       "./packages/pi-caffeinate/src/index.ts",
       "./packages/pi-chat/src/index.ts",
       "./packages/pi-codex-compact/src/index.ts",
+      "./packages/pi-codex-imagegen/src/index.ts",
       "./packages/pi-context-management/src/index.ts",
       "./packages/pi-dotenv/src/index.ts",
       "./packages/pi-file-context/src/index.ts",
@@ -94,17 +97,26 @@
     "@earendil-works/pi-server": "1.1.0",
     "@earendil-works/pi-tui": "1.3.0",
     "@types/node": "^26.6.5",
+    "@types/semver": "^7.8.0",
     "concurrently": "^10.0.6",
     "esbuild": "0.28.2",
     "husky": "9.1.7",
     "npm-check-updates": "23.1.1",
     "semver": "7.8.5",
-    "typebox": "^1.4.0",
+    "typebox": "^1.4.2",
     "typescript": "^7.0.2",
     "vitest": "^5.0.5"
   },
   "overrides": {
+    "agentfs-sdk": {
+      "@tursodatabase/database": "0.8.3",
+      "@tursodatabase/database-common": "0.8.3"
+    },
     "brace-expansion": "5.0.12",
+    "just-bash": {
+      "guarded-fetch": "0.1.6",
+      "sprintf-js": "npm:@lvcabral/sprintf@1.2.2"
+    },
     "node-domexception": "npm:@profoundlogic/node-domexception@1.0.2",
     "protobufjs": "7.6.5"
   },
@@ -112,6 +124,8 @@
     "esbuild@0.28.2": true,
     "@google/genai": false,
     "protobufjs": false,
-    "fsevents": false
+    "fsevents": false,
+    "@mongodb-js/zstd": false,
+    "node-liblzma": false
   }
 }
