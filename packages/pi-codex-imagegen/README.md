@@ -11,7 +11,7 @@ Generate images from Pi through the Codex image endpoint, without starting Codex
 ## ✨ Features
 
 - Generate an image manually from a menu or through an opt-in model tool.
-- Save original image bytes without overwriting an existing file.
+- Write original image bytes to an explicit destination with Pi-native file handling.
 - Cancel owned requests and prevent results from reaching a replaced session.
 - Keep authentication with Pi rather than create another credential store.
 
@@ -37,23 +37,32 @@ The source entrypoint needs no package build. The repository build prepares the 
 
 ## 🚀 Quick start
 
-Use Pi's `/login` to sign in to the `openai-codex` provider, then open `/imagegen`, choose **Generate Image**, and enter a prompt. The default output is `~/.pi/agent/pi-codex-imagegen/`; the saved path is shown with the result.
+Use Pi's `/login` to sign in to the `openai-codex` provider, then open `/codex-imagegen`, choose **Generate Image**, enter a prompt, and enter a destination such as `assets/fox.png`. Choose a new path unless you intend to overwrite an existing file. The saved path is shown with the result.
 
 The `openai` provider's login and a login held only by Codex CLI are not substitutes. This extension does not import `~/.codex/auth.json`. Your main Pi model can use another provider. Generation sends the prompt to ChatGPT and can consume account quota.
 
 ## 💬 Commands
 
-`/imagegen` opens the generation manager, user settings, authentication status, and help. It accepts no arguments and requires TUI mode. RPC receives an unsupported-mode notice; print and JSON receive a command error. No generation is started by these rejection paths.
+`/codex-imagegen` opens the generation manager, user settings, authentication status, and help. It accepts no arguments and requires TUI mode. RPC receives an unsupported-mode notice; print and JSON receive a command error. No generation is started by these rejection paths.
 
 The prompt dialog preserves Pi's native multiline editing and paste behavior. External-editor launch is unavailable in this cancellable dialog because Pi's external-editor handoff cannot be aborted when the dialog is disposed.
 
 ## 🛠️ Tools
 
-`codex_imagegen` generates one image from a prompt. It accepts an optional output basename and transparency override. It returns a path, image content, and structured file details. Image content is handled by Pi's normal tool-result image policy.
+`codex_imagegen` requires `prompt` and `path`, with an optional `transparentBackground` override. It returns the absolute destination path, image content, and structured file details. Image content is handled by Pi's normal tool-result image policy.
 
-The tool is **disabled by default**, including codemode, tool search, and nested calls. Enable it explicitly in `/imagegen` → Settings. The manual menu does not require tool enablement. The enabled tool also works in headless modes.
+The tool is **disabled by default**, including codemode, tool search, and nested calls. Enable it explicitly in `/codex-imagegen` → Settings. The manual menu does not require tool enablement. The enabled tool also works in headless modes.
 
-A supplied filename must be a basename, not a path. Its optional suffix must be `.png`, `.jpg`, `.jpeg`, or `.webp` and match the returned media. Without a suffix, the detected suffix is appended. An omitted filename gets a unique name.
+`path` uses the same resolution as Pi's `write`: relative paths use the session working directory; absolute paths, `~/`, leading `@`, and file URLs are supported. Shell variables and wildcards are literal, not expanded. There is no default destination or generated filename. No extension is added or changed; the extension does not select or convert the returned image format.
+
+```json
+{
+  "prompt": "A simple fox logo",
+  "path": "assets/fox.png"
+}
+```
+
+Missing parent directories are created. Existing files are overwritten and symlinks are followed. See [Security and privacy](#-security-and-privacy) before enabling model access.
 
 ## ⚙️ Settings
 
@@ -62,10 +71,9 @@ User settings live in `<getAgentDir()>/pi-codex-imagegen.json`, normally `~/.pi/
 | Setting | Default | Accepted value |
 | --- | --- | --- |
 | `toolEnabled` | `false` | Boolean; permits model access. |
-| `outputDir` | `<getAgentDir()>/pi-codex-imagegen/` | Nonempty path without control, format, or surrogate characters. Absolute paths and `~/` are supported; relative paths use the request's working directory. |
 | `transparentBackground` | `false` | Boolean; requests transparency by default, with a per-call override. Actual alpha support is provider-dependent. |
 
-For example, to enable the tool while retaining the default output directory:
+For example, to enable the tool:
 
 ```json
 {
@@ -73,7 +81,7 @@ For example, to enable the tool while retaining the default output directory:
 }
 ```
 
-A custom Pi agent directory also changes the default output directory. Defaults and Status do not create files or directories. An explicit generation can create its output directory even if generation later fails.
+Defaults and Status do not create files or directories. Each generation requires an explicit path and can create its parent directories even if generation later fails.
 
 Missing settings mean defaults. Invalid files produce a warning or lifecycle error and block settings writes until repaired. Saves preserve unknown fields, use temporary-file-plus-rename publication, and keep the prior effective values after a failed save or application. Settings reads and writes are ordered within one Pi process, not locked across separate Pi processes.
 
@@ -85,7 +93,9 @@ Only the entered prompt and fixed generation options are sent to `https://chatgp
 
 The destination is fixed, redirects are rejected, arbitrary provider headers are not forwarded, and no model or API fallback is used. The client identifies itself as `pi-codex-imagegen`. Provider denials are errors, not a reason to bypass policy.
 
-Output paths must contain real directories, not symlink components. Files use exclusive creation and private permissions. This prevents ordinary overwrites and filename collisions, but is not an OS sandbox against another process with the same filesystem permissions changing directories during an operation.
+Output follows Pi's `write` behavior: it creates parent directories, overwrites existing files, follows symlinks, and uses normal filesystem permissions and umask. Paths are not confined to the repository. A symlink can direct the write outside the project.
+
+Returned image data is validated before writing file bytes. Destination checks before generation do not reserve the path against concurrent changes. Writes are not atomic or rolled back: a write failure or cancellation can leave an existing file truncated or partially replaced. Restore overwritten content from version control or a backup.
 
 The client uses runtime `fetch` without changing global network settings. Proxy handling depends on the host's HTTP dispatcher; SDK hosts must provide their own network setup. Pi-specific provider or WebSocket proxy routing is not a separate guarantee for this endpoint.
 
@@ -97,9 +107,10 @@ The client uses runtime `fetch` without changing global network settings. Proxy 
 - Cancelling closes owned HTTP work but cannot guarantee that remote generation stops or quota is refunded. Pi-owned OAuth refresh may finish after this extension stops waiting. A file saved before late cancellation remains on disk.
 - Pi's normal session shutdown aborts work directly. Direct SDK `AgentSession.dispose()` omits that event in the tested runtime; active flows check public context liveness every 100 ms and before subsequent side effects. No poll runs while the extension is idle.
 - Responses are limited to 32 MiB decoded, 16,384 pixels per side, and 16,777,216 pixels total. Static PNG, JPEG, and WebP containers are supported; animations are rejected. Header/container checks are not a complete JPEG/WebP entropy decoder or a codec-security guarantee.
+- Filesystem writes inherit native behavior. Device/pipe targets or stalled filesystems can block, and cancellation is best effort.
 - Inline previews depend on terminal support and Pi image settings. Manual previews can be resized while the original file stays unchanged. Image usage and quota are not reported as an invented Pi dollar cost.
 
-See the [protocol contract](./docs/protocol.md) for implementation evidence and the [verification guide](./docs/verification.md) for remaining account and physical-terminal checks.
+See the [architecture](./docs/architecture.md) and [workflow diagrams](./docs/workflows.md) for a visual overview, the [protocol contract](./docs/protocol.md) for implementation evidence, and the [verification guide](./docs/verification.md) for remaining account and physical-terminal checks.
 
 ## 🗂️ Package layout
 

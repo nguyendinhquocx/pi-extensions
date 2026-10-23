@@ -135,7 +135,7 @@ test("branch preview shares composition without unrelated current information or
   await expect(page.locator(".inspector-panel")).toHaveCount(0);
   await page.getByRole("button", { name: "Back to last observed context", exact: true }).click();
   await expect(page.locator(".observed-context .segment-row").first()).toContainText("Observed input only");
-  await page.getByRole("tab", { name: "Environment", exact: true }).click();
+  await page.getByRole("tab", { name: "Tools", exact: true }).click();
   await expect(page.getByText("mcp__docs__search", { exact: true })).toBeVisible();
   expect(f.manager.getLeafId()).toBe(leaf);
 });
@@ -320,7 +320,7 @@ for (const presentation of ["List", "Timeline"] as const) {
   });
 }
 
-test("Environment mounts catalogs on first visit and schemas only on disclosure", async ({ page }) => {
+test("resource tabs mount catalogs on first visit and schemas only on disclosure", async ({ page }) => {
   const template = tools[0];
   if (!template) throw Error("Missing tool fixture");
   inventoryTools = Array.from({ length: 256 }, (_, i) => ({
@@ -332,12 +332,14 @@ test("Environment mounts catalogs on first visit and schemas only on disclosure"
   }));
   await page.goto(server.url);
   await expect(page.locator(".segment-row").first()).toBeVisible();
-  await expect(page.locator(".inventory-card")).toHaveCount(0);
-  await page.getByRole("tab", { name: "Environment", exact: true }).click();
+  await expect(page.locator(".inventory-card, .tool-inventory-table, .tool-detail-content")).toHaveCount(0);
+  await page.getByRole("tab", { name: "Tools", exact: true }).click();
   const inventory = page.locator("#resource-panel-tools");
-  await expect(inventory.locator(".inventory-card")).toHaveCount(256);
+  await expect(inventory.locator("tbody tr")).toHaveCount(256);
   await expect(inventory.locator(".json-tree")).toHaveCount(0);
-  const schema = inventory.locator(".inventory-card").first().locator(".data").last();
+  await inventory.getByRole("button", { name: "Inspect inventory-tool-0", exact: true }).click();
+  const details = inventory.getByRole("complementary", { name: "Tool details", exact: true });
+  const schema = details.locator(".data").last();
   await expect(schema.getByRole("button", { name: "Copy display data" })).toBeEnabled();
   const toggle = schema.getByRole("button", { name: "Schema · inventory-tool-0", exact: true });
   await toggle.click();
@@ -349,25 +351,26 @@ test("Environment mounts catalogs on first visit and schemas only on disclosure"
   await expect(inventory.locator(".json-tree")).toHaveCount(0);
   await toggle.click();
   await expect(properties.locator("..")).toHaveJSProperty("open", true);
-  await inventory.evaluate((element) => {
+  const table = inventory.getByRole("region", { name: "Scrollable tools table" });
+  await table.evaluate((element) => {
     element.scrollTop = 200;
   });
-  const top = await inventory.evaluate((element) => element.scrollTop);
+  const top = await table.evaluate((element) => element.scrollTop);
   expect(top).toBeGreaterThan(0);
   await page.getByRole("tab", { name: "Session", exact: true }).click();
-  await page.getByRole("tab", { name: "Environment", exact: true }).click();
+  await page.getByRole("tab", { name: "Tools", exact: true }).click();
   await expect(toggle).toHaveAttribute("aria-expanded", "true");
   await page.getByRole("tab", { name: "Skills", exact: true }).click();
   await expect(page.locator("#resource-panel-skills .inventory-card")).toHaveCount(1);
   await expect(inventory).not.toBeVisible();
   await page.getByRole("tab", { name: "Tools", exact: true }).click();
   await expect(toggle).toHaveAttribute("aria-expanded", "true");
-  await expect(inventory).toHaveJSProperty("scrollTop", top);
+  await expect(table).toHaveJSProperty("scrollTop", top);
 
   inventoryTools = inventoryTools.map((tool) => ({ ...tool, description: "Updated inventory" }));
 
   server.invalidate(1);
-  await expect(inventory.locator(".inventory-card").first()).toContainText("Updated inventory");
+  await expect(details).toContainText("Updated inventory");
   await expect(toggle).toHaveAttribute("aria-expanded", "true");
 });
 

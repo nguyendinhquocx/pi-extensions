@@ -41,10 +41,9 @@ afterEach(async () => {
 it("uses the supplied agent directory and loads missing defaults without filesystem changes", async () => {
   const expected = {
     toolEnabled: false,
-    outputDir: join(agentDir, "pi-codex-imagegen"),
     transparentBackground: false,
   };
-  expect(defaultSettings(agentDir)).toEqual(expected);
+  expect(defaultSettings()).toEqual(expected);
   expect(store.path).toBe(join(agentDir, "pi-codex-imagegen.json"));
   expect(store.settings).toEqual(expected);
   expect(await fs.readdir(directory)).toEqual([]);
@@ -56,26 +55,16 @@ it("uses the supplied agent directory and loads missing defaults without filesys
 });
 
 it("creates private settings only on first save and stores only explicit overrides", async () => {
-  expect(await store.save({ toolEnabled: true })).toEqual({ ...defaultSettings(agentDir), toolEnabled: true });
+  expect(await store.save({ toolEnabled: true })).toEqual({ ...defaultSettings(), toolEnabled: true });
   expect(await document()).toEqual({ toolEnabled: true });
   expect(await fs.readdir(agentDir)).toEqual(["pi-codex-imagegen.json"]);
   if (process.platform !== "win32") {
     expect((await fs.stat(store.path)).mode & 0o777).toBe(0o600);
     expect((await fs.stat(agentDir)).mode & 0o777).toBe(0o700);
   }
-  await expect(fs.stat(defaultSettings(agentDir).outputDir)).rejects.toMatchObject({ code: "ENOENT" });
   await store.save({ transparentBackground: false });
   expect(await document()).toEqual({ toolEnabled: true, transparentBackground: false });
 });
-
-it.each(["/absolute/images", "~/images", "relative/images", "images with spaces"])(
-  "keeps an accepted output path unchanged: %s",
-  async (outputDir) => {
-    await store.save({ outputDir });
-    expect((await store.load()).settings.outputDir).toBe(outputDir);
-    expect(await document()).toEqual({ outputDir });
-  },
-);
 
 it("reloads manual edits and preserves unknown fields including prototype-like names", async () => {
   const bytes = '{"toolEnabled":true,"future":{"nested":[1,2]},"__proto__":{"keep":true}}';
@@ -86,10 +75,10 @@ it("reloads manual edits and preserves unknown fields including prototype-like n
     ...JSON.parse(bytes),
     transparentBackground: true,
   });
-  await fs.writeFile(store.path, '{"outputDir":"~/manually-edited","future":42}');
-  expect((await store.load()).settings).toEqual({ ...defaultSettings(agentDir), outputDir: "~/manually-edited" });
+  await fs.writeFile(store.path, '{"transparentBackground":true,"future":42}');
+  expect((await store.load()).settings).toEqual({ ...defaultSettings(), transparentBackground: true });
   await store.save({ toolEnabled: true });
-  expect(await document()).toEqual({ outputDir: "~/manually-edited", future: 42, toolEnabled: true });
+  expect(await document()).toEqual({ transparentBackground: true, future: 42, toolEnabled: true });
 });
 
 it.each([
@@ -100,14 +89,10 @@ it.each([
   "42",
   '{"toolEnabled":"raw-secret"}',
   '{"transparentBackground":1}',
-  '{"outputDir":null}',
-  '{"outputDir":""}',
-  '{"outputDir":"   "}',
-  '{"outputDir":"\\u0000"}',
 ])("warns on invalid loads and protects existing invalid bytes: %s", async (bytes) => {
   await seed(bytes);
   const loaded = await store.load();
-  expect(loaded.settings).toEqual(defaultSettings(agentDir));
+  expect(loaded.settings).toEqual(defaultSettings());
   expect(loaded.warning).toMatch(/Repair/);
   expect(loaded.warning).not.toContain("raw-secret");
   await expect(store.save({ toolEnabled: true })).rejects.toThrow("Repair");
@@ -121,11 +106,7 @@ it.each([
 it.each([
   { toolEnabled: "raw-secret" },
   { transparentBackground: null },
-  { outputDir: "" },
-  { outputDir: " \t " },
-  { outputDir: "bad\0path" },
   { toolEnabled: undefined },
-  { outputDir: 3 },
   { unknown: "raw-secret" },
 ])("rejects invalid patches without writing or leaking values: %j", async (patch) => {
   const task = store.save(patch as Partial<ImagegenSettings>);
@@ -147,19 +128,15 @@ it("captures queued patches and orders saves and reloads across the same path", 
   const patch = { toolEnabled: true };
   const first = store.save(patch, { apply: (next) => seen.push(next.toolEnabled) });
   patch.toolEnabled = false;
-  const second = store.save({ outputDir: "second" });
+  const second = store.save({ transparentBackground: true });
   const third = other.save({ toolEnabled: false }, { apply: (next) => seen.push(next.toolEnabled) });
   const reload = store.load();
-  const last = other.save({ transparentBackground: true });
+  const last = other.save({ transparentBackground: false });
   release.resolve();
   await Promise.all([blocker, first, second, third, last]);
-  expect((await reload).settings).toEqual({
-    ...defaultSettings(agentDir),
-    outputDir: "second",
-    toolEnabled: false,
-  });
+  expect((await reload).settings).toEqual({ toolEnabled: false, transparentBackground: true });
   expect(seen).toEqual([true, false]);
-  expect(await document()).toEqual({ toolEnabled: false, outputDir: "second", transparentBackground: true });
+  expect(await document()).toEqual({ toolEnabled: false, transparentBackground: false });
 });
 
 it("holds dependent reloads until persistence and runtime application complete", async () => {
@@ -214,7 +191,7 @@ it("keeps the old runtime and bytes after rename failure and recovers the queue"
 });
 
 it.each([false, true])("rolls back partially applied runtime and exact prior file (existing: %s)", async (exists) => {
-  const bytes = '{ "future": {"retain":true}, "outputDir": "before" }\n';
+  const bytes = '{ "future": {"retain":true}, "transparentBackground": false }\n';
   if (exists) await seed(bytes);
   await store.load();
   const previous = store.settings;
@@ -242,8 +219,8 @@ it.each([false, true])("rolls back partially applied runtime and exact prior fil
   if (exists) expect(await fs.readFile(store.path, "utf8")).toBe(bytes);
   else await expect(fs.stat(store.path)).rejects.toMatchObject({ code: "ENOENT" });
   expect(await fs.readdir(agentDir)).toEqual(exists ? ["pi-codex-imagegen.json"] : []);
-  await store.save({ outputDir: "recovered" });
-  expect(store.settings.outputDir).toBe("recovered");
+  await store.save({ transparentBackground: true });
+  expect(store.settings.transparentBackground).toBe(true);
 });
 
 it("rejects asynchronous apply callbacks and restores the previous file", async () => {
@@ -288,7 +265,7 @@ it.each([false, true])("undoes late cancellation immediately after rename (exist
   const apply = vi.fn();
   await expect(store.save({ toolEnabled: true }, { signal: controller.signal, apply })).rejects.toThrow("cancelled");
   expect(apply).not.toHaveBeenCalled();
-  expect(store.settings).toEqual(defaultSettings(agentDir));
+  expect(store.settings).toEqual(defaultSettings());
   if (exists) expect(await fs.readFile(store.path, "utf8")).toBe(bytes);
   else await expect(fs.stat(store.path)).rejects.toMatchObject({ code: "ENOENT" });
   expect(await fs.readdir(dirname(store.path))).toEqual(exists ? ["pi-codex-imagegen.json"] : []);
@@ -316,9 +293,9 @@ it("checks ownership after synchronous runtime application and rolls back both s
 
 it("reloads invalid manual edits before saving instead of replacing them from cached settings", async () => {
   await store.save({ toolEnabled: true });
-  await fs.writeFile(store.path, '{"outputDir":false}');
+  await fs.writeFile(store.path, '{"transparentBackground":"invalid"}');
   await expect(store.save({ toolEnabled: false })).rejects.toThrow("Repair");
-  expect(await fs.readFile(store.path, "utf8")).toBe('{"outputDir":false}');
+  expect(await fs.readFile(store.path, "utf8")).toBe('{"transparentBackground":"invalid"}');
   expect(store.settings.toolEnabled).toBe(true);
 });
 

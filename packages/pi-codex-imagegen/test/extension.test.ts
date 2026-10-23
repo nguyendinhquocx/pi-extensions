@@ -62,12 +62,12 @@ async function setup(options: { document?: unknown; mode?: ExtensionContext["mod
     for (const handler of mock.events.get(type) ?? []) await handler({ type, reason: "quit" }, target);
   };
   const command = (args = "") => {
-    const registered = mock.commands.get("imagegen");
-    if (!registered) throw new Error("Missing imagegen command");
+    const registered = mock.commands.get("codex-imagegen");
+    if (!registered) throw new Error("Missing codex-imagegen command");
     return registered.handler(args, ctx);
   };
   const tool = () => mock.tools.at(-1) as unknown as ToolDefinition;
-  const execute = (params = { prompt: "A small red cube" }, signal?: AbortSignal) =>
+  const execute = (params = { prompt: "A small red cube", path: "output/image" }, signal?: AbortSignal) =>
     tool().execute("image-call", params, signal, undefined, ctx as never);
   const getOwner = async () => {
     await command();
@@ -91,9 +91,9 @@ async function setup(options: { document?: unknown; mode?: ExtensionContext["mod
   };
 }
 
-it("registers a hidden tool and one command without resolving auth or creating files", async () => {
+it("registers only /codex-imagegen and a hidden tool without resolving auth or creating files", async () => {
   const h = await setup();
-  expect([...h.commands.keys()]).toEqual(["imagegen"]);
+  expect([...h.commands.keys()]).toEqual(["codex-imagegen"]);
   expect(h.tool().exposure).toBe("hidden");
   expect(h.request).not.toHaveBeenCalled();
   await expect(fs.stat(h.agentDir)).rejects.toMatchObject({ code: "ENOENT" });
@@ -104,13 +104,15 @@ it("registers a hidden tool and one command without resolving auth or creating f
   await h.emit("session_shutdown");
 });
 
-it("saves the original bytes under the custom agent directory with structured tool details", async () => {
+it("writes original bytes to the exact session-relative path with structured tool details", async () => {
   const h = await setup({ document: { toolEnabled: true } });
   await h.emit("session_start");
   expect(h.tool().exposure).toBe("direct");
-  const result = await h.execute({ prompt: "  unmodified prompt  ", filename: "cube.webp" } as never);
+  const result = await h.execute({ prompt: "  unmodified prompt  ", path: "assets/cube" });
   const details = result.details as { path: string; requestId: string };
-  expect(details.path).toBe(join(h.agentDir, "pi-codex-imagegen", "cube.webp"));
+  expect(details.path).toBe(join(h.root, "assets", "cube"));
+  expect(h.tool().parameters).toMatchObject({ required: ["prompt", "path"] });
+  expect(h.tool().annotations?.destructiveHint).toBe(true);
   expect(await fs.readFile(details.path)).toEqual(Buffer.from(IMAGE, "base64"));
   expect(result.structuredContent).toEqual(result.details);
   expect(details.requestId).toBe("fixture-request");
@@ -124,7 +126,7 @@ it("manual generation remains available with the tool hidden and appends without
   const h = await setup();
   await h.emit("session_start");
   const owner = await h.getOwner();
-  await owner.generate("A landscape", owner.signal);
+  await owner.generate("A landscape", "images/manual", owner.signal);
   expect(h.tool().exposure).toBe("hidden");
   expect(h.sentUserMessages).toEqual([]);
   expect(h.sentMessages).toHaveLength(1);
@@ -138,53 +140,58 @@ it("manual publication honors Pi's image-block setting", async () => {
   await h.emit("session_start");
   h.nativeSettings.images.blockImages = true;
   const owner = await h.getOwner();
-  await owner.generate("An image", owner.signal);
+  await owner.generate("An image", "images/blocked-preview", owner.signal);
   const message = h.sentMessages[0]?.message as { content: { type: string }[] };
   expect(message.content.map((block) => block.type)).toEqual(["text"]);
   await h.emit("session_shutdown");
 });
 
-it.each(["../escape.png", "bad\nname.png"])(
-  "rejects an unsafe filename before authentication or HTTP: %j",
-  async (filename) => {
-    const h = await setup({ document: { toolEnabled: true } });
-    await h.emit("session_start");
-    await expect(h.execute({ prompt: "image", filename } as never)).rejects.toThrow();
-    expect(h.request).not.toHaveBeenCalled();
-    await h.emit("session_shutdown");
-  },
-);
-
-it("preflights symlink roots and an occupied explicit filename before consuming quota", async () => {
+it.each([undefined, null, 42])("requires a string path before authentication or HTTP: %j", async (path) => {
   const h = await setup({ document: { toolEnabled: true } });
   await h.emit("session_start");
-  const owner = await h.getOwner();
-  const outside = join(h.root, "outside");
-  await fs.mkdir(outside);
-  const linked = join(h.root, "linked");
-  await fs.symlink(outside, linked, "dir");
-  await owner.saveSettings({ outputDir: linked });
-  await expect(h.execute()).rejects.toThrow(/symlinks/);
-  await owner.saveSettings({ outputDir: outside });
-  await fs.writeFile(join(outside, "occupied.webp"), "user file");
-  await expect(h.execute({ prompt: "image", filename: "occupied.webp" } as never)).rejects.toThrow(/already exists/);
-  expect(await fs.readFile(join(outside, "occupied.webp"), "utf8")).toBe("user file");
+  await expect(h.execute({ prompt: "image", path } as never)).rejects.toThrow(/output path/);
   expect(h.request).not.toHaveBeenCalled();
   await h.emit("session_shutdown");
 });
 
-it.skipIf(process.platform === "win32" || process.getuid?.() === 0).each([undefined, "image", "image.webp"])(
-  "rejects an unsearchable output directory before consuming quota: %j",
-  async (filename) => {
+it.each([".", "invalid\0/path"])("preflights invalid destinations before consuming quota: %j", async (path) => {
+  const h = await setup({ document: { toolEnabled: true } });
+  await h.emit("session_start");
+  await expect(h.execute({ prompt: "image", path })).rejects.toThrow();
+  expect(h.request).not.toHaveBeenCalled();
+  await h.emit("session_shutdown");
+});
+
+it.each(["directory", "file"])("overwrites an exact destination through a %s symlink", async (kind) => {
+  const h = await setup({ document: { toolEnabled: true } });
+  await h.emit("session_start");
+  const directory = join(h.root, "outside");
+  await fs.mkdir(directory);
+  const target = join(directory, "existing.png");
+  await fs.writeFile(target, "previous user file");
+  const linked = join(h.root, "linked");
+  await fs.symlink(kind === "directory" ? directory : target, linked, kind === "directory" ? "dir" : "file");
+  const path = kind === "directory" ? join(linked, "existing.png") : linked;
+  const result = await h.execute({ prompt: "image", path });
+  expect((result.details as { path: string }).path).toBe(path);
+  expect(await fs.readFile(target)).toEqual(Buffer.from(IMAGE, "base64"));
+  expect((await fs.lstat(linked)).isSymbolicLink()).toBe(true);
+  expect(h.request).toHaveBeenCalledTimes(1);
+  await h.emit("session_shutdown");
+});
+
+it.skipIf(process.platform === "win32" || process.getuid?.() === 0).each(["new", "new.png", "nested/new"])(
+  "rejects an unsearchable destination parent before consuming quota: %j",
+  async (name) => {
     const h = await setup({ document: { toolEnabled: true } });
     await h.emit("session_start");
-    const owner = await h.getOwner();
     const directory = join(h.root, "unsearchable");
     await fs.mkdir(directory);
-    await owner.saveSettings({ outputDir: directory });
     await fs.chmod(directory, 0o600);
     try {
-      await expect(h.execute({ prompt: "image", filename } as never)).rejects.toMatchObject({ code: "EACCES" });
+      await expect(h.execute({ prompt: "image", path: join(directory, name) })).rejects.toMatchObject({
+        code: "EACCES",
+      });
       expect(h.request).not.toHaveBeenCalled();
     } finally {
       await fs.chmod(directory, 0o700);
@@ -193,16 +200,56 @@ it.skipIf(process.platform === "win32" || process.getuid?.() === 0).each([undefi
   },
 );
 
-it.each(["images\n", "images\u202e", "images\ud800"])(
-  "uses one output path policy for settings and requests: %j",
-  async (outputDir) => {
-    const h = await setup({ document: { toolEnabled: true, outputDir } });
+it("validates image bytes before modifying an existing destination", async () => {
+  const h = await setup({
+    document: { toolEnabled: true },
+    overrides: { request: async () => ({ base64: "not-an-image" }) },
+  });
+  await h.emit("session_start");
+  const path = join(h.root, "existing");
+  await fs.writeFile(path, "preserve before validated response");
+  await expect(h.execute({ prompt: "image", path })).rejects.toThrow();
+  expect(await fs.readFile(path, "utf8")).toBe("preserve before validated response");
+  await h.emit("session_shutdown");
+});
+
+it("captures path and prompt before asynchronous generation", async () => {
+  const started = deferred<void>();
+  const response = deferred<{ base64: string }>();
+  const h = await setup({
+    document: { toolEnabled: true },
+    overrides: {
+      request: async () => {
+        started.resolve();
+        return response.promise;
+      },
+    },
+  });
+  await h.emit("session_start");
+  const params = { prompt: "original prompt", path: "original/destination" };
+  const running = h.execute(params);
+  await started.promise;
+  params.path = "different/destination";
+  params.prompt = "changed";
+  response.resolve({ base64: IMAGE });
+  const result = await running;
+  expect((result.details as { path: string }).path).toBe(join(h.root, "original/destination"));
+  expect(await fs.readFile(join(h.root, "original/destination"))).toEqual(Buffer.from(IMAGE, "base64"));
+  await expect(fs.access(join(h.root, "different"))).rejects.toThrow();
+  await h.emit("session_shutdown");
+});
+
+it.each(["a".repeat(60_000), "\n".repeat(5000)])(
+  "bounds filesystem error text before it becomes a tool result",
+  async (path) => {
+    const h = await setup({ document: { toolEnabled: true } });
     await h.emit("session_start");
-    expect(h.tool().exposure).toBe("hidden");
-    const owner = await h.getOwner();
-    await expect(owner.saveSettings({ outputDir })).rejects.toThrow(/Invalid/);
+    const error = await h.execute({ prompt: "image", path }).catch((failure: unknown) => failure);
+    expect(error).toBeInstanceOf(Error);
+    if (!(error instanceof Error)) throw new Error("Expected path error");
+    expect(Buffer.byteLength(error.message)).toBeLessThanOrEqual(50 * 1024);
+    expect(error.message.split("\n").length).toBeLessThanOrEqual(2000);
     expect(h.request).not.toHaveBeenCalled();
-    expect(h.notifications.length).toBeGreaterThan(0);
     await h.emit("session_shutdown");
   },
 );
@@ -218,7 +265,7 @@ it("applies setting changes immediately, rejects busy changes, and guards captur
   await owner.saveSettings({ toolEnabled: false });
   expect(h.tool().exposure).toBe("hidden");
   await expect(
-    enabled.execute("stale-tool", { prompt: "image" }, undefined, undefined, h.ctx as never),
+    enabled.execute("stale-tool", { prompt: "image", path: "must-not-write" }, undefined, undefined, h.ctx as never),
   ).rejects.toThrow(/disabled/);
   const idle = h.ctx.isIdle;
   h.ctx.isIdle = () => false;
@@ -278,10 +325,12 @@ it("replaces headless sessions by manager identity even when they share the no-o
   const oldTool = h.tool();
   const next = createMockContext({ mode: "print", cwd: h.root, ui: h.ctx.ui }).ctx as ExtensionContext;
   await h.emit("session_start", next);
-  await expect(oldTool.execute("old", { prompt: "image" }, undefined, undefined, h.ctx as never)).rejects.toThrow(
-    /unavailable/,
-  );
-  const result = await h.tool().execute("new", { prompt: "image" }, undefined, undefined, next as never);
+  await expect(
+    oldTool.execute("old", { prompt: "image", path: "must-not-write" }, undefined, undefined, h.ctx as never),
+  ).rejects.toThrow(/unavailable/);
+  const result = await h
+    .tool()
+    .execute("new", { prompt: "image", path: "new-session/destination" }, undefined, undefined, next as never);
   expect(result.content[0]?.type).toBe("text");
   await h.emit("session_shutdown", next);
 });
@@ -302,7 +351,7 @@ it("revalidates a delayed response and never publishes after cancellation", asyn
   });
   await h.emit("session_start");
   const controller = new AbortController();
-  const running = h.execute({ prompt: "image" }, controller.signal);
+  const running = h.execute({ prompt: "image", path: "cancelled/destination" }, controller.signal);
   const failed = expect(running).rejects.toThrow();
   await started.promise;
   controller.abort();

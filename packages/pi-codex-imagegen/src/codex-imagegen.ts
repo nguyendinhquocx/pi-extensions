@@ -1,15 +1,18 @@
 import { stripVTControlCharacters } from "node:util";
 import {
+  DEFAULT_MAX_BYTES,
+  DEFAULT_MAX_LINES,
   type ExtensionAPI,
   type ExtensionContext,
   type ExtensionUIContext,
   getAgentDir,
   resizeImage,
   type ToolDefinition,
+  truncateHead,
 } from "@earendil-works/pi-coding-agent";
 import { Container, Image, Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
-import { decodeImage, preflightOutput, publishImage, validateFilename } from "./artifacts.js";
+import { decodeImage, preflightOutput, publishImage } from "./artifacts.js";
 import { generateImageRequest, getImageAuthStatus, MAX_PROMPT_CHARS } from "./image-client.js";
 import { showImagegenMenu } from "./menu.js";
 import { type ImagegenSettings, SettingsStore } from "./settings.js";
@@ -19,9 +22,10 @@ const MESSAGE_TYPE = "codex-imagegen:result";
 const STATUS_KEY = "codex-imagegen";
 const PARAMETERS = Type.Object({
   prompt: Type.String({ minLength: 1, maxLength: MAX_PROMPT_CHARS, description: "Describe one image to generate." }),
-  filename: Type.Optional(
-    Type.String({ description: "Optional output basename, not a path. Existing files are never overwritten." }),
-  ),
+  path: Type.String({
+    description:
+      "Exact destination file path, relative to the session working directory or absolute. Uses write path handling, overwrites existing files, and follows symlinks. No extension is added or changed.",
+  }),
   transparentBackground: Type.Optional(
     Type.Boolean({ description: "Request a transparent background instead of the saved default." }),
   ),
@@ -66,6 +70,12 @@ interface Dependencies {
 /** Only display text is normalized; raw prompts, paths, and result details are retained. */
 export function displayText(value: string): string {
   return stripVTControlCharacters(value).replace(/[\p{Cc}\p{Cf}\p{Cs}]/gu, "");
+}
+
+// Bound model-visible text separately from terminal display sanitization.
+function modelText(value: string, fallback: string): string {
+  const result = truncateHead(value, { maxBytes: DEFAULT_MAX_BYTES - 128, maxLines: DEFAULT_MAX_LINES - 2 });
+  return result.truncated ? `${result.content || fallback}\n[Text truncated.]` : result.content;
 }
 
 export function createImagegenExtension(overrides: Partial<Dependencies> = {}) {
@@ -118,21 +128,22 @@ export function createImagegenExtension(overrides: Partial<Dependencies> = {}) {
       signal?.throwIfAborted();
       if (!isCurrent(state)) throw new DOMException("Image generation session changed", "AbortError");
       if (tool && !state.store.settings.toolEnabled)
-        throw new Error("codex_imagegen is disabled. Enable it in /imagegen Settings.");
+        throw new Error("codex_imagegen is disabled. Enable it in /codex-imagegen Settings.");
     };
 
     const generate = (
       ctx: ExtensionContext,
       state: SessionState,
-      params: { prompt: string; filename?: string; transparentBackground?: boolean },
+      params: { prompt: string; path: string; transparentBackground?: boolean },
       callerSignal: AbortSignal | undefined,
       tool: boolean,
     ): Promise<GeneratedImage> => {
       check(state, callerSignal, tool);
       if (state.busy) throw new Error("An image generation is already running in this session.");
-      if (!params.prompt.trim() || params.prompt.length > MAX_PROMPT_CHARS)
+      const { prompt, path, transparentBackground } = params;
+      if (typeof prompt !== "string" || !prompt.trim() || prompt.length > MAX_PROMPT_CHARS)
         throw new Error("Enter an image prompt of 1 to 32000 characters.");
-      validateFilename(params.filename);
+      if (typeof path !== "string") throw new Error("Provide an output path for image generation.");
       const settings = state.store.settings;
       const cwd = ctx.cwd;
       const signal = callerSignal ? AbortSignal.any([state.controller.signal, callerSignal]) : state.controller.signal;
@@ -143,8 +154,7 @@ export function createImagegenExtension(overrides: Partial<Dependencies> = {}) {
       const task = (async () => {
         await preflightOutput({
           cwd,
-          outputDir: settings.outputDir,
-          filename: params.filename,
+          path,
           signal,
           isCurrent: ownsRequest,
         });
@@ -152,8 +162,8 @@ export function createImagegenExtension(overrides: Partial<Dependencies> = {}) {
         const response = await dependencies.request(
           ctx.modelRegistry,
           {
-            prompt: params.prompt,
-            transparentBackground: params.transparentBackground ?? settings.transparentBackground,
+            prompt,
+            transparentBackground: transparentBackground ?? settings.transparentBackground,
           },
           { signal, isCurrent: ownsRequest },
         );
@@ -161,8 +171,7 @@ export function createImagegenExtension(overrides: Partial<Dependencies> = {}) {
         const image = decodeImage(response.base64);
         const saved = await dependencies.publish(image, {
           cwd,
-          outputDir: settings.outputDir,
-          filename: params.filename,
+          path,
           signal,
           isCurrent: ownsRequest,
         });
@@ -192,23 +201,30 @@ export function createImagegenExtension(overrides: Partial<Dependencies> = {}) {
       name: TOOL_NAME,
       label: "Codex Image Generation",
       description:
-        "Generate one image through the experimental Codex image endpoint using Pi's OpenAI Codex OAuth login. Saves a new file and consumes account quota. No automatic retries. Image editing is unsupported.",
+        "Generate one image through the experimental Codex image endpoint using Pi's OpenAI Codex OAuth login. Writes to the required exact path, overwrites existing files, and follows symlinks like write. Consumes account quota. No automatic retries. Image editing is unsupported.",
       parameters: PARAMETERS,
       outputSchema: OUTPUT_SCHEMA,
-      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
+      annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
       async execute(_id, params, signal, _onUpdate, ctx) {
-        const state = requireState(ctx);
-        const result = await generate(ctx, state, params, signal, true);
-        check(state, signal, true);
-        const { data, ...details } = result;
-        return {
-          content: [
-            { type: "text", text: `Saved image: ${result.path}` },
-            { type: "image", data, mimeType: result.mimeType },
-          ],
-          details,
-          structuredContent: details,
-        };
+        try {
+          const state = requireState(ctx);
+          const result = await generate(ctx, state, params, signal, true);
+          check(state, signal, true);
+          const { data, ...details } = result;
+          return {
+            content: [
+              { type: "text", text: modelText(`Saved image: ${result.path}`, "Image saved. See the structured path.") },
+              { type: "image", data, mimeType: result.mimeType },
+            ],
+            details,
+            structuredContent: details,
+          };
+        } catch (error) {
+          const original = error instanceof Error ? error.message : String(error);
+          const bounded = modelText(original, "Image generation failed.");
+          if (bounded !== original) throw new Error(bounded);
+          throw error;
+        }
       },
       renderCall(args, theme) {
         return new Text(
@@ -307,13 +323,13 @@ export function createImagegenExtension(overrides: Partial<Dependencies> = {}) {
       if (state) await dispose(state);
     });
 
-    pi.registerCommand("imagegen", {
+    pi.registerCommand("codex-imagegen", {
       description: "Generate images and manage experimental Codex image settings",
       handler: async (args, ctx) => {
-        if (args.trim()) throw new Error("/imagegen accepts no arguments. Open its menu without arguments.");
+        if (args.trim()) throw new Error("/codex-imagegen accepts no arguments. Open its menu without arguments.");
         if (ctx.mode !== "tui") {
           const message =
-            "/imagegen requires TUI mode. Edit pi-codex-imagegen.json manually; the enabled codex_imagegen tool also works headlessly.";
+            "/codex-imagegen requires TUI mode. Edit pi-codex-imagegen.json manually; the enabled codex_imagegen tool also works headlessly.";
           if (ctx.hasUI) {
             ctx.ui.notify(message, "warning");
             return;
@@ -322,7 +338,7 @@ export function createImagegenExtension(overrides: Partial<Dependencies> = {}) {
         }
         const state = requireState(ctx);
         if (!ctx.isIdle() || state.busy || state.menuOpen)
-          throw new Error("Wait for the current operation before opening /imagegen.");
+          throw new Error("Wait for the current operation before opening /codex-imagegen.");
         state.menuOpen = true;
         const releaseOwnership = retainOwnership(state);
         try {
@@ -345,8 +361,8 @@ export function createImagegenExtension(overrides: Partial<Dependencies> = {}) {
               });
               check(state);
             },
-            generate: async (prompt, signal) => {
-              const result = await generate(ctx, state, { prompt }, signal, false);
+            generate: async (prompt, path, signal) => {
+              const result = await generate(ctx, state, { prompt, path }, signal, false);
               check(state, signal);
               const { data, ...details } = result;
               const settings = pi.getSettings();
@@ -363,7 +379,13 @@ export function createImagegenExtension(overrides: Partial<Dependencies> = {}) {
               pi.sendMessage(
                 {
                   customType: MESSAGE_TYPE,
-                  content: [{ type: "text", text: `Saved image: ${result.path}` }, ...(image ? [image] : [])],
+                  content: [
+                    {
+                      type: "text",
+                      text: modelText(`Saved image: ${result.path}`, "Image saved. See the structured path."),
+                    },
+                    ...(image ? [image] : []),
+                  ],
                   details,
                   display: true,
                 },

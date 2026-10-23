@@ -41,10 +41,11 @@ Pi login and Codex CLI login are separate. There is no private credential-file/k
 | 429 | Fixed quota/rate-limit guidance; no retry loop. |
 | Redirect, other HTTP status, transport loss, timeout | Error; no credential redirect and no generation retry. |
 | Invalid content type, UTF-8, JSON, count, base64, image media, or bounds | Reject before saving; do not interpret URLs or file references. |
-| Invalid output path, symlink component, occupied explicit filename | Preflight before HTTP; repeat filesystem checks at publication. Preflight is not a reservation against concurrent changes. |
-| Publication or settings write failure | Preserve existing files; report failure and recover the in-process queues. |
+| Missing path, directory destination, or obvious filesystem/permission failure | Reject before HTTP without writing destination bytes. Preflight can create parent directories and is not a reservation against concurrent changes. |
+| Image write failure or cancellation | Report failure; native-style writes can leave truncated or partial files. Do not remove or restore the destination automatically. |
+| Settings write/application failure | Keep the previous effective values and restore the previous settings document; recover the in-process queue. |
 
-Do not display raw upstream bodies, credential errors, provider labels, or arbitrary headers. Only a bounded token-like nested image request ID is retained in artifact details.
+Do not display raw upstream bodies, credential errors, provider labels, or arbitrary headers. Only a bounded token-like nested image request ID is retained in artifact details. Tool errors and saved-path notices are bounded to Pi's text-output limits even when a filesystem error echoes a very long path; structured path metadata remains complete.
 
 ## Bounds and storage
 
@@ -52,6 +53,12 @@ Prompt length is at most 32,000 characters. Authentication waits have a 30-secon
 
 The JSON body limit is the canonical base64 length of a 32 MiB image plus 64 KiB of metadata. A growable bounded buffer avoids unbounded per-chunk overhead. Artifact decoding requires canonical padded base64 and bounded image dimensions. PNG validation includes container/CRC and bounded raster checks; JPEG and WebP validation checks supported static containers and headers, not complete entropy decoding.
 
-Image bytes are not modified during saving. Settings use ordered, same-directory temporary-file-plus-rename transactions. Image files use exclusive creation, inode checks, and cleanup limited to incomplete owned files. Node has no portable unlink-by-inode operation, so hostile same-permission directory replacement is outside the filesystem guarantee.
+Image output requires an exact `path`; there is no output-directory setting, generated name, or extension adjustment. The captured session cwd and raw input are passed to Pi's public `createWriteTool` with custom binary filesystem operations. Pi owns path normalization and the absolute-path mutation queue. This keeps relative/absolute paths, tilde, leading `@`, file URLs, Unicode-space normalization, dot segments, and literal shell syntax aligned with `write` without importing private utilities.
+
+Preflight uses the same public factory with non-writing operations. It creates parent directories and checks existing targets or missing targets' actual parents without truncating files. Existing writable targets do not require a writable parent directory. File and directory symlinks are followed, including final dangling symlinks when their target parent permits creation. Only the entered prompt and fixed image options reach the HTTP client; local paths are not sent to the endpoint.
+
+The binary writer preserves validated image bytes and normal Node write/truncate/umask behavior, including overwrites and symlink following. It passes cancellation to the byte write and drains that operation before releasing the queue. Partial writes are not deleted or rolled back. Pi's in-process queue uses the real path for existing destinations and falls back to the resolved path when a destination is missing or has a non-directory component. Existing symlink aliases therefore share a queue; missing/dangling aliases and separate processes do not have that guarantee. Paths and preflight are not a filesystem sandbox.
+
+Settings remain separate ordered, same-directory temporary-file-plus-rename transactions with rollback; image writes do not use that settings policy.
 
 The extension has no mutable leading prompt, context hook, or deferred tool loader. Explicit tool toggles are loadout transitions; later ordinary requests preserve their established prefix. Manual generation appends one result message without triggering inference. Immutable artifact metadata stays in tool details or the result message; it does not cause automatic regeneration after reload, branching, or compaction.

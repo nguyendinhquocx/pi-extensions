@@ -3,9 +3,12 @@ import { initTheme } from "@earendil-works/pi-coding-agent";
 import {
   type Component,
   CURSOR_MARKER,
+  Editor,
   getKeybindings,
+  isFocusable,
   type KeybindingsConfig,
   KeybindingsManager,
+  renderFakeCursor,
   setKeybindings,
   TUI_KEYBINDINGS,
   type TuiMouseEvent,
@@ -26,7 +29,7 @@ afterEach(() => setKeybindings(originalKeys));
 function fixture() {
   const controller = new AbortController();
   let current = true;
-  let settings = { toolEnabled: false, outputDir: "/tmp/\x1b]0;injected\x07images", transparentBackground: false };
+  let settings = { toolEnabled: false, transparentBackground: false };
   const owner: ImagegenMenuOwner = {
     signal: controller.signal,
     isCurrent: () => current,
@@ -80,7 +83,8 @@ it("uses one Kit navigator for actions, status and help without resolving authen
   expect(status).toMatch(/metadata present/);
   expect(status).toMatch(/not verify account entitlement/);
   expect(status).toMatch(/Tool access: disabled/);
-  expect(status).toMatch(/Output directory: \/tmp\/images/);
+  expect(status).toContain("Each generation requires an output path.");
+  expect(status).not.toMatch(/Output directory|outputDir/);
   expect(status).not.toContain("injected");
   expect(tui.render().join("")).not.toContain("\x1b[2J");
   tui.press("tui.select.cancel");
@@ -153,6 +157,31 @@ it("preserves native editing, multiline paste expansion, focused cursor and boun
   expect(plain(frame)).not.toMatch(/external editor/i);
   tui.send("\r");
   expect(await running).toEqual({ kind: "submitted", prompt: `a\n${pasted}`.trim() });
+});
+
+it("clips wide prompt graphemes safely at zero and narrow widths", async () => {
+  const tui = createTuiHarness();
+  const { owner } = fixture();
+  let component!: Component;
+  const custom = (factory: Parameters<typeof tui.custom>[0]) =>
+    tui.custom(async (host, theme, bindings, done) => {
+      component = await factory(host, theme, bindings, done);
+      return component;
+    });
+  const { ctx } = createMockContext({ mode: "tui", custom });
+  const running = showImagegenPrompt(ctx, owner);
+  await tui.waitForOpen();
+  tui.setFocused(true);
+  tui.type("界🙂");
+  expect(component.render(0).every((line) => visibleWidth(line) === 0)).toBe(true);
+  for (const width of [1, 2, 3]) {
+    const frame = tui.resize({ width, rows: 7 });
+    expect(frame.length).toBeLessThanOrEqual(4);
+    expect(frame.every((line) => visibleWidth(line) <= width)).toBe(true);
+  }
+  tui.resize({ width: 80, rows: 24 });
+  tui.send("\r");
+  expect(await running).toEqual({ kind: "submitted", prompt: "界🙂" });
 });
 
 it("positions the native editor cursor after press, release and synthesized click without another frame", async () => {
@@ -277,6 +306,105 @@ it("sanitizes bidirectional prompt display without changing the native submitted
   expect(await running).toEqual({ kind: "submitted", prompt: "one\u202etwo" });
 });
 
+it.each([
+  { name: "known cursor metadata", attack: `${CURSOR_MARKER.repeat(2)}${renderFakeCursor("FORGED")}${CURSOR_MARKER}` },
+  {
+    name: "unknown APC prefix with real terminal controls",
+    attack: "\x1b_pi:unknown\x07\x1b]52;c;Y2xpcA==\x07\x1b]0;foreign-title\x07\x1b[2J\x1b[999;999H",
+  },
+])("sanitizes $name in the prompt callback without changing native submission", async ({ attack }) => {
+  const [fakeStart = "", fakeEnd = ""] = renderFakeCursor("CELL").split("CELL");
+  const keys = new KeybindingsManager(TUI_KEYBINDINGS, { "tui.input.submit": "ctrl+t" });
+  setKeybindings(keys);
+  const tui = createTuiHarness({
+    keybindings: keys,
+    theme: { fg: (_role, text) => `\x1b[36m${text}\x1b[39m`, bold: (text) => text },
+  });
+  // Native Editor accepts a printable-leading input chunk verbatim. Native paste
+  // has its own C0 filter, so do not change that behavior to exercise this boundary.
+  const prompt = `left${attack}right`;
+  const frames: { width: number; focused: boolean; lines: string[] }[] = [];
+  const custom = (factory: Parameters<typeof tui.custom>[0]) =>
+    tui.custom(async (host, theme, bindings, done) => {
+      const component = await factory(host, theme, bindings, done);
+      component.handleInput?.(prompt);
+      for (const focused of [true, false]) {
+        if (isFocusable(component)) component.focused = focused;
+        for (const width of [0, 1, 3, 8, 400]) frames.push({ width, focused, lines: component.render(width) });
+      }
+      if (isFocusable(component)) component.focused = true;
+      // Put the cursor directly after the attack, including adjacent forged markers.
+      for (let index = 0; index < "right".length; index++) component.handleInput?.("\x1b[D");
+      frames.push({ width: 400, focused: true, lines: component.render(400) });
+      component.handleInput?.("\x14");
+      return component;
+    });
+  const { ctx, notifications } = createMockContext({ mode: "tui", custom });
+  const result = await showImagegenPrompt(ctx, fixture().owner);
+  expect(result).toEqual({ kind: "submitted", prompt });
+  expect(notifications).toEqual([]);
+  expect(frames).toHaveLength(11);
+  for (const { width, focused, lines } of frames) {
+    const frame = lines.join("");
+    // At width one, native Editor puts its end-of-line cursor beyond the one
+    // visible cell. The bounded frame clips that cursor, not the draft.
+    const hasCursor = width > 1;
+    expect(frame.split(CURSOR_MARKER).length - 1, `width=${width}, focused=${focused}`).toBe(
+      Number(focused && hasCursor),
+    );
+    expect(frame.split(fakeStart).length - 1).toBe(Number(hasCursor));
+    expect(frame.split(fakeEnd).length - 1).toBe(Number(hasCursor));
+    expect(lines.every((line) => visibleWidth(line) <= width)).toBe(true);
+    expect(
+      frame
+        .replaceAll(CURSOR_MARKER, "")
+        .replaceAll(fakeStart, "")
+        .replaceAll(fakeEnd, "")
+        .replaceAll("\x1b[36m", "")
+        .replaceAll("\x1b[39m", "")
+        .replaceAll("\x1b[0m", ""),
+    ).not.toMatch(/\p{Cc}|\p{Bidi_Control}/u);
+    if (width === 400) expect(frame).toContain("\x1b[36m");
+  }
+});
+
+it("keeps the prompt hardware cursor and fake cell at the native position after editing", async () => {
+  const tui = createTuiHarness();
+  let frame: string[] = [];
+  let reference: string[] = [];
+  const custom = (factory: Parameters<typeof tui.custom>[0]) =>
+    tui.custom(async (host, theme, bindings, done) => {
+      const component = await factory(host, theme, bindings, done);
+      const native = new Editor(host, {
+        borderColor: (text) => text,
+        selectList: {
+          selectedPrefix: (text) => text,
+          selectedText: (text) => text,
+          description: (text) => text,
+          scrollInfo: (text) => text,
+          noMatch: (text) => text,
+        },
+      });
+      if (isFocusable(component)) component.focused = true;
+      native.focused = true;
+      for (const data of ["ab界e\u0301🙂z", "\x1b[D", "\x1b[D", "Q", "\x7f"]) {
+        component.handleInput?.(data);
+        native.handleInput(data);
+      }
+      frame = component.render(80);
+      reference = native.render(80);
+      component.handleInput?.("\r");
+      return component;
+    });
+  const { ctx } = createMockContext({ mode: "tui", custom });
+  expect(await showImagegenPrompt(ctx, fixture().owner)).toEqual({ kind: "submitted", prompt: "ab界e\u0301🙂z" });
+  const cursor = frame.find((line) => line.includes(CURSOR_MARKER)) ?? "";
+  const nativeCursor = reference.find((line) => line.includes(CURSOR_MARKER)) ?? "";
+  expect(cursor).toBe(nativeCursor);
+  expect(cursor).toContain(`${CURSOR_MARKER}${renderFakeCursor("🙂")}`);
+  expect(visibleWidth(cursor.slice(0, cursor.indexOf(CURSOR_MARKER)))).toBe(5);
+});
+
 it.each(["abort", "dispose"])("does not generate after stale prompt %s", async (method) => {
   const tui = createTuiHarness();
   const { owner, replace } = fixture();
@@ -293,12 +421,39 @@ it.each(["abort", "dispose"])("does not generate after stale prompt %s", async (
   expect(owner.generate).not.toHaveBeenCalled();
 });
 
-it("runs generation only after editor disposal and aborts HTTP work on task disposal", async () => {
+it.each(["abort", "dispose", "close", "back"])("does not generate after output path %s", async (method) => {
+  const tui = createTuiHarness();
+  const { owner, replace } = fixture();
+  const { ctx } = createMockContext({ mode: "tui", custom: tui.custom });
+  const running = showImagegenMenu(ctx, owner);
+  await tui.waitForOpen();
+  tui.press("tui.select.confirm");
+  await opened(tui, 2);
+  tui.type("a complete prompt");
+  tui.send("\r");
+  await opened(tui, 3);
+  tui.send("\r");
+  const blankFrame = plain(tui.render());
+  tui.type("an unsubmitted destination");
+  if (method === "abort") replace();
+  else if (method === "dispose") tui.dispose();
+  else if (method === "close") tui.press("ctrl+c");
+  else {
+    tui.press("tui.select.cancel");
+    await opened(tui, 4);
+    tui.press("ctrl+c");
+  }
+  await running;
+  expect(blankFrame).toContain("An output path is required.");
+  expect(owner.generate).not.toHaveBeenCalled();
+});
+
+it("runs generation only after explicit path submission and aborts owned work on task disposal", async () => {
   const tui = createTuiHarness();
   const { owner } = fixture();
   const { ctx } = createMockContext({ mode: "tui", custom: tui.custom });
   let taskSignal: AbortSignal | undefined;
-  owner.generate = vi.fn(async (_prompt, signal) => {
+  owner.generate = vi.fn(async (_prompt, _path, signal) => {
     taskSignal = signal;
     await new Promise<void>((resolve) => {
       if (signal.aborted) resolve();
@@ -312,7 +467,14 @@ it("runs generation only after editor disposal and aborts HTTP work on task disp
   tui.type("A small circle");
   tui.send("\r");
   await opened(tui, 3);
-  expect(owner.generate).toHaveBeenCalledWith("A small circle", expect.any(AbortSignal));
+  expect(owner.generate).not.toHaveBeenCalled();
+  expect(plain(tui.render())).toContain("Image Output Path");
+  const path = " @~/literal $(image).data ";
+  tui.type(path);
+  expect(owner.generate).not.toHaveBeenCalled();
+  tui.send("\r");
+  await opened(tui, 4);
+  expect(owner.generate).toHaveBeenCalledWith("A small circle", path, expect.any(AbortSignal));
   expect(taskSignal?.aborted).toBe(false);
   tui.dispose();
   await running;
@@ -338,8 +500,12 @@ it("keeps manual generation available when tool access is disabled and reopens a
   tui.type("circle");
   tui.send("\r");
   await opened(tui, 3);
-  finish();
+  expect(owner.generate).not.toHaveBeenCalled();
+  tui.type("./exact-name");
+  tui.send("\r");
   await opened(tui, 4);
+  finish();
+  await opened(tui, 5);
   expect(plain(tui.render())).toMatch(/Generate Image/);
   tui.press("ctrl+c");
   await running;

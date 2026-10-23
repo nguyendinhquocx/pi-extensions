@@ -1,25 +1,10 @@
 import { type ExtensionCommandContext, ExtensionEditorComponent } from "@earendil-works/pi-coding-agent";
 import { CURSOR_MARKER, Editor, isKeyRelease, matchesKey } from "@earendil-works/pi-tui";
-import {
-  HorizontalRule,
-  renderBoundedFrameLayout,
-  runCustomInteraction,
-  sanitizeTerminalText,
-} from "@narumitw/pi-tui-kit";
+import { HorizontalRule, renderBoundedFrameLayout, runCustomInteraction } from "@narumitw/pi-tui-kit";
 import type { ImagegenMenuOwner } from "./menu.js";
+import { renderSafeInput } from "./safe-input-render.js";
 
 export type ImagegenPromptResult = { kind: "submitted"; prompt: string } | { kind: "back" | "close" | "stale" };
-
-/** Preserve native cursor metadata, but never emit prompt-supplied terminal controls. */
-function displayLine(line: string): string {
-  return (
-    line
-      // biome-ignore lint/suspicious/noControlCharactersInRegex: Retain only native cursor protocol markers.
-      .split(/(\x1b_pi:(?:c|fc|\/fc)\x07)/)
-      .map((part) => (part.startsWith("\x1b_pi:") ? part : sanitizeTerminalText(part)))
-      .join("")
-  );
-}
 
 export async function showImagegenPrompt(
   ctx: ExtensionCommandContext,
@@ -67,7 +52,10 @@ export async function showImagegenPrompt(
         },
         render(availableWidth) {
           // Editing and wrapping remain Pi-owned; sanitize its display, not its draft.
-          const content = editor.render(Math.max(1, availableWidth)).map(displayLine);
+          // Pi Editor recurses when a wide grapheme cannot fit its layout.
+          // Reserve two native content cells plus its cursor cell, then let Kit
+          // clip the safe result to the actual (including zero) screen width.
+          const content = renderSafeInput(editor, Math.max(3, availableWidth));
           const cursorRow = content.findIndex((line) => line.includes(CURSOR_MARKER));
           const focusedRow = cursorRow < 0 ? Math.min(1, content.length - 1) : cursorRow;
           const terminalRows = Number.isFinite(tui.terminal.rows) ? Math.floor(tui.terminal.rows) : 24;
@@ -98,7 +86,7 @@ export async function showImagegenPrompt(
           if (signal.aborted || event.x < 0 || event.x >= width || event.y < 0 || event.y >= height) return undefined;
           const y = rows.get(event.y);
           if (y === undefined) return undefined;
-          const handled = editor.handleMouse?.({ ...event, y, height: editor.render(width).length });
+          const handled = editor.handleMouse?.({ ...event, y, height: editor.render(Math.max(3, width)).length });
           // Release and synthesized click share the last published frame in Pi.
           if (handled) tui.requestRender();
           return handled;

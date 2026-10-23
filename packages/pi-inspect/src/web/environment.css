@@ -7,7 +7,7 @@
   min-height: 0;
   min-width: 0;
   width: 100%;
-  max-width: 1040px;
+  max-width: none;
   margin-inline: auto;
 }
 .inspector-app.dark .environment-surface {
@@ -31,32 +31,6 @@
   color: var(--secondary);
   font-size: 12px;
   line-height: 18px;
-}
-.environment-surface > .navigation-tabs {
-  align-self: flex-start;
-  margin: 0 4px 4px;
-  gap: 4px;
-  padding: 3px;
-  background: var(--panel-raised);
-  border-radius: 6px;
-}
-.environment-surface > .navigation-tabs button {
-  min-height: 30px;
-  padding: 5px 12px;
-  border: 1px solid transparent;
-  font-size: 12px;
-  font-weight: 500;
-  color: var(--secondary);
-}
-.environment-surface > .navigation-tabs button:hover {
-  background: var(--surface-hover);
-  color: var(--gray-12);
-}
-.environment-surface > .navigation-tabs button[aria-selected="true"] {
-  background: var(--selected-bg);
-  border-color: var(--blue-7);
-  color: var(--blue-12);
-  font-weight: 600;
 }
 .environment-surface .resource-panel {
   flex: 1;
@@ -137,19 +111,23 @@
 .environment-surface .inventory-card .data {
   margin-top: 0;
 }
-.environment-surface .data-toolbar {
+.environment-surface .data-toolbar,
+.tool-detail-content .data-toolbar {
   min-height: 36px;
   padding: 3px 0;
 }
-.environment-surface .data-toolbar > .rt-Flex {
+.environment-surface .data-toolbar > .rt-Flex,
+.tool-detail-content .data-toolbar > .rt-Flex {
   margin: 0;
 }
-.environment-surface .section-toggle {
+.environment-surface .section-toggle,
+.tool-detail-content .section-toggle {
   padding: 5px 0;
   font-size: 12px;
   line-height: 18px;
 }
-.environment-surface .copy-button {
+.environment-surface .copy-button,
+.tool-detail-content .copy-button {
   margin: 0;
   min-height: 28px;
   padding: 4px 8px;
@@ -157,7 +135,9 @@
   font-size: 11px;
 }
 .environment-surface .section-toggle:hover,
-.environment-surface .copy-button:hover {
+.environment-surface .copy-button:hover,
+.tool-detail-content .section-toggle:hover,
+.tool-detail-content .copy-button:hover {
   color: var(--gray-12);
   background: var(--surface-hover);
 }

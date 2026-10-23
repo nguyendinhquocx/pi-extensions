@@ -1,5 +1,11 @@
 # @narumitw/pi-subagents
 
+## 3.3.1
+
+### Patch Changes
+
+- 9edf94b: Show each active job’s spawn-time thinking level in the above-editor widget.
+
 ## 3.3.0
 
 ### Minor Changes

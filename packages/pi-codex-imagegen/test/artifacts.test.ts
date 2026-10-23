@@ -1,22 +1,16 @@
 import { constants } from "node:fs";
 import * as fs from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { join, resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 import { deflateSync } from "node:zlib";
-import { withFileMutationQueue } from "@earendil-works/pi-coding-agent";
+import { createWriteTool, withFileMutationQueue } from "@earendil-works/pi-coding-agent";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import {
-  decodeImage,
-  MAX_IMAGE_BYTES,
-  preflightOutput,
-  publishImage,
-  resolveOutputDir,
-  validateFilename,
-} from "../src/artifacts.js";
+import { decodeImage, MAX_IMAGE_BYTES, preflightOutput, publishImage } from "../src/artifacts.js";
 
 vi.mock("node:fs/promises", async (importOriginal) => {
   const actual = await importOriginal<typeof fs>();
-  return { ...actual, open: vi.fn(actual.open) };
+  return { ...actual, writeFile: vi.fn(actual.writeFile) };
 });
 const realFs = await vi.importActual<typeof fs>("node:fs/promises");
 
@@ -87,13 +81,13 @@ let directory: string;
 beforeEach(async () => {
   directory = await fs.mkdtemp(join(await fs.realpath(tmpdir()), "pi-image-artifacts-"));
   vi.clearAllMocks();
-  vi.mocked(fs.open).mockImplementation(realFs.open);
+  vi.mocked(fs.writeFile).mockImplementation(realFs.writeFile);
 });
 afterEach(async () => {
   vi.restoreAllMocks();
   await fs.rm(directory, { recursive: true, force: true });
 });
-const options = (filename?: string) => ({ cwd: directory, outputDir: "output", filename });
+const options = (path = "output/image") => ({ cwd: directory, path });
 
 function deferred() {
   let resolvePromise!: () => void;
@@ -101,6 +95,23 @@ function deferred() {
     resolvePromise = resolve;
   });
   return { promise, resolve: resolvePromise };
+}
+
+async function nativeDestination(cwd: string, path: string): Promise<string> {
+  let destination = "";
+  await createWriteTool(cwd, {
+    operations: {
+      mkdir: async () => {},
+      writeFile: async (absolutePath) => {
+        destination = absolutePath;
+      },
+    },
+  }).execute("native-path-reference", { path, content: "" });
+  return destination;
+}
+
+async function nativeWrite(path: string): Promise<void> {
+  await createWriteTool(directory).execute("native-write-reference", { path, content: "native text" });
 }
 
 describe("image decoding", () => {
@@ -231,356 +242,530 @@ describe("image decoding", () => {
   });
 });
 
-describe("filename and output path validation", () => {
-  it.each([undefined, "image", "日本語 🖼️.png", "é.jpg", "IMAGE.PNG", ".image", "a..b.webp", "image.jpeg"])(
-    "accepts safe Unicode basename %j",
-    (filename) => {
-      expect(() => validateFilename(filename)).not.toThrow();
+describe("native WRITE path equivalence", () => {
+  // Decision classes from installed WRITE -> resolveToCwd -> normalizePath/resolvePath.
+  // Capture operations for home paths so these cases never write outside the temp tree.
+  const cases = [
+    ["relative", "nested/image", "nested/image"],
+    ["absolute", "/absolute/image", "/absolute/image"],
+    ["dot segments", "./nested/../image", "image"],
+    ["trailing separator", "image/", "image"],
+    ["tilde alone", "~", () => homedir()],
+    ["tilde slash", "~/image", () => join(homedir(), "image")],
+    ["other user is literal", "~other/image", "~other/image"],
+    ["at prefix", "@nested/image", "nested/image"],
+    ["one at prefix only", "@@image", "@image"],
+    ["at before tilde", "@~/image", () => join(homedir(), "image")],
+    ["interior at", "nested/@image", "nested/@image"],
+    ["space before at stays literal", "\u00a0@image", " @image"],
+    ["interior tilde", "nested/~/image", "nested/~/image"],
+    ["spaces are not trimmed", " image ", " image "],
+    ["tabs and controls are not sanitized", "a\t\n\u001b\u202eb", "a\t\n\u001b\u202eb"],
+    ["shell variables are literal", `$HOME/\${USER}/image`, `$HOME/\${USER}/image`],
+    ["shell substitution is literal", "$(touch nope)/`pwd`", "$(touch nope)/`pwd`"],
+    ["quotes and globs are literal", "'image'\"*?[]", "'image'\"*?[]"],
+    ["Unicode normalization is not applied", "e\u0301.png", "e\u0301.png"],
+    ["file without URL slashes is literal", "file:image", "file:image"],
+    ...[0xa0, ...Array.from({ length: 11 }, (_, index) => 0x2000 + index), 0x202f, 0x205f, 0x3000].map(
+      (code) => [`Unicode space ${code.toString(16)}`, `a${String.fromCharCode(code)}b`, "a b"] as const,
+    ),
+    ["non-normalized Unicode whitespace", "a\u1680\u200bb", "a\u1680\u200bb"],
+  ] as const;
+
+  it.each(cases)("matches %s", async (_name, path, expected) => {
+    const target = typeof expected === "function" ? expected() : resolve(directory, expected);
+    expect(await nativeDestination(directory, path)).toBe(target);
+    vi.spyOn(fs, "mkdir").mockResolvedValue(undefined);
+    vi.spyOn(fs, "stat").mockResolvedValue(await realFs.stat(import.meta.filename));
+    const access = vi.spyOn(fs, "access").mockResolvedValue(undefined);
+    vi.mocked(fs.writeFile).mockResolvedValue(undefined);
+    await preflightOutput(options(path));
+    expect(access).toHaveBeenCalledWith(target, constants.W_OK);
+    expect(await publishImage(decode(PNG), options(path))).toEqual({ path: target });
+    expect(fs.writeFile).toHaveBeenCalledWith(target, PNG, { signal: undefined });
+  });
+
+  it.each(["file URL", "localhost file URL", "at file URL", "encoded Unicode space", "URL query and hash"])(
+    "matches %s",
+    async (kind) => {
+      const url = pathToFileURL(join(directory, "URL image 日本語")).href;
+      const path =
+        kind === "localhost file URL"
+          ? url.replace("file:///", "file://localhost/")
+          : kind === "at file URL"
+            ? `@${url}`
+            : kind === "encoded Unicode space"
+              ? pathToFileURL(join(directory, "a\u00a0b")).href
+              : kind === "URL query and hash"
+                ? `${url}?ignored#ignored`
+                : url;
+      const expected = join(directory, kind === "encoded Unicode space" ? "a\u00a0b" : "URL image 日本語");
+      expect(await nativeDestination(directory, path)).toBe(expected);
+      await preflightOutput(options(path));
+      expect(await publishImage(decode(PNG), options(path))).toEqual({ path: expected });
+      expect(await fs.readFile(expected)).toEqual(PNG);
     },
   );
 
-  it.each([
-    "",
-    ".",
-    "..",
-    "...",
-    "../image.png",
-    "a/../b.png",
-    "/image.png",
-    "a\\b.png",
-    "C:\\image.png",
-    "~/image.png",
-    "a\n.png",
-    "a\r.png",
-    "a\0.png",
-    "a\u001b.png",
-    "a\u0085.png",
-    "a\u202e.png",
-    "a\ud800.png",
-    "image.gif",
-    "image.svg",
-    "a.",
-    "a ",
-    " a.png",
-    "CON.png",
-    "a:stream.png",
-    "a".repeat(251),
-    `${"é".repeat(126)}.png`,
-  ])("rejects unsafe basename %j", (filename) => {
-    expect(() => validateFilename(filename)).toThrow();
-  });
+  it.each(["file://remote/image", "file:///bad%2Fname", "file:///%zz"])(
+    "preserves invalid URL failure %s",
+    async (path) => {
+      const failure = await nativeDestination(directory, path).catch((error: Error) => error);
+      await expect(preflightOutput(options(path))).rejects.toMatchObject({
+        name: (failure as Error).name,
+        message: (failure as Error).message,
+      });
+      await expect(publishImage(decode(PNG), options(path))).rejects.toThrow();
+      expect(await fs.readdir(directory)).toEqual([]);
+    },
+  );
 
-  it("counts filename bytes and reserves room for MIME-derived suffixes", () => {
-    expect(() => validateFilename("a".repeat(250))).not.toThrow();
-    expect(() => validateFilename(`${"a".repeat(251)}.png`)).not.toThrow();
-    expect(() => validateFilename(`${"a".repeat(252)}.png`)).toThrow(/long/);
-  });
-
-  it("resolves relative, absolute, and home paths without a fixed default or filesystem writes", async () => {
-    expect(resolveOutputDir(directory, "images")).toBe(join(directory, "images"));
-    expect(resolveOutputDir(directory, "../images")).toBe(resolve(directory, "../images"));
-    expect(resolveOutputDir("/elsewhere", join(directory, "absolute"))).toBe(join(directory, "absolute"));
-    expect(resolveOutputDir(directory, "~/images")).toBe(join(homedir(), "images"));
-    expect(resolveOutputDir(directory, "~")).toBe(homedir());
-    expect(resolveOutputDir(directory, "~other")).toBe(join(directory, "~other"));
+  it.each(["bad\0path", "a".repeat(256)])("preserves native invalid filesystem path errors: %j", async (path) => {
+    const failure = await nativeDestination(directory, path).catch((error: NodeJS.ErrnoException) => error);
+    expect(failure).toBeInstanceOf(Error);
+    const expected = { code: (failure as NodeJS.ErrnoException).code, name: (failure as Error).name };
+    await expect(preflightOutput(options(path))).rejects.toMatchObject(expected);
+    await expect(publishImage(decode(PNG), options(path))).rejects.toMatchObject(expected);
     expect(await fs.readdir(directory)).toEqual([]);
   });
 
-  it.each(["", " ", "\0", "images\n"])("rejects invalid output directory %j", (outputDir) => {
-    expect(() => resolveOutputDir(directory, outputDir)).toThrow();
-  });
-});
-
-describe("output preflight", () => {
-  it("requires write and search permission without creating an image file", async () => {
-    const access = vi.spyOn(fs, "access");
-    await preflightOutput(options());
-    expect(access).toHaveBeenCalledWith(join(directory, "output"), constants.W_OK | constants.X_OK);
-    expect(await fs.readdir(join(directory, "output"))).toEqual([]);
-    expect(fs.open).not.toHaveBeenCalled();
-  });
-
-  it("propagates a denied access check before publication", async () => {
-    vi.spyOn(fs, "access").mockRejectedValueOnce(Object.assign(new Error("Access denied"), { code: "EACCES" }));
-    await expect(preflightOutput(options("image"))).rejects.toMatchObject({ code: "EACCES" });
-    expect(fs.open).not.toHaveBeenCalled();
-  });
-
-  it("rechecks cancellation after the access wait", async () => {
-    const controller = new AbortController();
-    vi.spyOn(fs, "access").mockImplementationOnce(async () => controller.abort());
-    await expect(preflightOutput({ ...options(), signal: controller.signal })).rejects.toMatchObject({
-      name: "AbortError",
-    });
-    expect(fs.open).not.toHaveBeenCalled();
-  });
-});
-
-describe("image publication", () => {
-  it("creates directories only during publication and writes exact private image bytes", async () => {
-    const result = await publishImage(decode(PNG), { ...options("透明 🖼️"), outputDir: "nested/output" });
-    expect(result.path).toBe(join(directory, "nested/output/透明 🖼️.png"));
-    expect(await fs.readFile(result.path)).toEqual(PNG);
-    if (process.platform !== "win32") expect((await fs.stat(result.path)).mode & 0o777).toBe(0o600);
-    expect(vi.mocked(fs.open).mock.calls[0]?.[1]).toBe(
-      constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW,
+  it.each(["tilde", "file URL", "Unicode space"])("uses native %s cwd normalization", async (kind) => {
+    const cwd =
+      kind === "tilde" ? "~/cwd" : kind === "file URL" ? pathToFileURL(directory).href : `${directory}/a\u00a0b`;
+    const expected = await nativeDestination(cwd, "image");
+    vi.spyOn(fs, "mkdir").mockResolvedValue(undefined);
+    vi.mocked(fs.writeFile).mockResolvedValue(undefined);
+    expect(await publishImage(decode(PNG), { cwd, path: "image" })).toEqual({ path: expected });
+    expect(expected).toBe(
+      kind === "tilde"
+        ? join(homedir(), "cwd/image")
+        : kind === "file URL"
+          ? join(directory, "image")
+          : `${directory}/a\u00a0b/image`,
     );
   });
 
-  it("accepts an absolute output directory independent of cwd", async () => {
-    const result = await publishImage(decode(PNG), { cwd: "/not-used", outputDir: join(directory, "absolute") });
-    expect(dirname(result.path)).toBe(join(directory, "absolute"));
-    expect(await fs.readFile(result.path)).toEqual(PNG);
+  it.each([undefined, null, 42, ""])("requires an explicit nonempty path: %s", async (path) => {
+    const invalid = { cwd: directory, path: path as string };
+    await expect(preflightOutput(invalid)).rejects.toThrow(/required/);
+    await expect(publishImage(decode(PNG), invalid)).rejects.toThrow(/required/);
+    expect(await fs.readdir(directory)).toEqual([]);
   });
 
+  it.each([".", "..", "~", "@", "@~"])("treats %s as its native directory destination", async (path) => {
+    await expect(preflightOutput(options(path))).rejects.toMatchObject({ code: "EISDIR" });
+    await expect(publishImage(decode(PNG), options(path))).rejects.toMatchObject({ code: "EISDIR" });
+  });
+});
+
+describe("native binary publication", () => {
   it.each([
-    [PNG, "png"],
-    [jpeg(), "jpg"],
-    [WEBP, "webp"],
-  ] as const)("uses a unique MIME-derived filename", async (bytes, extension) => {
-    const result = await publishImage(decode(bytes), options());
-    expect(result.path).toMatch(new RegExp(`/image-[a-f0-9-]{36}\\.${extension}$`));
+    "suffixless",
+    "image.jpg",
+    "image.gif",
+    "image.PNG",
+    ".image",
+    "日本語 🖼️",
+    "image.",
+    " image ",
+    "a\n\u001bb",
+  ])("writes the exact path without suffix checks: %j", async (path) => {
+    const result = await publishImage(decode(PNG), options(`nested/${path}`));
+    expect(result.path).toBe(join(directory, "nested", path));
+    expect(await fs.readFile(result.path)).toEqual(PNG);
+    expect(await fs.readdir(join(directory, "nested"))).toEqual([path]);
+  });
+
+  it.each([PNG, jpeg(), WEBP])("writes unchanged validated media bytes", async (bytes) => {
+    const result = await publishImage(decode(bytes), options("exact.bin"));
     expect(await fs.readFile(result.path)).toEqual(bytes);
   });
 
-  it("accepts matching uppercase and JPEG alternative suffixes", async () => {
-    for (const [bytes, filename] of [
-      [PNG, "image.PNG"],
-      [jpeg(), "image.jpeg"],
-    ] as const) {
-      const result = await publishImage(decode(bytes), options(filename));
-      expect(result.path).toBe(join(directory, "output", filename));
-    }
-  });
-
-  it("rejects explicit MIME mismatches and traversal before creating directories", async () => {
-    for (const filename of ["image.jpg", "image.webp", "../escape.png", "a/b.png"]) {
-      await expect(publishImage(decode(PNG), options(filename))).rejects.toThrow();
-    }
-    expect(await fs.readdir(directory)).toEqual([]);
-  });
-
-  it("never overwrites an existing regular file", async () => {
-    await fs.mkdir(join(directory, "output"));
-    const target = join(directory, "output/image.png");
-    await fs.writeFile(target, "user file");
-    await expect(publishImage(decode(PNG), options("image.png"))).rejects.toMatchObject({ code: "EEXIST" });
-    expect(await fs.readFile(target, "utf8")).toBe("user file");
-  });
-
-  it.each(["root", "ancestor", "destination", "dangling"])(
-    "rejects %s symlinks without writing through them",
-    async (kind) => {
-      const external = join(directory, "external");
-      await fs.mkdir(external);
-      if (kind === "root" || kind === "ancestor") {
-        await fs.symlink(external, join(directory, "output"), "dir");
-        await expect(
-          publishImage(decode(PNG), { ...options("image"), outputDir: kind === "root" ? "output" : "output/nested" }),
-        ).rejects.toThrow(/symlink/);
-      } else {
-        await fs.mkdir(join(directory, "output"));
-        const userFile = join(external, "user.png");
-        if (kind === "destination") await fs.writeFile(userFile, "user file");
-        const link = join(directory, "output/image.png");
-        await fs.symlink(userFile, link);
-        await expect(publishImage(decode(PNG), options("image"))).rejects.toThrow();
-        expect((await fs.lstat(link)).isSymbolicLink()).toBe(true);
-        if (kind === "destination") expect(await fs.readFile(userFile, "utf8")).toBe("user file");
-      }
-      expect(await fs.readdir(external)).toEqual(kind === "destination" ? ["user.png"] : []);
-    },
-  );
-
-  it("handles concurrent explicit-name collisions without overwriting", async () => {
-    const results = await Promise.allSettled(
-      Array.from({ length: 8 }, () => publishImage(decode(PNG), options("same"))),
+  it("uses native creation modes and overwrites in place with the existing inode and mode", async () => {
+    await nativeWrite("native-parent/native");
+    const result = await publishImage(decode(PNG), options("binary-parent/binary"));
+    expect((await fs.stat(join(directory, "binary-parent"))).mode & 0o777).toBe(
+      (await fs.stat(join(directory, "native-parent"))).mode & 0o777,
     );
-    expect(results.filter((result) => result.status === "fulfilled")).toHaveLength(1);
-    expect(await fs.readdir(join(directory, "output"))).toEqual(["same.png"]);
-    expect(await fs.readFile(join(directory, "output/same.png"))).toEqual(PNG);
-  });
-
-  it("creates distinct names for concurrent publications with no filename", async () => {
-    const results = await Promise.all(Array.from({ length: 8 }, () => publishImage(decode(PNG), options())));
-    expect(new Set(results.map((result) => result.path)).size).toBe(8);
-  });
-
-  it("uses Pi's mutation queue and rechecks ownership after a queued wait", async () => {
-    const acquired = deferred();
-    const release = deferred();
-    const target = join(directory, "output/image.png");
-    const blocking = withFileMutationQueue(target, async () => {
-      acquired.resolve();
-      await release.promise;
-    });
-    await acquired.promise;
-    let current = true;
-    const publication = publishImage(decode(PNG), { ...options("image"), isCurrent: () => current });
-    current = false;
-    release.resolve();
-    await blocking;
-    await expect(publication).rejects.toMatchObject({ name: "AbortError" });
-    expect(await fs.readdir(directory)).toEqual([]);
-    expect(fs.open).not.toHaveBeenCalled();
-  });
-
-  it.each(["cancel", "stale"])("rejects %s work before any filesystem side effect", async (kind) => {
-    const controller = new AbortController();
-    if (kind === "cancel") controller.abort();
-    await expect(
-      publishImage(decode(PNG), { ...options(), signal: controller.signal, isCurrent: () => kind !== "stale" }),
-    ).rejects.toMatchObject({ name: "AbortError" });
-    expect(await fs.readdir(directory)).toEqual([]);
-  });
-
-  it("cleans a partial owned write, releases the handle, and leaves the queue usable", async () => {
-    let closed = false;
-    vi.mocked(fs.open).mockImplementationOnce(async (...args) => {
-      const handle = await realFs.open(...args);
-      const close = handle.close.bind(handle);
-      vi.spyOn(handle, "close").mockImplementation(async () => {
-        closed = true;
-        await close();
-      });
-      vi.spyOn(handle, "writeFile").mockImplementationOnce(async () => {
-        await handle.write(PNG.subarray(0, 16));
-        throw new Error("simulated disk failure");
-      });
-      return handle;
-    });
-    await expect(publishImage(decode(PNG), options("image"))).rejects.toThrow(/disk failure/);
-    expect(closed).toBe(true);
-    expect(await fs.readdir(join(directory, "output"))).toEqual([]);
-    const result = await publishImage(decode(PNG), options("image"));
+    expect((await fs.stat(result.path)).mode & 0o777).toBe(
+      (await fs.stat(join(directory, "native-parent/native"))).mode & 0o777,
+    );
+    await fs.chmod(result.path, 0o640);
+    const before = await fs.stat(result.path);
+    await realFs.writeFile(result.path, Buffer.alloc(PNG.length * 3));
+    await publishImage(decode(PNG), options("binary-parent/binary"));
+    const after = await fs.stat(result.path);
+    expect(after.ino).toBe(before.ino);
+    expect(after.mode).toBe(before.mode);
+    expect(after.size).toBe(PNG.length);
     expect(await fs.readFile(result.path)).toEqual(PNG);
   });
 
-  it("cleans an owned file and closes its handle after an initial stat failure", async () => {
-    let closed = false;
-    vi.mocked(fs.open).mockImplementationOnce(async (...args) => {
-      const handle = await realFs.open(...args);
-      vi.spyOn(handle, "stat").mockRejectedValueOnce(new Error("stat failed"));
-      const close = handle.close.bind(handle);
-      vi.spyOn(handle, "close").mockImplementation(async () => {
-        await close();
-        closed = true;
-      });
-      return handle;
-    });
-    await expect(publishImage(decode(PNG), options("image"))).rejects.toThrow(/stat failed/);
-    expect(closed).toBe(true);
-    expect(await fs.readdir(join(directory, "output"))).toEqual([]);
+  it.each(["file", "directory", "dangling", "chain"])("follows %s symlinks without replacing them", async (kind) => {
+    const target = join(directory, "target");
+    const link = join(directory, "link");
+    let path = "link";
+    let actualTarget = target;
+    if (kind === "directory") {
+      await fs.mkdir(target);
+      await fs.symlink("target", link, "dir");
+      path = "link/nested/image";
+      actualTarget = join(target, "nested/image");
+    } else {
+      if (kind === "file") await realFs.writeFile(target, "original bytes");
+      if (kind === "chain") {
+        await fs.symlink("target", join(directory, "second"));
+        await fs.symlink("second", link);
+      } else await fs.symlink("target", link);
+    }
+    await preflightOutput(options(path));
+    expect(await fs.lstat(link)).toMatchObject({ size: (await fs.readlink(link)).length });
+    await nativeWrite(path);
+    const before = await fs.stat(actualTarget);
+    const result = await publishImage(decode(PNG), options(path));
+    expect(result.path).toBe(join(directory, path));
+    expect((await fs.lstat(link)).isSymbolicLink()).toBe(true);
+    expect((await fs.stat(actualTarget)).ino).toBe(before.ino);
+    expect(await fs.readFile(actualTarget)).toEqual(PNG);
   });
 
-  it("rechecks cancellation after directory creation without opening a file", async () => {
-    const controller = new AbortController();
-    vi.spyOn(fs, "mkdir").mockImplementationOnce(async (path) => {
-      await realFs.mkdir(path);
-      controller.abort();
-      return undefined;
-    });
-    await expect(publishImage(decode(PNG), { ...options(), signal: controller.signal })).rejects.toMatchObject({
-      name: "AbortError",
-    });
-    expect(fs.open).not.toHaveBeenCalled();
-    expect(await fs.readdir(join(directory, "output"))).toEqual([]);
+  it("does not normalize .. inside a dangling symlink target", async () => {
+    await fs.mkdir(join(directory, "actual/deep"), { recursive: true });
+    await fs.symlink("actual/deep", join(directory, "alias"), "dir");
+    await fs.symlink("alias/../image", join(directory, "link"));
+    const access = vi.spyOn(fs, "access");
+    await preflightOutput(options("link"));
+    expect(access).toHaveBeenCalledWith(`${directory}/alias/..`, constants.W_OK | constants.X_OK);
+    expect(await publishImage(decode(PNG), options("link"))).toEqual({ path: join(directory, "link") });
+    expect(await fs.readFile(join(directory, "actual/image"))).toEqual(PNG);
+    await expect(fs.stat(join(directory, "image"))).rejects.toMatchObject({ code: "ENOENT" });
   });
 
-  it("rejects stale ownership after file creation and removes the incomplete file", async () => {
+  it.each([
+    "directory target",
+    "missing symlink parent",
+    "missing symlink directory",
+    "directory symlink loop",
+    "final symlink loop",
+    "non-directory ancestor",
+  ])("rejects native failure: %s", async (kind) => {
+    let path = "link";
+    if (kind === "directory target") {
+      await fs.mkdir(join(directory, "target"));
+      await fs.symlink("target", join(directory, "link"));
+    } else if (kind === "missing symlink parent") {
+      await fs.symlink("missing/target", join(directory, "link"));
+    } else if (kind === "missing symlink directory") {
+      await fs.symlink("missing/", join(directory, "link"));
+    } else if (kind === "non-directory ancestor") {
+      await realFs.writeFile(join(directory, "link"), "original");
+      path = "link/image";
+    } else {
+      await fs.symlink("link", join(directory, "link"));
+      if (kind === "directory symlink loop") path = "link/image";
+    }
+    const failure = await nativeWrite(path).catch((error: NodeJS.ErrnoException) => error);
+    const code = (failure as NodeJS.ErrnoException).code;
+    expect(code).toBeDefined();
+    await expect(preflightOutput(options(path))).rejects.toMatchObject({ code });
+    await expect(publishImage(decode(PNG), options(path))).rejects.toMatchObject({ code });
+  });
+
+  it.each(["bad dimensions", "bad size", "bad metadata", "bad bytes"])(
+    "validates %s before any destination I/O",
+    async (kind) => {
+      const image = decode(PNG);
+      if (kind === "bad dimensions") image.width = 0;
+      if (kind === "bad size") image.bytes = Buffer.alloc(0);
+      if (kind === "bad metadata") image.mimeType = "image/jpeg";
+      if (kind === "bad bytes") image.bytes = Buffer.from("invalid");
+      const mkdir = vi.spyOn(fs, "mkdir");
+      await expect(publishImage(image, options())).rejects.toThrow();
+      expect(mkdir).not.toHaveBeenCalled();
+      expect(fs.writeFile).not.toHaveBeenCalled();
+      expect(await fs.readdir(directory)).toEqual([]);
+    },
+  );
+});
+
+describe("non-destructive preflight", () => {
+  it.each(["new", "existing"])("creates parents without opening or truncating a %s target", async (kind) => {
+    const path = "nested/output/image";
+    if (kind === "existing") await nativeWrite(path);
+    const open = vi.spyOn(fs, "open");
+    await preflightOutput(options(path));
+    expect(open).not.toHaveBeenCalled();
+    expect(fs.writeFile).not.toHaveBeenCalled();
+    expect(await fs.readdir(join(directory, "nested/output"))).toEqual(kind === "existing" ? ["image"] : []);
+    if (kind === "existing") expect(await fs.readFile(join(directory, path), "utf8")).toBe("native text");
+  });
+
+  it("preserves an existing destination inode, mode, and bytes", async () => {
+    await nativeWrite("image");
+    const target = join(directory, "image");
+    const before = await fs.stat(target);
+    await preflightOutput(options("image"));
+    const after = await fs.stat(target);
+    expect(after.ino).toBe(before.ino);
+    expect(after.mode).toBe(before.mode);
+    expect(after.mtimeMs).toBe(before.mtimeMs);
+    expect(await fs.readFile(target, "utf8")).toBe("native text");
+  });
+
+  it.each(["stat", "lstat", "readlink", "access", "mkdir"])("preserves original %s I/O errors", async (operation) => {
+    if (operation === "readlink") await fs.symlink("missing", join(directory, "image"));
+    const failure = Object.assign(new Error("injected I/O failure"), { code: "EIO" });
+    vi.spyOn(fs, operation as "access").mockRejectedValueOnce(failure);
+    await expect(preflightOutput(options("image"))).rejects.toBe(failure);
+    expect(fs.writeFile).not.toHaveBeenCalled();
+  });
+});
+
+describe.skipIf(process.platform === "win32" || process.getuid?.() === 0)("POSIX permission equivalence", () => {
+  it.each([
+    ["existing writable file, readonly parent", true, 0o600, 0o500, true],
+    ["existing readonly file, writable parent", true, 0o400, 0o700, false],
+    ["missing target, writable parent", false, 0o600, 0o700, true],
+    ["missing target, readonly parent", false, 0o600, 0o500, false],
+    ["existing file, unsearchable parent", true, 0o600, 0o600, false],
+  ] as const)("matches %s", async (_name, exists, mode, parentMode, allowed) => {
+    const parent = join(directory, "parent");
+    const target = join(parent, "image");
+    await fs.mkdir(parent);
+    if (exists) {
+      await realFs.writeFile(target, "original");
+      await fs.chmod(target, mode);
+    }
+    await fs.chmod(parent, parentMode);
+    try {
+      if (allowed) {
+        await preflightOutput(options("parent/image"));
+        await nativeWrite("parent/image");
+        await publishImage(decode(PNG), options("parent/image"));
+        expect(await fs.readFile(target)).toEqual(PNG);
+      } else {
+        await expect(preflightOutput(options("parent/image"))).rejects.toMatchObject({ code: "EACCES" });
+        await expect(nativeWrite("parent/image")).rejects.toMatchObject({ code: "EACCES" });
+        await expect(publishImage(decode(PNG), options("parent/image"))).rejects.toMatchObject({ code: "EACCES" });
+      }
+    } finally {
+      await fs.chmod(parent, 0o700);
+    }
+    if (!allowed && exists) expect(await fs.readFile(target, "utf8")).toBe("original");
+  });
+
+  it.each([
+    "existing writable target",
+    "existing readonly target",
+    "dangling writable parent",
+    "dangling readonly parent",
+    "dangling missing parent",
+  ])("checks the symlink target rather than its own parent: %s", async (kind) => {
+    const parent = join(directory, "target-parent");
+    const linkParent = join(directory, "link-parent");
+    await fs.mkdir(parent);
+    await fs.mkdir(linkParent);
+    const target = join(parent, kind === "dangling missing parent" ? "missing/image" : "image");
+    const existing = kind.startsWith("existing");
+    if (existing) {
+      await realFs.writeFile(target, "original");
+      await fs.chmod(target, kind === "existing readonly target" ? 0o400 : 0o600);
+    }
+    await fs.symlink(target, join(linkParent, "link"));
+    // A readonly link parent must not prevent writing through an existing symlink.
+    await fs.chmod(linkParent, 0o500);
+    if (kind === "dangling readonly parent") await fs.chmod(parent, 0o500);
+    const path = "link-parent/link";
+    try {
+      if (kind === "existing writable target" || kind === "dangling writable parent") {
+        await preflightOutput(options(path));
+        await nativeWrite(path);
+        await publishImage(decode(PNG), options(path));
+        expect(await fs.readFile(target)).toEqual(PNG);
+      } else {
+        const code = kind === "dangling missing parent" ? "ENOENT" : "EACCES";
+        await expect(preflightOutput(options(path))).rejects.toMatchObject({ code });
+        await expect(nativeWrite(path)).rejects.toMatchObject({ code });
+        await expect(publishImage(decode(PNG), options(path))).rejects.toMatchObject({ code });
+      }
+    } finally {
+      await fs.chmod(linkParent, 0o700);
+      await fs.chmod(parent, 0o700);
+    }
+  });
+});
+
+describe("queue, cancellation, and partial writes", () => {
+  it("serializes concurrent same-path writes and keeps the queue usable after failure", async () => {
+    const entered = deferred();
+    const release = deferred();
+    vi.mocked(fs.writeFile).mockImplementationOnce(async (...args) => {
+      entered.resolve();
+      await release.promise;
+      await realFs.writeFile(...args);
+      throw new Error("write failed");
+    });
+    const first = publishImage(decode(PNG), options());
+    const failure = expect(first).rejects.toThrow("write failed");
+    await entered.promise;
+    const waiting = Array.from({ length: 8 }, () => publishImage(decode(PNG), options()));
+    // Register behind these writes to prove their registration has reached Pi's queue.
+    const barrier = withFileMutationQueue(join(directory, "different"), async () => {});
+    await barrier;
+    expect(fs.writeFile).toHaveBeenCalledTimes(1);
+    release.resolve();
+    await failure;
+    await Promise.all(waiting);
+    expect(fs.writeFile).toHaveBeenCalledTimes(9);
+    expect(await fs.readFile(join(directory, "output/image"))).toEqual(PNG);
+  });
+
+  it.each(["preflight", "publish", "existing symlink"])("shares native WRITE's queue for %s", async (kind) => {
+    const entered = deferred();
+    const release = deferred();
+    await nativeWrite("image");
+    if (kind === "existing symlink") await fs.symlink("image", join(directory, "link"));
+    const blocking = withFileMutationQueue(join(directory, "image"), async () => {
+      entered.resolve();
+      await release.promise;
+    });
+    await entered.promise;
     let current = true;
-    vi.mocked(fs.open).mockImplementationOnce(async (...args) => {
-      const handle = await realFs.open(...args);
-      current = false;
-      return handle;
+    const target = { ...options(kind === "existing symlink" ? "link" : "image"), isCurrent: () => current };
+    const mkdir = vi.spyOn(fs, "mkdir");
+    const pending = kind === "preflight" ? preflightOutput(target) : publishImage(decode(PNG), target);
+    const rejected = expect(pending).rejects.toMatchObject({ name: "AbortError" });
+    await withFileMutationQueue(join(directory, "different"), async () => {});
+    expect(mkdir).not.toHaveBeenCalled();
+    current = false;
+    release.resolve();
+    await blocking;
+    await rejected;
+    expect(await fs.readFile(join(directory, "image"), "utf8")).toBe("native text");
+  });
+
+  it.each(["cancel", "stale"])("rejects %s before any filesystem side effect", async (kind) => {
+    const controller = new AbortController();
+    if (kind === "cancel") controller.abort();
+    const target = { ...options(), signal: controller.signal, isCurrent: () => kind !== "stale" };
+    await expect(preflightOutput(target)).rejects.toMatchObject({ name: "AbortError" });
+    await expect(publishImage(decode(PNG), target)).rejects.toMatchObject({ name: "AbortError" });
+    expect(await fs.readdir(directory)).toEqual([]);
+  });
+
+  it.each(
+    ["mkdir", "stat", "lstat", "readlink", "access"].flatMap((phase) =>
+      ["cancel", "stale"].map((kind) => [phase, kind] as const),
+    ),
+  )("rechecks ownership after preflight %s (%s)", async (phase, kind) => {
+    const controller = new AbortController();
+    let current = true;
+    const target = options("link");
+    if (phase === "readlink") await fs.symlink("missing", join(directory, "link"));
+    const original = realFs[phase as "access"];
+    vi.spyOn(fs, phase as "access").mockImplementationOnce(async (...args) => {
+      try {
+        return await original(...args);
+      } finally {
+        if (kind === "cancel") controller.abort();
+        else current = false;
+      }
     });
-    await expect(publishImage(decode(PNG), { ...options("image"), isCurrent: () => current })).rejects.toMatchObject({
+    await expect(
+      preflightOutput({ ...target, signal: controller.signal, isCurrent: () => current }),
+    ).rejects.toMatchObject({
       name: "AbortError",
     });
-    expect(await fs.readdir(join(directory, "output"))).toEqual([]);
+    expect(fs.writeFile).not.toHaveBeenCalled();
   });
 
-  it("rejects a destination replaced by a symlink during open without writing the target", async () => {
-    const target = join(directory, "output/image.png");
-    const userFile = join(directory, "user-file");
-    await fs.writeFile(userFile, "user data");
-    vi.mocked(fs.open).mockImplementationOnce(async (...args) => {
-      const handle = await realFs.open(...args);
-      await fs.unlink(target);
-      await fs.symlink(userFile, target);
-      return handle;
+  it.each(["cancel", "stale"])("rechecks %s after publication mkdir without opening target", async (kind) => {
+    const controller = new AbortController();
+    let current = true;
+    vi.spyOn(fs, "mkdir").mockImplementationOnce(async (path, config) => {
+      const result = await realFs.mkdir(path, config);
+      if (kind === "cancel") controller.abort();
+      else current = false;
+      return result;
     });
-    await expect(publishImage(decode(PNG), options("image"))).rejects.toThrow(/destination changed/);
-    expect((await fs.lstat(target)).isSymbolicLink()).toBe(true);
-    expect(await fs.readFile(userFile, "utf8")).toBe("user data");
+    await expect(
+      publishImage(decode(PNG), { ...options(), signal: controller.signal, isCurrent: () => current }),
+    ).rejects.toMatchObject({ name: "AbortError" });
+    expect(fs.writeFile).not.toHaveBeenCalled();
   });
 
-  it("does not remove another writer's replacement after a write failure", async () => {
-    const target = join(directory, "output/image.png");
-    vi.mocked(fs.open).mockImplementationOnce(async (...args) => {
-      const handle = await realFs.open(...args);
-      vi.spyOn(handle, "writeFile").mockImplementationOnce(async () => {
-        await fs.unlink(target);
-        await fs.writeFile(target, "replacement");
-        throw new Error("write failed after replacement");
+  it.each(["new", "existing", "symlink"])(
+    "retains partial %s output after I/O failure without rollback",
+    async (kind) => {
+      const path = join(directory, "image");
+      const actual = kind === "symlink" ? join(directory, "target") : path;
+      if (kind !== "new") await realFs.writeFile(actual, "old contents that cannot be restored");
+      if (kind === "symlink") await fs.symlink("target", path);
+      const unlink = vi.spyOn(fs, "unlink");
+      const rename = vi.spyOn(fs, "rename");
+      const failure = Object.assign(new Error("disk failure"), { code: "ENOSPC" });
+      vi.mocked(fs.writeFile).mockImplementationOnce(async (destination) => {
+        await realFs.writeFile(destination, PNG.subarray(0, 16));
+        throw failure;
       });
-      return handle;
-    });
-    await expect(publishImage(decode(PNG), options("image"))).rejects.toThrow(/write failed/);
-    expect(await fs.readFile(target, "utf8")).toBe("replacement");
-  });
-
-  it.each(["open", "stat", "write", "sync", "close"])(
-    "handles cancellation during %s and preserves only completed output",
-    async (phase) => {
-      const controller = new AbortController();
-      let closed = false;
-      vi.mocked(fs.open).mockImplementationOnce(async (...args) => {
-        const handle = await realFs.open(...args);
-        if (phase === "open") controller.abort();
-        const stat = handle.stat.bind(handle);
-        vi.spyOn(handle, "stat").mockImplementation(async () => {
-          const result = await stat();
-          if (phase === "stat") controller.abort();
-          return result;
-        });
-        const writeFile = handle.writeFile.bind(handle);
-        vi.spyOn(handle, "writeFile").mockImplementation(async (...parameters) => {
-          await writeFile(...parameters);
-          if (phase === "write") controller.abort();
-        });
-        const sync = handle.sync.bind(handle);
-        vi.spyOn(handle, "sync").mockImplementation(async () => {
-          await sync();
-          if (phase === "sync") controller.abort();
-        });
-        const close = handle.close.bind(handle);
-        vi.spyOn(handle, "close").mockImplementation(async () => {
-          await close();
-          closed = true;
-          if (phase === "close") controller.abort();
-        });
-        return handle;
-      });
-      await expect(publishImage(decode(PNG), { ...options("image"), signal: controller.signal })).rejects.toMatchObject(
-        { name: "AbortError" },
-      );
-      expect(closed).toBe(true);
-      expect(await fs.readdir(join(directory, "output"))).toEqual(
-        phase === "sync" || phase === "close" ? ["image.png"] : [],
-      );
-      if (phase === "sync" || phase === "close")
-        expect(await fs.readFile(join(directory, "output/image.png"))).toEqual(PNG);
+      await expect(publishImage(decode(PNG), options("image"))).rejects.toBe(failure);
+      expect(await fs.readFile(actual)).toEqual(PNG.subarray(0, 16));
+      expect(unlink).not.toHaveBeenCalled();
+      expect(rename).not.toHaveBeenCalled();
+      if (kind === "symlink") expect((await fs.lstat(path)).isSymbolicLink()).toBe(true);
     },
   );
 
-  it("cleans incomplete output when fsync fails", async () => {
-    vi.mocked(fs.open).mockImplementationOnce(async (...args) => {
-      const handle = await realFs.open(...args);
-      vi.spyOn(handle, "sync").mockRejectedValueOnce(new Error("sync failed"));
-      return handle;
+  it.each(["cancel", "stale"])("drains an in-flight write after %s before releasing the queue", async (kind) => {
+    const entered = deferred();
+    const release = deferred();
+    const controller = new AbortController();
+    let current = true;
+    let settled = false;
+    vi.mocked(fs.writeFile).mockImplementationOnce(async (destination, _bytes, config) => {
+      expect(config).toEqual({ signal: controller.signal });
+      await realFs.writeFile(destination, PNG.subarray(0, 16));
+      entered.resolve();
+      await release.promise;
     });
-    await expect(publishImage(decode(PNG), options("image"))).rejects.toThrow(/sync failed/);
-    expect(await fs.readdir(join(directory, "output"))).toEqual([]);
+    const pending = publishImage(decode(PNG), {
+      ...options("image"),
+      signal: controller.signal,
+      isCurrent: () => current,
+    });
+    const rejected = expect(pending).rejects.toMatchObject({ name: "AbortError" });
+    void pending.then(
+      () => {
+        settled = true;
+      },
+      () => {
+        settled = true;
+      },
+    );
+    await entered.promise;
+    if (kind === "cancel") controller.abort();
+    else current = false;
+    const waiting = preflightOutput(options("image"));
+    await withFileMutationQueue(join(directory, "different"), async () => {});
+    expect(settled).toBe(false);
+    expect(await fs.readFile(join(directory, "image"))).toEqual(PNG.subarray(0, 16));
+    release.resolve();
+    await rejected;
+    await waiting;
+    expect(await fs.readFile(join(directory, "image"))).toEqual(PNG.subarray(0, 16));
+    await publishImage(decode(PNG), options("image"));
+    expect(await fs.readFile(join(directory, "image"))).toEqual(PNG);
+  });
+
+  it("rejects late cancellation but does not remove completed bytes", async () => {
+    const controller = new AbortController();
+    vi.mocked(fs.writeFile).mockImplementationOnce(async (...args) => {
+      await realFs.writeFile(...args);
+      controller.abort();
+    });
+    await expect(publishImage(decode(PNG), { ...options("image"), signal: controller.signal })).rejects.toMatchObject({
+      name: "AbortError",
+    });
+    expect(await fs.readFile(join(directory, "image"))).toEqual(PNG);
   });
 });

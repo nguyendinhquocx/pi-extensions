@@ -1,5 +1,6 @@
 import type { ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import { defineMenu, runMenu, runTask, sanitizeTerminalText } from "@narumitw/pi-tui-kit";
+import { showImagegenOutputPath } from "./output-path-input.js";
 import { showImagegenPrompt } from "./prompt-editor.js";
 import type { ImagegenSettings } from "./settings.js";
 import { showImagegenSettings } from "./settings-screen.js";
@@ -15,7 +16,7 @@ export interface ImagegenMenuOwner {
   /** Resolves after persistence and runtime application; rejects after rollback. */
   saveSettings(patch: Partial<ImagegenSettings>): Promise<void>;
   /** Must honor the signal, including disposal, and publish only while current. */
-  generate(prompt: string, signal: AbortSignal): Promise<void>;
+  generate(prompt: string, path: string, signal: AbortSignal): Promise<void>;
 }
 
 /** The command owns mode and argument rejection; this function opens TUI only. */
@@ -54,7 +55,7 @@ export async function showImagegenMenu(ctx: ExtensionCommandContext, owner: Imag
             "Endpoint: experimental ChatGPT/Codex internal image API",
             "Local metadata does not verify account entitlement or live readiness.",
             `Tool access: ${owner.getSettings().toolEnabled ? "enabled" : "disabled"}`,
-            `Output directory: ${sanitizeTerminalText(owner.getSettings().outputDir)}`,
+            "Each generation requires an output path.",
             `User settings: ${sanitizeTerminalText(owner.settingsPath)}`,
             `Activity: ${owner.isBusy() ? "Generating" : "Idle"}`,
           ],
@@ -63,11 +64,12 @@ export async function showImagegenMenu(ctx: ExtensionCommandContext, owner: Imag
           kind: "detail",
           title: "Image Generation Help",
           lines: [
-            "Generate Image sends your prompt to ChatGPT and saves one image. Provider quota and account restrictions apply.",
+            "Generate Image sends your prompt to ChatGPT and saves one image at the exact path you enter. Provider quota and account restrictions apply.",
+            "Relative paths use the generation request's working directory. Existing files are overwritten and symlinks are followed.",
             "Use Pi's compatible Codex OAuth login. A Codex CLI login alone is not imported. Status never refreshes credentials.",
             "Settings save immediately in user scope. Closing Settings does not undo saved changes. Tool access does not control manual generation.",
             "Tool access changes apply at an idle boundary and change the model-visible tool definitions.",
-            "Cancellation aborts the owned request, but cannot guarantee remote cancellation or a quota refund. A successfully saved image can remain after late cancellation.",
+            "Cancellation aborts the owned request, but cannot guarantee remote cancellation, a quota refund, or rollback of file writes. Partial or completed writes can remain.",
             "Requests are not retried automatically. Image editing, reference images, masks, and batches are not supported.",
           ],
         }),
@@ -103,6 +105,10 @@ export async function showImagegenMenu(ctx: ExtensionCommandContext, owner: Imag
     if (!current()) return;
     if (prompt.kind === "back") continue;
     if (prompt.kind !== "submitted") return;
+    const destination = await showImagegenOutputPath(ctx, owner);
+    if (!current()) return;
+    if (destination.kind === "back") continue;
+    if (destination.kind !== "submitted") return;
     if (owner.isBusy()) {
       ctx.ui.notify("An image generation is already active.", "warning");
       continue;
@@ -113,7 +119,7 @@ export async function showImagegenMenu(ctx: ExtensionCommandContext, owner: Imag
       isCurrent: owner.isCurrent.bind(owner),
       task: async ({ signal }) => {
         if (signal.aborted || !current()) return;
-        await owner.generate(prompt.prompt, signal);
+        await owner.generate(prompt.prompt, destination.path, signal);
       },
       // Never display raw provider errors or prompts through the generic error reporter.
       onError: () => {

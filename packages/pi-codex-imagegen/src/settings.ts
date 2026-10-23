@@ -2,18 +2,15 @@ import { randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { withFileMutationQueue } from "@earendil-works/pi-coding-agent";
-import { validateOutputDir } from "./paths.js";
 
 export interface ImagegenSettings {
   toolEnabled: boolean;
-  outputDir: string;
   transparentBackground: boolean;
 }
 
-export function defaultSettings(agentDir: string): ImagegenSettings {
+export function defaultSettings(): ImagegenSettings {
   return {
     toolEnabled: false,
-    outputDir: join(agentDir, "pi-codex-imagegen"),
     transparentBackground: false,
   };
 }
@@ -25,7 +22,7 @@ type SaveOptions = {
   apply?: (next: ImagegenSettings, previous: ImagegenSettings) => void;
 };
 type Document = Record<string, unknown>;
-const keys = ["toolEnabled", "outputDir", "transparentBackground"] as const;
+const keys = ["toolEnabled", "transparentBackground"] as const;
 
 class SettingsError extends Error {}
 
@@ -37,12 +34,8 @@ function validate(document: Document): void {
   for (const key of keys) {
     if (!Object.hasOwn(document, key)) continue;
     const value = document[key];
-    try {
-      if (key === "outputDir") validateOutputDir(value);
-      else if (typeof value !== "boolean") throw new Error();
-    } catch {
+    if (typeof value !== "boolean")
       throw new SettingsError("Invalid image generation settings. Repair the file before saving.");
-    }
   }
 }
 
@@ -87,7 +80,7 @@ export class SettingsStore {
 
   constructor(agentDir: string) {
     this.path = join(agentDir, "pi-codex-imagegen.json");
-    this.defaults = defaultSettings(agentDir);
+    this.defaults = defaultSettings();
     this.current = { ...this.defaults };
   }
 

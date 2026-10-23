@@ -1,6 +1,6 @@
 import { stripVTControlCharacters } from "node:util";
 import { type ExtensionCommandContext, getSettingsListTheme } from "@earendil-works/pi-coding-agent";
-import { Input, isKeyRelease, matchesKey, type SettingItem, SettingsList } from "@earendil-works/pi-tui";
+import { isKeyRelease, matchesKey, type SettingItem, SettingsList } from "@earendil-works/pi-tui";
 import {
   HorizontalRule,
   renderBoundedFrameLayout,
@@ -8,7 +8,6 @@ import {
   sanitizeTerminalText,
 } from "@narumitw/pi-tui-kit";
 import type { ImagegenMenuOwner } from "./menu.js";
-import { validateOutputDir } from "./paths.js";
 import type { ImagegenSettings } from "./settings.js";
 
 export async function showImagegenSettings(
@@ -21,16 +20,13 @@ export async function showImagegenSettings(
     onError: () => {
       if (!owner.signal.aborted && owner.isCurrent()) ctx.ui.notify("Image generation settings failed.", "error");
     },
-    create: ({ tui, theme, keybindings, signal, complete }) => {
+    create: ({ tui, theme, signal, complete }) => {
       let disposed = false;
       let closing = false;
       const finish = (reason: "back" | "close") => {
         closing = true;
         complete(reason);
       };
-      let focused = false;
-      let input: Input | undefined;
-      let inputError = "";
       let pending = Promise.resolve();
       const counts = new Map<string, number>();
       let rows = new Map<number, number>();
@@ -60,56 +56,6 @@ export async function showImagegenSettings(
           values: ["false", "true"],
           description: "Request a transparent background by default. The provider determines actual output support.",
         },
-        {
-          id: "outputDir",
-          label: "Output directory",
-          currentValue: sanitizeTerminalText(settings.outputDir),
-          description:
-            "Enter a path. Leading ~ is supported; relative paths use the generation request's working directory.",
-          submenu: (_value, done) => {
-            const draft = new Input();
-            input = draft;
-            draft.focused = focused;
-            inputError = "";
-            draft.onSubmit = (value) => {
-              try {
-                validateOutputDir(value);
-              } catch {
-                inputError = "Enter a nonempty path without control characters.";
-                return;
-              }
-              queue("outputDir", value);
-              input = undefined;
-              inputError = "";
-              // Native currentValue is display-only; preserve the unsanitized value in the queued patch.
-              done();
-            };
-            return {
-              render: (availableWidth) => [
-                theme.fg("muted", "Enter a new output directory"),
-                ...draft.render(Math.max(1, availableWidth)).map((line) =>
-                  line
-                    // biome-ignore lint/suspicious/noControlCharactersInRegex: Retain only native cursor protocol markers.
-                    .split(/(\x1b_pi:(?:c|fc|\/fc)\x07)/)
-                    .map((part) => (part.startsWith("\x1b_pi:") ? part : sanitizeTerminalText(part)))
-                    .join(""),
-                ),
-                ...(inputError ? [theme.fg("error", inputError)] : []),
-              ],
-              handleInput(data) {
-                if (keybindings.matches(data, "tui.select.cancel")) {
-                  input = undefined;
-                  inputError = "";
-                  done();
-                } else draft.handleInput(data);
-              },
-              handleMouse: (event) => (event.y === 1 ? draft.handleMouse({ ...event, y: 0, height: 1 }) : undefined),
-              invalidate() {
-                draft.invalidate();
-              },
-            };
-          },
-        },
       ];
       // Retain the native control and theme contract, but use the callback theme.
       // Hide native hard-coded key hints: they are not valid for remapped bindings.
@@ -131,7 +77,7 @@ export async function showImagegenSettings(
       );
 
       function queue(id: keyof ImagegenSettings, value: string): void {
-        const patch: Partial<ImagegenSettings> = id === "outputDir" ? { outputDir: value } : { [id]: value === "true" };
+        const patch: Partial<ImagegenSettings> = { [id]: value === "true" };
         list.updateValue(id, sanitizeTerminalText(value));
         counts.set(id, (counts.get(id) ?? 0) + 1);
         // Register in action order, and recover the queue after each rejected save.
@@ -158,21 +104,12 @@ export async function showImagegenSettings(
       }
 
       return {
-        get focused() {
-          return focused;
-        },
-        set focused(value: boolean) {
-          focused = value;
-          if (input) input.focused = value;
-        },
         render(availableWidth) {
           const content = list.render(Math.max(1, availableWidth));
-          const focusedRow = input
-            ? 1
-            : Math.max(
-                0,
-                content.findIndex((line) => stripVTControlCharacters(line).startsWith("→")),
-              );
+          const focusedRow = Math.max(
+            0,
+            content.findIndex((line) => stripVTControlCharacters(line).startsWith("→")),
+          );
           const terminalRows = Number.isFinite(tui.terminal.rows) ? Math.floor(tui.terminal.rows) : 24;
           const layout = renderBoundedFrameLayout({
             width: availableWidth,
@@ -218,7 +155,6 @@ export async function showImagegenSettings(
         dispose() {
           disposed = true;
           clearGeometry();
-          if (input) input.focused = false;
         },
       };
     },

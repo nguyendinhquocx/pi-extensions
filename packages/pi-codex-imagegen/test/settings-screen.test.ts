@@ -2,7 +2,6 @@ import { stripVTControlCharacters } from "node:util";
 import { initTheme } from "@earendil-works/pi-coding-agent";
 import {
   type Component,
-  CURSOR_MARKER,
   getKeybindings,
   KeybindingsManager,
   setKeybindings,
@@ -25,7 +24,7 @@ afterEach(() => setKeybindings(originalKeys));
 const plain = (rows: readonly string[]) => rows.map(stripVTControlCharacters).join("\n");
 function fixture() {
   const controller = new AbortController();
-  let settings = { toolEnabled: false, outputDir: "/tmp/\x1b]0;unsafe\x07images", transparentBackground: false };
+  let settings = { toolEnabled: false, transparentBackground: false };
   const owner: ImagegenMenuOwner = {
     signal: controller.signal,
     isCurrent: () => !controller.signal.aborted,
@@ -47,7 +46,7 @@ function fixture() {
   };
 }
 
-it("frames exactly three native settings, sanitizes paths and retains focused rows after resize/invalidation", async () => {
+it("frames exactly two native settings, sanitizes paths and retains focused rows after resize/invalidation", async () => {
   const roles: string[] = [];
   const tui = createTuiHarness({
     theme: {
@@ -74,7 +73,8 @@ it("frames exactly three native settings, sanitizes paths and retains focused ro
   expect(initial[0]).toBe("─".repeat(100));
   expect(initial.at(-1)).toBe(initial[0]);
   expect(plain(initial)).toMatch(/User scope: \/tmp\/settings.json/);
-  expect(plain(initial)).toMatch(/Tool access[\s\S]*Transparent background[\s\S]*Output directory/);
+  expect(plain(initial)).toMatch(/Tool access[\s\S]*Transparent background/);
+  expect(plain(initial)).not.toContain("Output directory");
   expect(initial.join("")).not.toContain("\x1b[2J");
   expect(plain(initial)).not.toMatch(/unsafe|Model {2}|Quality {2}|Size {2}|Count {2}|Format {2}/);
   tui.send("\x1b[B");
@@ -188,7 +188,7 @@ it("drains accepted saves after Back and rolls back repeated same-field toggles 
 it.each([
   { label: "Tool access", patch: { toolEnabled: true }, rows: 24 },
   { label: "Transparent background", patch: { transparentBackground: true }, rows: 24 },
-  { label: "Output directory", patch: { outputDir: "~/mouse images" }, rows: 8 },
+  { label: "Transparent background", patch: { transparentBackground: true }, rows: 8 },
 ])("activates $label with native press/release/click before the next frame", async ({ label, patch, rows }) => {
   const tui = createTuiHarness({ width: 80, rows });
   const { owner } = fixture();
@@ -201,10 +201,7 @@ it.each([
   const { ctx } = createMockContext({ mode: "tui", custom });
   const running = showImagegenSettings(ctx, owner);
   await tui.waitForOpen();
-  if (label === "Output directory") {
-    tui.press("tui.select.down");
-    tui.press("tui.select.down");
-  }
+  if (rows === 8) tui.press("tui.select.down");
   const frame = tui.render();
   const y = frame.findIndex((line) => stripVTControlCharacters(line).includes(label));
   expect(y).toBeGreaterThanOrEqual(0);
@@ -229,14 +226,6 @@ it.each([
   expect(press).toMatchObject({ handled: true, focus: true });
   expect(release).toBeUndefined();
   expect(click).toMatchObject({ handled: true });
-  if (label === "Output directory") {
-    tui.setFocused(true);
-    const submenu = tui.resize({ rows: 24 });
-    expect(plain(submenu)).toContain("Enter a new output directory");
-    expect(submenu.some((line) => line.includes(CURSOR_MARKER))).toBe(true);
-    tui.type("~/mouse images");
-    tui.send("\r");
-  }
   await tui.waitForPending();
   expect(owner.saveSettings).toHaveBeenCalledExactlyOnceWith(patch);
   expect(plain(tui.render())).toContain(`→ ${label}`);
@@ -279,93 +268,7 @@ it.each([
   expect(tui.requestRenderCount).toBe(renders);
 });
 
-it.each([
-  { name: "C0 control", invalid: "\x00" },
-  { name: "C1 control", invalid: "\u0085" },
-  { name: "bidi override", invalid: "\u202e" },
-  { name: "direction mark", invalid: "\u200e" },
-  { name: "high surrogate", invalid: "\ud800" },
-  { name: "low surrogate", invalid: "\udfff" },
-])("rejects pasted $name without saving or changing the focused draft, then recovers", async ({ invalid }) => {
-  const tui = createTuiHarness();
-  const { owner } = fixture();
-  const previous = owner.getSettings();
-  const { ctx, notifications } = createMockContext({ mode: "tui", custom: tui.custom });
-  const running = showImagegenSettings(ctx, owner);
-  await tui.waitForOpen();
-  tui.setFocused(true);
-  tui.press("tui.select.down");
-  tui.press("tui.select.down");
-  tui.press("tui.select.confirm");
-  // Native bracketed paste retains these code points; normal key input rejects C0/C1.
-  tui.send(`\x1b[200~/tmp/images${invalid}\x1b[201~`);
-  const draft = tui.render().find((line) => line.includes(CURSOR_MARKER));
-  expect(draft).toBeDefined();
-  tui.send("\r");
-  await tui.waitForPending();
-  const rejected = tui.render();
-  expect(plain(rejected)).toContain("Enter a nonempty path without control characters.");
-  expect(rejected.find((line) => line.includes(CURSOR_MARKER))).toBe(draft);
-  expect(tui.focused).toBe(true);
-  expect(owner.saveSettings).not.toHaveBeenCalled();
-  expect(owner.getSettings()).toEqual(previous);
-  // Delete only the final invalid code point: the accepted save proves the draft survived intact.
-  tui.send("\x7f");
-  tui.send("\r");
-  await tui.waitForPending();
-  expect(owner.saveSettings).toHaveBeenCalledExactlyOnceWith({ outputDir: "/tmp/images" });
-  expect(owner.getSettings().outputDir).toBe("/tmp/images");
-  expect(plain(tui.render())).toMatch(/→ Output directory\s+\/tmp\/images/);
-  expect(plain(tui.render())).not.toContain("Enter a nonempty path");
-  expect(notifications).toEqual([]);
-  tui.press("ctrl+c");
-  expect(await running).toBe("close");
-});
-
-it("maps clipped frame mouse rows to native rows, ignores borders, and edits free-form paths in a native submenu", async () => {
-  const tui = createTuiHarness({ rows: 8, width: 80 });
-  const { owner } = fixture();
-  const { ctx } = createMockContext({ mode: "tui", custom: tui.custom });
-  const running = showImagegenSettings(ctx, owner);
-  await tui.waitForOpen();
-  tui.render();
-  tui.mouse({ type: "click", x: 0, y: 0 });
-  expect(owner.saveSettings).not.toHaveBeenCalled();
-  // Clip to a single focused row; its frame index is not its native list index.
-  tui.send("\x1b[B");
-  tui.send("\x1b[B");
-  let frame = tui.render();
-  const selected = frame.findIndex((line) => stripVTControlCharacters(line).startsWith("→ Output directory"));
-  expect(selected).toBeGreaterThanOrEqual(0);
-  tui.mouse({ type: "press", x: 1, y: selected });
-  tui.mouse({ type: "click", x: 1, y: selected });
-  tui.setFocused(true);
-  frame = tui.resize({ rows: 24 });
-  expect(frame.some((line) => line.includes(CURSOR_MARKER))).toBe(true);
-  for (const rows of [4, 7, 24]) {
-    const bounded = tui.resize({ rows, width: 12 });
-    expect(bounded.length).toBeLessThanOrEqual(Math.max(1, rows - 3));
-    expect(bounded.every((line) => visibleWidth(line) <= 12)).toBe(true);
-    expect(bounded.some((line) => line.includes(CURSOR_MARKER))).toBe(true);
-    tui.invalidate();
-    expect(tui.render()).toEqual(bounded);
-  }
-  tui.resize({ rows: 24, width: 80 });
-  tui.send("\x1b[200~~/new images\x1b[201~");
-  tui.send("\r");
-  await tui.waitForPending();
-  expect(owner.saveSettings).toHaveBeenCalledWith({ outputDir: "~/new images" });
-  expect(plain(tui.render())).toMatch(/→ Output directory\s+~\/new images/);
-  tui.send("\r");
-  tui.type("discard this");
-  tui.send("\x1b");
-  expect(owner.saveSettings).toHaveBeenCalledTimes(1);
-  expect(plain(tui.render())).toMatch(/→ Output directory/);
-  tui.press("ctrl+c");
-  expect(await running).toBe("close");
-});
-
-it("honors remapped native keys and keeps Ctrl+C as hard cancel inside the path input", async () => {
+it("honors remapped native navigation and confirmation and keeps Ctrl+C as hard cancel", async () => {
   const keys = new KeybindingsManager(TUI_KEYBINDINGS, {
     "tui.select.down": "ctrl+n",
     "tui.select.confirm": "ctrl+t",
@@ -378,12 +281,13 @@ it("honors remapped native keys and keeps Ctrl+C as hard cancel inside the path 
   const running = showImagegenSettings(ctx, owner);
   await tui.waitForOpen();
   tui.send("\x0e");
-  tui.send("\x0e");
   tui.send("\x14");
-  tui.type("do not save");
+  await tui.waitForPending();
+  const frame = plain(tui.render());
   tui.press("ctrl+c");
   expect(await running).toBe("close");
-  expect(owner.saveSettings).not.toHaveBeenCalled();
+  expect(frame).toMatch(/→ Transparent background\s+true/);
+  expect(owner.saveSettings).toHaveBeenCalledExactlyOnceWith({ transparentBackground: true });
 });
 
 it.each(["abort", "dispose"])("skips queued stale saves and does not notify or redraw after %s", async (method) => {

@@ -1,12 +1,9 @@
-import { randomUUID } from "node:crypto";
 import { constants } from "node:fs";
 import * as fs from "node:fs/promises";
-import { homedir } from "node:os";
-import { extname, join, parse, resolve, sep } from "node:path";
+import { dirname, isAbsolute, sep } from "node:path";
 import { inflateSync } from "node:zlib";
-import { withFileMutationQueue } from "@earendil-works/pi-coding-agent";
+import { createWriteTool } from "@earendil-works/pi-coding-agent";
 import { getImageDimensions } from "@earendil-works/pi-tui";
-import { validateOutputDir } from "./paths.js";
 
 export const MAX_IMAGE_BYTES = 32 * 1024 * 1024;
 // Bound terminal previews: at most 16,384 pixels per side and 16 megapixels.
@@ -14,7 +11,6 @@ export const MAX_IMAGE_BYTES = 32 * 1024 * 1024;
 const MAX_DIMENSION = 16_384;
 const MAX_PIXELS = 16_777_216;
 const MAX_BASE64_LENGTH = 4 * Math.ceil(MAX_IMAGE_BYTES / 3);
-const UNSAFE_TEXT = /[\p{Cc}\p{Cf}\p{Cs}]/u;
 
 export interface DecodedImage {
   bytes: Buffer;
@@ -359,42 +355,14 @@ export function decodeImage(base64: string): DecodedImage {
   return { bytes, mimeType, extension, width, height };
 }
 
-export function validateFilename(filename?: string): void {
-  if (filename === undefined) return;
-  if (
-    typeof filename !== "string" ||
-    !filename ||
-    filename.trim() !== filename ||
-    UNSAFE_TEXT.test(filename) ||
-    /[/\\<>:"|?*]/.test(filename) ||
-    /^\.+$/.test(filename) ||
-    /[. ]$/.test(filename) ||
-    /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/i.test(filename)
-  )
-    throw new Error("Filename must be a safe basename without paths or controls.");
-  const extension = extname(filename).toLowerCase();
-  if (extension && ![".png", ".jpg", ".jpeg", ".webp"].includes(extension))
-    throw new Error("Unsupported image filename extension.");
-  // Reserve enough UTF-8 bytes for any MIME-derived extension when absent.
-  if (Buffer.byteLength(filename) + (extension ? 0 : 5) > 255) throw new Error("Image filename is too long.");
-}
-
-export function resolveOutputDir(cwd: string, outputDir: string): string {
-  validateOutputDir(outputDir);
-  if (outputDir === "~") return homedir();
-  if (outputDir.startsWith("~/")) return resolve(homedir(), outputDir.slice(2));
-  return resolve(cwd, outputDir);
-}
-
-type PublishOptions = {
+type OutputOptions = {
   cwd: string;
-  outputDir: string;
-  filename?: string;
+  path: string;
   signal?: AbortSignal;
   isCurrent?: () => boolean;
 };
 
-function checkCurrent(options: PublishOptions): void {
+function checkCurrent(options: OutputOptions): void {
   if (options.signal?.aborted || options.isCurrent?.() === false) {
     throw new DOMException("Image publication was cancelled or is no longer current.", "AbortError");
   }
@@ -404,148 +372,109 @@ function hasCode(error: unknown, code: string): boolean {
   return typeof error === "object" && error !== null && "code" in error && error.code === code;
 }
 
-async function checkDirectory(directory: string, options: PublishOptions, create: boolean): Promise<void> {
-  const root = parse(directory).root;
-  let current = root;
-  for (const component of directory.slice(root.length).split(sep).filter(Boolean)) {
-    current = join(current, component);
+async function atOutput(options: OutputOptions, action: (destination: string) => Promise<void>): Promise<string> {
+  checkCurrent(options);
+  if (typeof options.path !== "string" || !options.path.length) throw new Error("Output path is required.");
+  let destination: string | undefined;
+  const tool = createWriteTool(options.cwd, {
+    operations: {
+      mkdir: async (directory) => {
+        checkCurrent(options);
+        await fs.mkdir(directory, { recursive: true });
+        checkCurrent(options);
+      },
+      writeFile: async (absolutePath) => {
+        checkCurrent(options);
+        destination = absolutePath;
+        await action(absolutePath);
+        checkCurrent(options);
+      },
+    },
+  });
+  // The public factory owns normalization and its mutation queue. Our guards also
+  // cover queued ownership changes; await operations to drain all in-flight I/O.
+  await tool.execute("codex-imagegen-output", { path: options.path, content: "" });
+  checkCurrent(options);
+  if (destination === undefined) throw new Error("Output destination was not resolved.");
+  return destination;
+}
+
+async function checkWritable(destination: string, options: OutputOptions): Promise<void> {
+  let target = destination;
+  for (let links = 0; links <= 40; links++) {
     checkCurrent(options);
-    let stat: Awaited<ReturnType<typeof fs.lstat>>;
     try {
-      stat = await fs.lstat(current);
+      const stat = await fs.stat(target);
       checkCurrent(options);
-    } catch (error) {
-      if (!create || !hasCode(error, "ENOENT")) throw error;
-      checkCurrent(options);
-      try {
-        await fs.mkdir(current, { mode: 0o700 });
-      } catch (mkdirError) {
-        if (!hasCode(mkdirError, "EEXIST")) throw mkdirError;
+      if (stat.isDirectory()) {
+        throw Object.assign(new Error("Image destination is a directory."), { code: "EISDIR", path: target });
       }
+      // Overwriting an existing file needs its write permission, not parent write permission.
+      await fs.access(target, constants.W_OK);
       checkCurrent(options);
-      stat = await fs.lstat(current);
-      checkCurrent(options);
-    }
-    if (stat.isSymbolicLink() || !stat.isDirectory())
-      throw new Error("Output directory must not contain symlinks or non-directories.");
-  }
-}
-
-/** Check deterministic local failures before a chargeable request; publication repeats these checks. */
-export async function preflightOutput(options: PublishOptions): Promise<void> {
-  validateFilename(options.filename);
-  checkCurrent(options);
-  const directory = resolveOutputDir(options.cwd, options.outputDir);
-  await checkDirectory(directory, options, true);
-  checkCurrent(options);
-  // POSIX child creation needs both write and search permission. On Windows
-  // Node ignores X_OK, so this remains the supported access preflight there.
-  await fs.access(directory, constants.W_OK | constants.X_OK);
-  checkCurrent(options);
-  if (options.filename && extname(options.filename)) {
-    try {
-      await fs.lstat(join(directory, options.filename));
+      return;
     } catch (error) {
-      checkCurrent(options);
-      if (hasCode(error, "ENOENT")) return;
-      throw error;
+      if (!hasCode(error, "ENOENT")) throw error;
     }
     checkCurrent(options);
-    throw new Error("Image destination already exists. Choose a new filename.");
-  }
-}
-
-type FileIdentity = Awaited<ReturnType<fs.FileHandle["stat"]>>;
-
-async function removeIncomplete(destination: string, identity: FileIdentity | undefined): Promise<void> {
-  // Do not remove another writer's replacement. Node has no unlink-by-inode
-  // primitive; concurrent hostile directory renames are outside this contract.
-  try {
-    const current = await fs.lstat(destination);
-    if (identity && current.dev === identity.dev && current.ino === identity.ino && current.isFile())
-      await fs.unlink(destination);
-  } catch (error) {
-    if (!hasCode(error, "ENOENT")) throw error;
-  }
-}
-
-async function releasePublication(
-  handle: fs.FileHandle,
-  destination: string,
-  identity: FileIdentity | undefined,
-  complete: boolean,
-): Promise<void> {
-  try {
-    // A failed initial stat must not leave an otherwise accessible owned file.
-    if (!complete) identity ??= await handle.stat();
-  } finally {
+    let entry: Awaited<ReturnType<typeof fs.lstat>>;
     try {
-      await handle.close();
-    } finally {
-      if (!complete) await removeIncomplete(destination, identity);
+      entry = await fs.lstat(target);
+      checkCurrent(options);
+    } catch (error) {
+      if (!hasCode(error, "ENOENT")) throw error;
+      checkCurrent(options);
+      // A symlink target ending in a separator requires an existing directory;
+      // it cannot become a new file even when its containing directory is writable.
+      if (target.endsWith("/") || (sep === "\\" && target.endsWith("\\"))) {
+        throw Object.assign(new Error("Image destination is a directory."), { code: "EISDIR", path: target });
+      }
+      // A missing target requires write and search access in its actual parent.
+      // X_OK is ignored by Node on Windows. This check does not reserve the path.
+      await fs.access(dirname(target), constants.W_OK | constants.X_OK);
+      checkCurrent(options);
+      return;
     }
+    if (!entry.isSymbolicLink()) {
+      await fs.access(target, constants.W_OK);
+      checkCurrent(options);
+      return;
+    }
+    const link = await fs.readlink(target);
+    checkCurrent(options);
+    // Do not lexically resolve link targets: a preceding directory symlink can
+    // change the meaning of `..`. Let the filesystem resolve those components.
+    target = isAbsolute(link) ? link : `${dirname(target)}${sep}${link}`;
   }
+  throw Object.assign(new Error("Too many symbolic links."), { code: "ELOOP", path: destination });
 }
 
-async function checkDestination(destination: string, identity: FileIdentity, options: PublishOptions): Promise<void> {
-  const current = await fs.lstat(destination);
+/** Best-effort checks before HTTP; create parents, but never open or truncate the target. */
+export async function preflightOutput(options: OutputOptions): Promise<void> {
+  await atOutput(options, (destination) => checkWritable(destination, options));
   checkCurrent(options);
-  if (!current.isFile() || current.dev !== identity.dev || current.ino !== identity.ino)
-    throw new Error("Image destination changed during publication.");
 }
 
-export async function publishImage(image: DecodedImage, options: PublishOptions): Promise<{ path: string }> {
-  validateFilename(options.filename);
+export async function publishImage(image: DecodedImage, options: OutputOptions): Promise<{ path: string }> {
   checkCurrent(options);
   checkDimensions(image.width, image.height);
   if (!Buffer.isBuffer(image.bytes) || !image.bytes.length || image.bytes.length > MAX_IMAGE_BYTES)
     throw new Error("Invalid image byte size.");
-  if (({ png: "image/png", jpg: "image/jpeg", webp: "image/webp" } as const)[image.extension] !== image.mimeType)
+  const validated = decodeImage(image.bytes.toString("base64"));
+  if (
+    validated.mimeType !== image.mimeType ||
+    validated.extension !== image.extension ||
+    validated.width !== image.width ||
+    validated.height !== image.height
+  )
     invalidImage();
-  const suffix = options.filename ? extname(options.filename).toLowerCase() : "";
-  if (suffix && suffix !== `.${image.extension}` && !(image.extension === "jpg" && suffix === ".jpeg"))
-    throw new Error("Filename extension does not match the image media type.");
-  const filename = options.filename
-    ? suffix
-      ? options.filename
-      : `${options.filename}.${image.extension}`
-    : `image-${randomUUID()}.${image.extension}`;
-  const directory = resolveOutputDir(options.cwd, options.outputDir);
-  const destination = join(directory, filename);
-  return withFileMutationQueue(destination, async () => {
+  const path = await atOutput(options, async (destination) => {
+    // Native WRITE can leave truncated/partial output on failure or cancellation.
+    // Never unlink, roll back, or rename over the target or its symlinks.
+    // Unlike native text WRITE, binary writes also pass the signal to Node.
+    await fs.writeFile(destination, image.bytes, { signal: options.signal });
     checkCurrent(options);
-    await checkDirectory(directory, options, true);
-    checkCurrent(options);
-    let handle: fs.FileHandle | undefined;
-    let identity: FileIdentity | undefined;
-    let complete = false;
-    try {
-      handle = await fs.open(
-        destination,
-        constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW,
-        0o600,
-      );
-      // Capture ownership even if cancellation occurred while open() was pending.
-      identity = await handle.stat();
-      checkCurrent(options);
-      await checkDirectory(directory, options, false);
-      checkCurrent(options);
-      await checkDestination(destination, identity, options);
-      checkCurrent(options);
-      await handle.writeFile(image.bytes, { signal: options.signal });
-      checkCurrent(options);
-      await handle.sync();
-      // Once synced, late cancellation must not delete the saved output.
-      complete = true;
-      checkCurrent(options);
-      await checkDirectory(directory, options, false);
-      checkCurrent(options);
-      await checkDestination(destination, identity, options);
-      checkCurrent(options);
-    } finally {
-      if (handle) await releasePublication(handle, destination, identity, complete);
-    }
-    checkCurrent(options);
-    return { path: destination };
   });
+  checkCurrent(options);
+  return { path };
 }
