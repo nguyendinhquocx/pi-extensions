@@ -1,5 +1,41 @@
 # @narumitw/pi-starship
 
+## 0.64.0
+
+### Minor Changes
+
+- 31774d2: Move configuration chat to a Starship-owned `TuiAltScreen` with native `ScrollView` history and a fixed editor/preview dock. Suspend the parent TUI while the chat owns the shared terminal and restore ownership before review and save screens. Await native input drain before entering the chat and before returning to the parent. Recheck ownership after entry drain, join cancelled entry work, and restore keyboard protocols if entry is cancelled or fails.
+  
+  History paging now uses `tui.altScreen.pageUp` and `tui.altScreen.pageDown` instead of `tui.editor.pageUp` and `tui.editor.pageDown`; move custom history paging bindings to the viewport actions. Agent behavior, draft permissions, and settings/profile storage are unchanged.
+  
+  Align tool displays with Pi's built-in message/tool event lifecycle, including streamed arguments, partial results, native edit previews, final diffs, errors, and per-tool clicks. Seed expansion from the parent once and keep subsequent changes local across review. Restrict preview reads to the owned draft and prevent late native preview callbacks from redrawing disposed UI.
+  
+  Document the intentional deviation from Pi's single-renderer guidance and the required lifecycle and physical-terminal checks. This change does not establish a diagnosis or verified fix for the originally reported wheel/key failure.
+
+## 0.63.0
+
+### Minor Changes
+
+- 7e6690c: Restore Pi's native footer from Restore built-in… instead of saving the Starship example. Keep the previous settings bytes in History before removing the active file. Missing settings now leave the native footer active, and presets can still be applied without reloading. Native-mode previews use cached data and do not start collectors until custom settings are applied.
+
+### Patch Changes
+
+- 9af45da: Align configuration-chat hints with Pi core: use lowercase key names and “to” action descriptions, and replace the ambiguous cancellation label with “esc to interrupt” when Escape is available.
+- 584d57b: Keep the configuration chat open on idle Escape instead of opening a review menu. Escape still stops an active response, save shortcuts still open exact-draft review, and Ctrl+C still discards the chat.
+- 06c8567: Allow scrolling configuration chat history with the mouse wheel and configured Editor page-up/page-down keys. Keep the history position stable while new output arrives and resume following output at the bottom.
+- 71a7a29: Support collapsing and expanding configuration-chat tool output with Pi’s app.tools.expand action (Ctrl+O by default), without changing the main conversation. Preserve the local display state across new tool output and theme invalidation.
+
+## 0.62.0
+
+### Minor Changes
+
+- eb69a7c: Simplify the footer menu around agent-assisted configuration, presets, profiles, and recovery. Show configuration health and warnings inline, and give the configuration chat read-only opening snapshots of loaded settings and module state. Keep the existing settings editor command and all review, confirmation, Gist, and History safeguards.
+- 047c6b0: Add a separate fullscreen configuration chat with native Pi message rendering, the bundled skill, and draft-only read, write, and edit tools. Native steering, follow-up, and dequeue actions support messages submitted during a response, with undelivered input restored on cancellation or failure. A direct save shortcut opens reviewed profile creation and shows its active key on the editor border. Hard cancellation restores the active footer without redrawing a replaced session. Short gray editor-border labels show status and controls. Valid edits appear immediately without reload in a bottom-aligned footer preview; the user reviews and saves the draft as a named profile before a separate apply confirmation can change active settings, with History and conflict checks. Declining or failing application retains the saved profile.
+
+### Patch Changes
+
+- 55502a4: Remove the trailing ellipsis from Configure with agent to match other menu-opening labels. Keep the existing conversation, preview, and save behavior unchanged.
+
 ## 0.61.0
 
 ### Minor Changes

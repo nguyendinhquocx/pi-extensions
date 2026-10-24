@@ -10,7 +10,7 @@ The extension parses and renders the footer itself, so it does not need the `sta
 
 ## ✨ Features
 
-- Starts with a readable built-in footer and offers Starship presets plus a Pi-native Minimal preset.
+- Keeps Pi's native footer until settings are saved and offers Starship presets plus a Pi-native Minimal preset.
 - Supports root and module formats, conditional groups, `$all`, styles, palettes, and width-aware `$fill` alignment.
 - Selects provider, model, and thinking styles from exact runtime values with ordered module rules.
 - Provides Pi, model, usage, Git, pull request, package, language, environment, deployment, cloud, and execution modules, with usage totals including persisted cache warming.
@@ -18,6 +18,7 @@ The extension parses and renders the footer itself, so it does not need the `sta
 - Wraps native multiline layouts to terminal width instead of truncating them.
 - Keeps rendering pure while refreshing filesystem, process, and network-derived data through bounded caches.
 - Uses `/starship` for named TOML profiles, live previews, presets, customization, and recovery history.
+- Offers a separate configuration chat with the bundled skill and draft-only file tools; valid edits preview immediately without reload.
 - Shares settings through unlisted GitHub Gists and reviews imported settings before replacement.
 - Bundles the authoritative configuration skill and references for editing `pi-starship.toml` or answering setup questions.
 - Loads a generated split runtime to reduce Pi package startup work.
@@ -47,8 +48,8 @@ Do not enable this with `@narumitw/pi-statusline`: both own Pi's footer, and Pi 
 
 ## 🚀 Quick start
 
-Start Pi with the extension to use the built-in footer without creating a settings file.
-Run `/starship` to inspect the footer, choose a preset, or customize the configuration.
+Start Pi with the extension to keep Pi's native footer without creating a settings file.
+Run `/starship` and choose **Configure with agent** for edits and explanations, or choose a preset.
 
 The bundled configuration skill is manual-only and is not available for automatic model invocation.
 Run `/skill:configure-pi-starship` before asking Pi to explain or edit `pi-starship.toml`:
@@ -60,22 +61,23 @@ Run `/skill:configure-pi-starship` before asking Pi to explain or edit `pi-stars
 
 The skill was renamed from `configuring-pi-starship`; use `/skill:configure-pi-starship` instead of the old invocation.
 The skill loads the relevant reference and validates file edits.
+For a separate preview-only conversation, open `/starship` → **Configure with agent** instead.
 It does not cover general TOML, shell Starship configuration, extension source development, or unrelated footer work.
 
 ## 💬 Commands
 
 | Command | Purpose |
 | --- | --- |
-| `/starship` | Customize the footer, preview presets, inspect modules, or restore built-in configuration; RPC shows help. |
+| `/starship` | Configure with agent, manage profiles, preview presets, or recover settings; RPC shows help. |
 | `/starship settings` | Edit, preview, and confirm TOML; RPC shows the file path. |
 | `/starship status` | Show the configuration source, path, and diagnostics. |
 | `/starship help` | Show command and configuration help. |
 
 All routes support TUI and RPC with the exceptions above and reject unknown or trailing arguments.
 Print and JSON modes produce no command output; the footer runs only in TUI mode.
-Profiles, history, preset selection, module inspection, and Gist sharing and import are menu-only, not extra subcommands.
-Restoring built-in configuration requires an existing settings document to replace; see [Settings](#-settings).
-Effective TOML and settings-document reviews support literal document search in TUI mode: Space opens search, configured search-close exits search, and Back retains its existing meaning. Search does not modify settings.
+Profiles, history, preset selection, configuration chat, and Gist sharing and import are menu-only, not extra subcommands.
+**Restore built-in…** archives the exact settings bytes in History, removes the active settings document, and returns to Pi's native footer. It requires an existing document, including a saved built-in Starship example.
+Configuration shows source, path, health, and warnings above its reload, Gist, and History operations. Configured selection page-up/page-down actions scroll long summaries without changing the selected operation.
 
 ## ⚙️ Settings
 
@@ -107,9 +109,67 @@ See [Configuration and format](./skills/configure-pi-starship/references/configu
 Use `/starship` for interactive configuration, preview, diagnostics, presets, and recovery.
 Manual file edits load at the next `session_start`, including `/reload`.
 
-Existing defaults and the built-in footer remain unchanged.
+The built-in Starship example remains an editing seed; saving it enables a Starship footer, not Pi's native footer.
 Module references cover bounded regex substitutions/context rules, component version formats, Git templates/controls, clock zones/ranges, Python argv alternatives, environment detectors, requirement styling, and private-package visibility.
 The six Jujutsu/system modules require explicit `disabled = false` plus a root reference or `$all`; see [module behavior](./skills/configure-pi-starship/references/modules.md#jujutsu-modules).
+
+## 🧠 Configuration chat
+
+Open `/starship` → **Configure with agent** to adjust the footer in a separate, temporary conversation.
+The agent explicitly loads `configure-pi-starship` and uses the model and thinking level selected when the chat opens, through Pi's current provider authentication.
+The main conversation, tools, and model selection are unchanged; the chat is not persisted and has no automatic compaction or retry workflow.
+Its usage is separate from the main session's usage totals.
+
+The agent has `read`, `write`, and `edit`, but no shell tool.
+Reads are limited to immutable disk and loaded-settings snapshots, normalized active TOML, configuration diagnostics, module inspection, the private draft, and bundled configuration skill/source documents; writes and edits can change only the private draft, limited to 64 KiB.
+Active-state snapshots are fixed when the chat opens, not continuously current; draft previews do not update them. Module inspection uses existing runtime data without starting collectors and reports when the footer is unavailable.
+The disk baseline can differ from the loaded document after external edits. The ordinary main-session skill does not gain live runtime access; use this chat for active-state questions.
+Each valid edit updates the footer preview immediately, without `/reload`; an invalid edit returns diagnostics and retains the last valid preview until repaired.
+Previews use cached runtime data and do not start module commands or network requests.
+These tool limits are not an operating-system sandbox for extension code.
+
+The native editor retains editing, newline, submission, and large-paste behavior.
+While the agent runs, normal submission queues a steering message for the next assistant turn; `app.message.followUp` queues a message after the current task finishes.
+The default follow-up key is Alt+Enter, or Ctrl+Q on Windows and WSL; when idle, it submits normally.
+Tool output starts with the main conversation's current expansion setting (collapsed by default in Pi). Ctrl+O follows `app.tools.expand` and changes only this side thread; its setting is retained when returning from review or profile naming. Completed tool blocks also support native click-to-toggle behavior.
+Tool arguments, progress, results, errors, and edit previews use Pi's built-in read/write/edit renderers and lifecycle. Edit previews can read only the owned draft. Native renderer rules still apply: Ctrl+O does not force an edit diff to collapse if Pi's edit renderer keeps it visible.
+Pending messages appear in gray above the editor, with a count on its upper border; the view shows at most three pending rows.
+Use `app.message.dequeue` (Alt+Up, or Alt+Q on Windows and WSL) to restore queued messages to the editor.
+These message shortcuts use Pi's configured bindings and native precedence, including explicit history actions taking priority.
+The configured cancel action stops an active response and restores undelivered messages to the editor; when idle, it leaves the conversation open without opening a menu.
+Failed or aborted responses also restore undelivered messages without restarting automatically.
+Editor actions win conflicting cancel bindings, and Escape remains a stop fallback unless assigned to an editor action.
+Ctrl+C discards the entire flow, including when cancellation is remapped, and restores the current session's active footer.
+The fullscreen chat uses a Starship-owned `TuiAltScreen` with Pi's native user, assistant, and tool message components, including Markdown, user-message backgrounds, and message spacing.
+A native `ScrollView` holds the history; queued messages, the editor, diagnostics, and footer preview stay in a fixed bottom dock.
+Use the mouse wheel or configured `tui.altScreen.*` viewport actions to scroll history, including `tui.altScreen.pageUp` and `tui.altScreen.pageDown`.
+This intentionally replaces history paging through `tui.editor.pageUp` and `tui.editor.pageDown`; move custom history paging bindings to the corresponding `tui.altScreen.*` actions.
+The editor retains its native editing bindings; native viewport actions take priority when bindings conflict.
+Short gray labels on the editor borders show draft status and controls.
+The full-width preview has no extra separator, with its last line at the terminal bottom, matching the saved footer's position.
+At short heights, error details yield first; if the whole preview cannot fit beside the editor, it is hidden rather than clipped.
+The view shows recent output with read-only tool results and the current local expansion setting.
+Choose **Continue** in the exact-draft save review; cancelling discards the temporary draft but keeps any previously saved profile.
+
+**The agent never writes the active settings file or profiles.** When idle with a valid draft, press **Ctrl+S** to save it as a profile; the gray editor-border hint shows the active save key.
+If Ctrl+S conflicts with a native editing, cancel, or message action, **F2** is used instead. If both are reserved, saving is unavailable until one shortcut is free; no save shortcut is shown.
+Review the exact draft and enter a profile name; invalid or existing names require another name, without overwriting profiles.
+After the profile is saved, a separate confirmation asks whether to apply it to the current footer without reload, retaining the previous active document in History.
+Declining closes the chat, keeps the saved profile, and leaves active settings unchanged; an application failure also retains the profile.
+Applying can start enabled module commands and network requests; review those settings first.
+Cancelling the name prompt returns to the chat without saving. Closing, discarding, session replacement, or shutdown removes the temporary draft, not a previously saved profile.
+Detected changes to disk, loaded settings, or the saved profile block stale application; this is not a cross-process lock.
+Saving a repair of an invalid original document requires an explicit repair warning in the confirmation.
+
+The parent TUI is suspended while the chat owns the shared terminal; only one renderer is active at a time.
+Terminal ownership returns before the existing parent-hosted review, profile-name, and apply-confirmation screens open.
+This intentionally deviates from Pi's guidance not to create a second terminal renderer in an extension: Starship uses a separate fullscreen host for native history scrolling and a fixed dock, with lifecycle tests required for safe ownership transfer.
+It is not a claim of official support or a diagnosis or verified fix of the originally reported wheel/key failure.
+See [Configuration chat runtime](https://github.com/narumiruna/pi-extensions/blob/main/packages/pi-starship/docs/configuration-chat-runtime.md) in the repository for ownership rules, verification evidence, and the maintainer's physical-terminal checklist.
+
+Your chat input, settings and runtime module snapshots read by the agent, local paths, and tool results are sent to the selected model provider.
+Do not include secrets in the draft or conversation.
+This flow requires TUI mode and a model whose provider supports normal tool calls; it does not load parent extensions, project instructions, MCP tools, or the main transcript into the child.
 
 ## 🗃️ Profiles and history
 
@@ -185,6 +245,7 @@ packages/pi-starship/
 │   └── pi-starship.ts                 # Footer lifecycle and cached refresh
 ├── dist/                              # Generated Jiti runtime
 ├── scripts/build-runtime.mjs          # Runtime builder
+├── docs/                              # Configuration chat runtime and terminal handoff
 ├── skills/configure-pi-starship/      # Authoritative configuration skill and references
 └── test/                              # Behavior and lifecycle coverage
 ```

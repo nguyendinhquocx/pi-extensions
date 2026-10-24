@@ -10,8 +10,9 @@ The only configuration source is:
 <getAgentDir()>/pi-starship.toml
 ```
 
-When this file is absent, the extension uses its palette-free default without creating the file or its parent directory.
-The built-in root is the explicit sequence `$brand$model$thinking$directory` `$git_branch$git_status$activity$context$time`; it does not start the opt-in GitHub PR query.
+When this file is absent, the extension uses Pi's native footer without creating the file or its parent directory.
+The built-in Starship example remains an editing seed; saving it enables a Starship footer, not Pi's native footer.
+Its root is the explicit sequence `$brand$model$thinking$directory` `$git_branch$git_status$activity$context$time`; it does not start the opt-in GitHub PR query.
 The first successful settings save creates the file atomically.
 Existing malformed documents are never overwritten.
 
@@ -23,41 +24,60 @@ Open the interactive menu in TUI mode:
 /starship
 ```
 
-Choose **Customize footer** to edit the TOML.
+Choose **Configure with agent** for edits and explanations.
+The compatibility command `/starship settings` retains the raw TOML editor.
 Closing the editor validates the draft and opens a scrollable preview with **Apply changes…**, **Continue editing**, and **Discard draft**.
 Saving requires separate confirmation, then atomically updates the file and active footer.
 Manual TOML edits load at the next `session_start`, including `/reload` and session replacement.
 Cancellation, disposal, invalid drafts, write failures, and runtime application failures preserve the previous file and footer.
 
-The bundled `configure-pi-starship` skill uses a separate external-edit workflow.
+Choose **Configure with agent** for a separate, temporary configuration conversation with the bundled skill and `read`, `write`, and `edit` tools.
+The agent can write only its private draft, not the active settings file; validated mutations update the preview without `/reload`, and invalid mutations retain the last valid preview.
+Reads cover immutable disk and loaded-document snapshots, normalized active public TOML, source/path/health/diagnostics, module inspection, the private draft, and bundled skill/source documents; the draft is limited to 64 KiB.
+These read-only documents are fixed at chat opening and do not change with draft previews or later runtime updates.
+The disk baseline can differ from the loaded document after external edits; normalized TOML excludes comments, unknown fields, parser ASTs, and private selectors while preserving effective replacement order.
+Module inspection includes states, current previews, reachability, variables, style-rule metadata, display rules, and reasons from existing runtime data without starting collectors.
+When runtime inspection or loaded text is unavailable, report that limit instead of guessing.
+The ordinary main-session skill has no live runtime access; direct active-state questions to this hosted chat.
+The preview uses cached data without starting module commands or network requests.
+During a response, normal submission queues steering for the next assistant turn; the configured app.message.followUp action queues work after natural completion and submits normally when idle.
+The app.message.dequeue action restores pending messages to the editor; these message actions use Pi's native precedence, including explicit history bindings.
+The configured cancel action stops a response and restores undelivered messages; when idle, it leaves the conversation open without opening a menu. Editor actions win cancel-key collisions, with Escape as a stop fallback unless assigned to an editor action.
+Failed or aborted responses restore undelivered input without automatic restart.
+Ctrl+C discards the flow, clears both queues, and restores the active footer unless its session was replaced.
+When idle with a valid draft, Ctrl+S opens the Save draft as profile flow directly; its gray editor-border hint switches to F2 if Ctrl+S is reserved, or is omitted when both keys conflict.
+Saving requires exact-draft review and a profile name; invalid or existing names are rejected without overwriting a profile.
+After saving, the host asks whether to apply that profile through managed History and atomic replacement; declining keeps the profile without changing active settings.
+Cancelling naming returns to the chat without saving; closing or session replacement removes the temporary draft, not any saved profile.
+Application checks the initial disk snapshot, loaded revision, and saved profile identity, blocks detected concurrent changes, and warns before explicitly repairing an invalid original.
+Chat content and settings read by the agent go to the selected model provider; the child uses the opening model/thinking selection with Pi authentication, has no shell tool, and does not persist its transcript or change the main conversation.
+The fullscreen view uses Pi's native user/assistant/tool message components. Short gray status and control labels sit on the editor borders; the live preview ends at the terminal bottom, in the saved footer's position.
+It shows recent output with expanded, read-only tool results; saving opens an exact-draft review.
+Choose **Continue** to leave the save review; cancelling the review discards the flow without publishing.
+
+Outside this hosted chat, the bundled `configure-pi-starship` skill uses a separate external-edit workflow.
 Before its apply script replaces an existing document, it preserves the inspected document under `<getAgentDir()>/pi-starship/pi-starship-YYYYMMDDHHmm.toml`; these backups use local time and remain after a successful apply.
 Backups are written and flushed under a private temporary name, atomically renamed to their final private file, and followed by flushes of the backup directory and its parent directory before publication continues; a recoverable failure removes the owned temporary file and preserves the active document.
 If configuration publication fails after that backup is durable, the failure reports its retained path; cleanup failures report both their operation and cause without hiding the primary failure.
 A missing document creates no backup, and a backup with the same minute name blocks publication when observed before rename; this check does not provide cross-process locking.
 The interactive `/starship` flows do not invoke this script. They preserve replaced documents in the separate recovery history described below; existing skill backups remain available read-only in History.
 
-The main menu also exposes **Profiles**, **Presets**, **Explain footer**, **Modules**, **Configuration**, **Help**, and **Restore built-in…**.
-Explain footer uses the current immutable runtime snapshot to list each currently showing non-empty module once with its rendered value and description; it starts no new collection work.
-Modules opens a bounded searchable inspector for every registered module.
-Its textual states distinguish **Showing**, **Empty**, **Disabled**, **Not in format**, and **Unavailable** only when the current footer cannot provide an inspection snapshot.
-Module detail shows the current preview when available, description, root reference and reachability, format variables, style fields, supported style-rule selectors, configured rule count, display rules, and the known reason for absent output.
-Both views are read-only and do not create or update the settings document.
-
-Configuration contains **Overview**, **Effective configuration**, **Settings document**, **Reload from disk**, **History**, **Share settings as Gist…**, and **Import settings from Gist…** on one nested level.
+The main menu orders **Configure with agent**, **Presets**, **Profiles**, **Configuration**, **Restore built-in…**, and **Help**.
+Configuration shows state, source, settings path, health, and all current warnings above **Reload from disk…**, **Share settings as Gist…**, **Import settings from Gist…**, and **History**.
+Configured selection page-up/page-down actions scroll the summary without moving the selected action; selection and cancellation bindings take priority when bindings conflict.
+The focused action remains visible at small terminal heights; enlarge an extremely short terminal to read the summary.
 Gist actions use `gh` authentication for github.com and transfer only `pi-starship.toml`, limited to 64 KiB; sharing includes comments and unknown fields and requires review and confirmation before creating an unlisted Gist.
 Unlisted Gists are readable by anyone with the link; remove sensitive data before sharing, and check GitHub before retrying a cancelled or failed upload because a remote Gist may already exist.
 Import accepts a Gist ID or URL, validates the complete document, requires raw TOML review, footer preview, and full-replacement confirmation, and preserves the previous document before applying; review untrusted settings for command execution and network access before accepting.
-Overview combines state, source, path, health, and bounded diagnostics.
-Effective configuration shows deterministic catalog-ordered public TOML from the normalized state currently in use; comments, unknown fields, parser ASTs, and private runtime selectors are excluded.
-Ordered legacy substitution maps and structured arrays keep their effective replacement order in this projection.
-Settings document shows the exact loaded UTF-8 text through a terminal-safe, cell-aware read-only review without changing the raw payload.
-A missing file is **Built-in defaults**, an exact bundled document uses its preset name, and read or parse errors are **Built-in fallback**.
+A missing file uses Pi's native footer, an exact bundled document uses its preset name, and read or parse errors are **Built-in fallback**.
 Reload from disk reads only after the explicit action, validates and previews the current external state from the existing runtime snapshot, and asks for separate confirmation before changing the active session.
-A deleted document is a valid previewable transition to built-in defaults and creates no file.
+A deleted document is a valid previewable transition to Pi's native footer and creates no file.
 An unchanged document is a no-op, while read or parse failure, cancellation, disposal, external changes after preview, session replacement, shutdown, or runtime apply failure preserves the prior effective footer and every file byte.
 Reload re-reads immediately after confirmation and rejects a different external snapshot; it does not claim cross-process locking or continuing synchronization with later edits.
-Restore is disabled when no settings document exists or the exact built-in document is already saved.
-For a custom or invalid document, Restore previews the result and warns that the complete document, including custom settings, unknown fields, and comments, will be replaced before asking for confirmation. The previous bytes are preserved first, including invalid content on an explicit recovery path.
+**Restore built-in…** remains in the main menu and is disabled only when no settings document exists.
+A saved built-in Starship example is not Pi's native footer and can be restored.
+Restore previews Pi's native footer and asks for confirmation before archiving the exact document bytes in History and removing the active settings document, including custom settings, unknown fields, and comments.
+Invalid content is preserved through the explicit recovery path.
 
 ### Named profiles
 
@@ -94,7 +114,7 @@ The native Pi editor has no public abort method; session cancellation removes th
 ### Recovery history
 
 Managed active-file replacements preserve the previous document in `<getAgentDir()>/pi-starship/history/<timestamp>-<random-id>.toml` before writing the replacement.
-Editor, preset, profile, restore, and Gist application use this policy.
+Editor, configuration-chat save, preset, profile, restore, and Gist application use this policy.
 A missing file or a byte-identical no-op creates no recovery copy.
 Backup failure blocks replacement; runtime-application failure attempts guarded disk/runtime restoration and retains the backup.
 A recovery copy can therefore come from an unsuccessful application attempt; it is not proof that a candidate was applied.
@@ -387,7 +407,7 @@ See [Git status behavior](modules.md#git-display-controls-and-status-templates) 
 
 | Failure | Result |
 | --- | --- |
-| Missing file | Use built-in defaults without creating a file or directory. |
+| Missing file | Use Pi's native footer without creating a file or directory. |
 | Read failure | Use built-in defaults and report an error diagnostic. |
 | TOML syntax failure | Preserve the raw document, use built-in defaults, and report an error diagnostic. |
 | Unknown root, module, option, or display field | Warn, ignore that field, and keep processing the document. |
@@ -613,6 +633,6 @@ Choose one migration:
 
 1. Replace old aliases with direct styles such as `cyan bold`, `bold bright-yellow`, or `fg:#e3e5e5 bg:#769ff0`.
 2. Define every needed alias under your own `[palettes.<name>]` table and explicitly select it with `palette = "<name>"`.
-3. Use **Restore built-in…** from `/starship` to review and replace the complete document with the new plain nine-module configuration.
+3. Use **Restore built-in…** from `/starship` to archive the complete document in History, remove the active settings file, and return to Pi's native footer.
 
 There is no hidden compatibility overlay or automatic migration.

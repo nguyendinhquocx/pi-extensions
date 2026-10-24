@@ -9,6 +9,20 @@ disable-model-invocation: true
 
 Answer pi-starship configuration questions or make the requested `pi-starship.toml` change.
 
+## Hosted preview-only chat
+
+When the host explicitly supplies an owned draft path and identifies this as the hosted preview-only workflow, use this section instead of the standalone path-resolution and publication steps below.
+Read and edit only that draft for configuration changes; never write or edit the active settings file.
+The host provides `read`, `write`, and `edit`, validates each completed mutation, and updates the footer preview without `/reload`.
+Read the relevant bundled references using their paths relative to this skill directory.
+Use `read` before `edit`, preserve comments and unknown fields, and repair errors reported by the host.
+A rejected preview can leave invalid text in the draft; fix that text rather than assuming the write was rolled back.
+Do not run or request the resolver, validator, backup, or apply scripts in this workflow.
+Do not request shell access, publish settings, or tell the user that settings were saved.
+Only the user can choose the host's reviewed Save draft as profile action and enter its name.
+The host then asks separately whether to apply the saved profile; declining keeps the profile without changing active settings.
+Closing or discarding before that user save does not save the preview.
+
 ## Choose the task path
 
 For a configuration question, load only the smallest relevant reference and answer with the exact supported names, values, defaults, and behavior.
@@ -67,7 +81,9 @@ Do not install another Pi copy, modify `node_modules`, hard-code a Bun global di
 
 Read the existing document before editing it.
 
-Treat a missing document as built-in defaults, and create it only when the requested change requires a persisted configuration.
+Treat a missing document as Pi's native footer, and create it only when the requested change requires a persisted Starship configuration.
+Use the built-in Starship example as an editing seed, not as a document equivalent to Pi's native footer.
+The menu action **Restore built-in…** archives the exact active bytes in History and removes the settings document; a saved built-in Starship example remains eligible for Restore.
 
 Do not redirect this workflow to `starship.toml`, `pi-statusline.json`, project-local overrides, or extension source files.
 
