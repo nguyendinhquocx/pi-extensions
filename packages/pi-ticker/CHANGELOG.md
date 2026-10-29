@@ -1,5 +1,20 @@
 # @narumitw/pi-ticker
 
+## 0.1.5
+
+### Patch Changes
+
+- Updated dependencies [a21d39b]
+- Updated dependencies [f68aa54]
+- Updated dependencies [b062d21]
+  - @narumitw/pi-tui-kit@0.68.0
+
+## 0.1.4
+
+### Patch Changes
+
+- 209ff7a: Use Pi TUI Kit's existing `EditorStatusWidget` for passive editor widgets. Share the muted separator and terminal-width bounds while retaining extension-owned content, refresh scheduling, cleanup, and RPC behavior. Sanitize untrusted display values before styling and wrapping without changing raw payloads.
+
 ## 0.1.3
 
 ### Patch Changes

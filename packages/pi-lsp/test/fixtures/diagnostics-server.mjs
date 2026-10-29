@@ -86,7 +86,14 @@ function handle(message) {
         jsonrpc: "2.0",
         id: message.id,
         result: {
-          capabilities: { diagnosticProvider: {}, codeActionProvider: { resolveProvider: true } },
+          capabilities: {
+            diagnosticProvider: {},
+            codeActionProvider:
+              scenario === "lifecycle-negotiated" &&
+              !message.params.capabilities.textDocument.codeAction.codeActionLiteralSupport
+                ? true
+                : { resolveProvider: true },
+          },
         },
       });
       return;
@@ -146,6 +153,17 @@ function handle(message) {
       });
       return;
     }
+    if (
+      scenario === "require-argv" &&
+      JSON.stringify(process.argv.slice(4)) !== process.env.PI_LSP_TEST_EXPECTED_ARGS
+    ) {
+      send({
+        jsonrpc: "2.0",
+        id: message.id,
+        error: { code: -32002, message: "server arguments were not forwarded verbatim" },
+      });
+      return;
+    }
     send({
       jsonrpc: "2.0",
       id: message.id,
@@ -162,11 +180,26 @@ function handle(message) {
                   workspaceDiagnostics: false,
                 },
               }
-            : scenario === "resolve-enabled"
-              ? { codeActionProvider: { resolveProvider: true } }
-              : scenario === "resolve-disabled"
-                ? { codeActionProvider: true }
-                : {},
+            : scenario.startsWith("resolve-")
+              ? {
+                  codeActionProvider: {
+                    "resolve-enabled": { resolveProvider: true },
+                    "resolve-error": { resolveProvider: true },
+                    "resolve-null-result": { resolveProvider: true },
+                    "resolve-literal":
+                      message.params.capabilities.textDocument?.codeAction?.codeActionLiteralSupport?.codeActionKind?.valueSet?.includes(
+                        "source.fixAll",
+                      )
+                        ? { resolveProvider: true }
+                        : true,
+                    "resolve-disabled": true,
+                    "resolve-false": false,
+                    "resolve-null": null,
+                    "resolve-options-empty": {},
+                    "resolve-options-disabled": { resolveProvider: false },
+                  }[scenario],
+                }
+              : {},
       },
     });
     return;
@@ -234,8 +267,43 @@ function handle(message) {
     return;
   }
 
+  if (message.method === "textDocument/codeAction" && scenario === "resolve-literal") {
+    send({
+      jsonrpc: "2.0",
+      id: message.id,
+      result: [
+        {
+          title: "deferred fixture fix",
+          kind: "source.fixAll.fixture",
+          data: { uri: message.params.textDocument.uri },
+        },
+      ],
+    });
+    return;
+  }
+
   if (message.method === "codeAction/resolve") {
-    if (scenario === "resolve-enabled") {
+    if (scenario === "resolve-null-result") {
+      send({ jsonrpc: "2.0", id: message.id, result: null });
+    } else if (scenario === "resolve-literal") {
+      send({
+        jsonrpc: "2.0",
+        id: message.id,
+        result: {
+          ...message.params,
+          edit: {
+            changes: {
+              [message.params.data.uri]: [
+                {
+                  range: { start: { line: 0, character: 0 }, end: { line: 0, character: 0 } },
+                  newText: "// fixed\n",
+                },
+              ],
+            },
+          },
+        },
+      });
+    } else if (scenario === "resolve-enabled") {
       send({
         jsonrpc: "2.0",
         id: message.id,
