@@ -1,6 +1,6 @@
 {
   "name": "@narumitw/pi-stamp",
-  "version": "0.53.0",
+  "version": "0.54.0",
   "description": "Pi extension for transcript timestamps, assistant metadata, and tool timing.",
   "type": "module",
   "license": "MIT",
@@ -19,6 +19,7 @@
   "files": [
     "src",
     "dist",
+    "docs",
     "README.md",
     "LICENSE"
   ],
@@ -51,6 +52,6 @@
     "directory": "packages/pi-stamp"
   },
   "dependencies": {
-    "@narumitw/pi-tui-kit": "^0.59.0"
+    "@narumitw/pi-tui-kit": "^0.68.0"
   }
 }
