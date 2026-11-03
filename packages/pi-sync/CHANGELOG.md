@@ -1,5 +1,19 @@
 # @narumitw/pi-sync
 
+## 0.57.8
+
+### Patch Changes
+
+- 9d3e0d7: Unreference passive refresh, debounce, expiry, and background startup timers so they do not keep the host process alive when other work has stopped. Keep normal cancellation and resource cleanup unchanged.
+- Updated dependencies [9d3e0d7]
+  - @narumitw/pi-tui-kit@0.68.1
+
+## 0.57.7
+
+### Patch Changes
+
+- 3bf3525: Keep startup timing reports in the TUI transcript without adding model context, and report the initial Continuous sync cycle when debug is enabled. Preserve RPC notifications and suppress repeated or stale cycle reports.
+
 ## 0.57.6
 
 ### Patch Changes
