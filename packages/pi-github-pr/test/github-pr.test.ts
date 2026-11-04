@@ -15,7 +15,7 @@ import githubPr, {
   runGhPrView,
 } from "../src/github-pr.js";
 
-type ExecOptions = { cwd?: string; signal?: AbortSignal; timeout?: number };
+type ExecOptions = { cwd?: string; signal?: AbortSignal; timeout?: number; maxBuffer?: number };
 type ExecCall = { command: string; args: string[]; options?: ExecOptions };
 type ExecFunction = (command: string, args: string[], options?: ExecOptions) => Promise<ExecResult>;
 
@@ -35,6 +35,7 @@ const okResult = (stdout: unknown): ExecResult => ({
   stderr: "",
   code: 0,
   killed: false,
+  truncated: false,
 });
 
 const textResult = (stdout: string, code = 0, stderr = ""): ExecResult => ({
@@ -42,6 +43,7 @@ const textResult = (stdout: string, code = 0, stderr = ""): ExecResult => ({
   stderr,
   code,
   killed: false,
+  truncated: false,
 });
 
 const sampleCounts = {
@@ -265,15 +267,15 @@ test("runGhPrView calls gh pr view for the current branch and reports actionable
       ? {
           command: process.env.ComSpec ?? "cmd.exe",
           args: ["/d", "/s", "/c", `set "GH_HOST=" && gh ${prArgs.join(" ")}`],
-          options: { cwd: "/repo", signal: undefined, timeout: 10_000 },
+          options: { cwd: "/repo", signal: undefined, timeout: 10_000, maxBuffer: 1024 * 1024 },
         }
       : {
           command: "env",
           args: ["-u", "GH_HOST", "gh", ...prArgs],
-          options: { cwd: "/repo", signal: undefined, timeout: 10_000 },
+          options: { cwd: "/repo", signal: undefined, timeout: 10_000, maxBuffer: 1024 * 1024 },
         },
   );
-  assert.deepEqual(calls[1]?.options, { cwd: "/repo", signal: undefined, timeout: 10_000 });
+  assert.deepEqual(calls[1]?.options, { cwd: "/repo", signal: undefined, timeout: 10_000, maxBuffer: 64 * 1024 });
   assert.deepEqual(calls[1]?.args.slice(0, 6), ["api", "graphql", "--hostname", "github.com", "-f", calls[1]?.args[5]]);
   assert.match(calls[1]?.args[5] ?? "", /^query=\s*query PullRequestCounts/);
   assert.deepEqual(calls[1]?.args.slice(6), ["-F", "owner=narumiruna", "-F", "name=pi-extensions", "-F", "number=123"]);
@@ -314,7 +316,7 @@ test("runGhPrView calls gh pr view for the current branch and reports actionable
   await assert.rejects(
     runGhPrView(
       {
-        exec: async () => ({ stdout: "", stderr: "not logged in", code: 1, killed: false }),
+        exec: async () => ({ stdout: "", stderr: "not logged in", code: 1, killed: false, truncated: false }),
       },
       "/repo",
     ),
@@ -328,6 +330,7 @@ test("runGhPrView calls gh pr view for the current branch and reports actionable
           stderr: "not a GitHub repository",
           code: 1,
           killed: false,
+          truncated: false,
         }),
       },
       "/repo",
@@ -342,6 +345,7 @@ test("runGhPrView calls gh pr view for the current branch and reports actionable
           stderr: "no pull requests found",
           code: 1,
           killed: false,
+          truncated: false,
         }),
       },
       "/repo",
@@ -356,6 +360,7 @@ test("runGhPrView calls gh pr view for the current branch and reports actionable
           stderr: "HTTP 404: Not Found",
           code: 1,
           killed: false,
+          truncated: false,
         }),
       },
       "/repo",
@@ -584,6 +589,8 @@ test("lifecycle refresh sets and clears only statusline output", async () => {
   await agentEnd({}, context.ctx);
   assert.equal(calls.length, 5);
   assert.deepEqual(calls[0]?.args, ["rev-parse", "--git-path", "HEAD"]);
+  assert.equal(calls[0]?.options?.maxBuffer, 16 * 1024);
+  assert.equal(calls[0]?.options?.timeout, 5_000);
   assert.ok(calls[0]?.options?.signal);
   assert.notEqual(calls[0]?.options?.signal, signal);
   assert.equal(calls[0]?.options?.signal?.aborted, false);
@@ -608,7 +615,7 @@ test("an aborted agent-end preserves the current status and periodic refresh sch
     if (args[0] === "pr") {
       prViews += 1;
       if (options?.signal?.aborted) {
-        return { stdout: "", stderr: "", code: 1, killed: true };
+        return { stdout: "", stderr: "", code: 1, killed: true, truncated: false };
       }
       return okResult(
         prViews === 1
@@ -689,12 +696,12 @@ test("a refresh aborted during agent-end preserves the current status", async ()
     assert.equal(prViews, 2);
 
     controller.abort();
-    abortedPrView.resolve({ stdout: "", stderr: "", code: 1, killed: true });
+    abortedPrView.resolve({ stdout: "", stderr: "", code: 1, killed: true, truncated: false });
     await agentEndPromise;
 
     assert.equal(context.statuses.get("github-pr"), visibleStatus);
   } finally {
-    abortedPrView.resolve({ stdout: "", stderr: "", code: 1, killed: true });
+    abortedPrView.resolve({ stdout: "", stderr: "", code: 1, killed: true, truncated: false });
     await sessionShutdown({}, context.ctx);
   }
 });
@@ -1256,18 +1263,21 @@ test("ambient failures stay non-intrusive", async () => {
     stderr: "env: ‘gh’: No such file or directory",
     code: 127,
     killed: false,
+    truncated: false,
   }));
   const missingGhViaCmd = await lifecycleStatusFor(async () => ({
     stdout: "",
     stderr: "'gh' is not recognized as an internal or external command",
     code: 1,
     killed: false,
+    truncated: false,
   }));
   const unauthenticated = await lifecycleStatusFor(async () => ({
     stdout: "",
     stderr: "not logged in",
     code: 1,
     killed: false,
+    truncated: false,
   }));
   const execFailure = await lifecycleStatusFor(async () => {
     throw new Error("operation aborted");
@@ -1280,12 +1290,14 @@ test("ambient failures stay non-intrusive", async () => {
     stderr: "no pull requests found",
     code: 1,
     killed: false,
+    truncated: false,
   }));
   const notFound = await lifecycleStatusFor(async () => ({
     stdout: "",
     stderr: "HTTP 404: Not Found",
     code: 1,
     killed: false,
+    truncated: false,
   }));
 
   assert.equal(missingGh.statuses.get("github-pr"), "PR gh missing");

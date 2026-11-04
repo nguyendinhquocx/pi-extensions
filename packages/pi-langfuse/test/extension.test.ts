@@ -13,18 +13,19 @@ function deferred<T>() {
 }
 
 test("resolveGitMetadata captures branch and commit with bounded non-shell commands", async () => {
-  const calls: Array<{ command: string; args: string[]; cwd?: string; timeout?: number }> = [];
+  const calls: Array<{ command: string; args: string[]; cwd?: string; timeout?: number; maxBuffer?: number }> = [];
   const metadata = await resolveGitMetadata(async (command, args, options) => {
-    calls.push({ command, args, cwd: options?.cwd, timeout: options?.timeout });
+    calls.push({ command, args, cwd: options?.cwd, timeout: options?.timeout, maxBuffer: options?.maxBuffer });
     if (args[0] === "symbolic-ref") {
       return {
         stdout: "feature/langfuse-context\n",
         stderr: "",
         code: 0,
         killed: false,
+        truncated: false,
       };
     }
-    return { stdout: "0123456789ab\n", stderr: "", code: 0, killed: false };
+    return { stdout: "0123456789ab\n", stderr: "", code: 0, killed: false, truncated: false };
   }, "/workspace");
 
   assert.deepEqual(metadata, {
@@ -38,12 +39,14 @@ test("resolveGitMetadata captures branch and commit with bounded non-shell comma
       args: ["symbolic-ref", "--quiet", "--short", "HEAD"],
       cwd: "/workspace",
       timeout: 1_000,
+      maxBuffer: 4 * 1024,
     },
     {
       command: "git",
       args: ["rev-parse", "--verify", "--short=12", "HEAD"],
       cwd: "/workspace",
       timeout: 1_000,
+      maxBuffer: 4 * 1024,
     },
   ]);
 });
@@ -51,14 +54,14 @@ test("resolveGitMetadata captures branch and commit with bounded non-shell comma
 test("resolveGitMetadata handles detached HEADs and omits unavailable repositories", async () => {
   const detached = await resolveGitMetadata(async (_command, args) => {
     if (args[0] === "symbolic-ref") {
-      return { stdout: "", stderr: "", code: 1, killed: false };
+      return { stdout: "", stderr: "", code: 1, killed: false, truncated: false };
     }
-    return { stdout: "abcdef012345\n", stderr: "", code: 0, killed: false };
+    return { stdout: "abcdef012345\n", stderr: "", code: 0, killed: false, truncated: false };
   }, "/detached");
   assert.deepEqual(detached, { commit: "abcdef012345", detached: true });
 
   const unavailable = await resolveGitMetadata(async () => {
-    return { stdout: "", stderr: "not a repository", code: 128, killed: false };
+    return { stdout: "", stderr: "not a repository", code: 128, killed: false, truncated: false };
   }, "/outside");
   assert.equal(unavailable, undefined);
 
