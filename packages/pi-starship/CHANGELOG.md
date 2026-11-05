@@ -1,5 +1,25 @@
 # @narumitw/pi-starship
 
+## 0.66.0
+
+### Minor Changes
+
+- 50292b9: Add an opt-in `tokens_per_second` footer module that shows the latest completed assistant response's average output rate on the active branch using Pi's recorded token usage and response duration. Hide unavailable or unsuccessful measurements without changing existing layouts or usage totals.
+
+## 0.65.2
+
+### Patch Changes
+
+- bed3e2b: Retain provider-total provenance across all session usage entries without changing numeric costs. Show the source in `/statusline status` and the optional Starship cost `$source` variable; mixed, legacy, empty, and incomplete totals remain unconfirmed.
+- 54f2700: Preserve fullscreen viewport capture through custom list wrappers so default and configured paging keys reach the focused list. Keep native transcript search, unrelated overlays, free-text modes, paste, and hard cancellation unchanged. Filter Kit key hints according to each screen's capture policy.
+  
+  Update Recall and File Context to the current Kit dependency range. The selected consumer releases require the fixed Kit patch through Changesets dependency-floor updates.
+- e484010: Include the existing package-root CHANGELOG.md in extension tarballs so Pi can show native update notices. Keep Changesets version headings and Pi's first-observation and collapseChangelog behavior unchanged.
+- 0339567: Bound native Git command output and reject truncated Git, workspace, and pull request metadata before parsing or fallback.
+- Updated dependencies [54f2700]
+- Updated dependencies [6c76ef1]
+  - @narumitw/pi-tui-kit@0.69.0
+
 ## 0.65.1
 
 ### Patch Changes
