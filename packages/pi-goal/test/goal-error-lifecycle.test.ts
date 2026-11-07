@@ -20,6 +20,11 @@ import {
 
 type StartedGoalFixture = Awaited<ReturnType<typeof startGoalForTest>>;
 
+const PREMATURE_CONNECTION_CLOSE_ERROR =
+  '400: {"message":"data:{\\"error\\":{\\"code\\":\\"400\\",\\"message\\":\\"Request failed\\",' +
+  '\\"param\\":\\"Connection prematurely closed BEFORE response\\",\\"type\\":\\"\\"},' +
+  '\\"request_id\\":\\"0ddb…\\"}}","type":"invalid_request_error"}';
+
 async function exhaustProviderRetries(fixture: StartedGoalFixture, errorMessage = "HTTP 429: retry shortly") {
   await fixture.mock.events.get("agent_end")?.[0]?.(
     {
@@ -76,26 +81,33 @@ test("usage-limit classification recognizes quota failures without swallowing un
     }),
     false,
   );
-  for (const errorMessage of [
-    "rate_limit_exceeded",
-    "HTTP 429 Too Many Requests",
-    "Internal server error 503",
-    "Anthropic stream ended before message_stop",
-    "Upstream stream ended before terminal chunk",
-    "stream closed before the response completed",
-    "Premature close",
-    "Incomplete response received from application",
-    "Unexpected end of response body",
-  ]) {
-    assert.equal(
-      isRetryableGoalInterruption({ role: "assistant", stopReason: "error", errorMessage }),
-      true,
-      errorMessage,
-    );
-  }
 });
 
-test("agent_end maps abort, quota failure, and terminal error to distinct stopped states", async () => {
+test("native-ineligible premature-close wording waits until a same-ID follow-up", async () => {
+  const fixture = await startGoalForTest();
+  const originalId = requireLastGoal(fixture.mock).id;
+  const assistant = {
+    role: "assistant" as const,
+    stopReason: "error" as const,
+    errorMessage: PREMATURE_CONNECTION_CLOSE_ERROR,
+  };
+  assert.equal(isRetryableGoalInterruption(assistant), false);
+  await fixture.mock.events.get("agent_end")?.[0]?.({ messages: [assistant] }, fixture.ctx);
+  assert.equal(lastGoalStatus(fixture.mock), "active");
+  assert.equal(requireLastGoal(fixture.mock).waiting, undefined);
+  await fixture.mock.events.get("agent_settled")?.[0]?.({ aborted: false }, fixture.ctx);
+  assert.equal(lastGoalStatus(fixture.mock), "active");
+  assert.equal(requireLastGoal(fixture.mock).id, originalId);
+  assert.ok(requireLastGoal(fixture.mock).waiting);
+  assert.equal(requireLastGoal(fixture.mock).waiting?.resumeAt, undefined);
+  assert.equal(fixture.mock.sentUserMessages.length, 1);
+  startInteractiveFollowUp(fixture);
+  assert.equal(requireLastGoal(fixture.mock).id, originalId);
+  assert.equal(lastGoalStatus(fixture.mock), "active");
+  assert.equal(requireLastGoal(fixture.mock).waiting, undefined);
+});
+
+test("agent_end maps abort and recognized quota failure to distinct stopped states", async () => {
   for (const [assistant, status, notification] of [
     [{ role: "assistant", stopReason: "aborted" }, "paused", /paused after interruption/i],
     [
@@ -106,15 +118,6 @@ test("agent_end maps abort, quota failure, and terminal error to distinct stoppe
       },
       "usage_limited",
       /usage limit/i,
-    ],
-    [
-      {
-        role: "assistant",
-        stopReason: "error",
-        errorMessage: "Permission denied by remote service",
-      },
-      "blocked",
-      /blocked after agent error/i,
     ],
   ] as const) {
     let aborts = 0;
@@ -145,7 +148,7 @@ test("agent_end maps abort, quota failure, and terminal error to distinct stoppe
   }
 });
 
-test("provider error notifications strip terminal controls without changing classification", async () => {
+test("unknown provider error wait notifications strip terminal controls", async () => {
   const stopped = await startGoalForTest();
   await stopped.mock.events.get("agent_end")?.[0]?.(
     {
@@ -160,8 +163,10 @@ test("provider error notifications strip terminal controls without changing clas
     stopped.ctx,
   );
 
+  await stopped.mock.events.get("agent_settled")?.[0]?.({ aborted: false }, stopped.ctx);
   const notification = stopped.notifications.at(-1)?.message ?? "";
-  assert.equal(lastGoalStatus(stopped.mock), "blocked");
+  assert.equal(lastGoalStatus(stopped.mock), "active");
+  assert.ok(requireLastGoal(stopped.mock).waiting);
   assertNoTerminalControls(notification);
   assert.doesNotMatch(notification, /clipboard|\[2J/u);
   assert.match(notification, /Permission\s+denied remotely\s+now/u);
@@ -187,10 +192,10 @@ test("provider retry wait bounds and escapes untrusted error text", async () => 
   assert.match(resumePrompt, /&lt;retry_instructions&gt;/u);
 });
 
-test("terminal agent errors take precedence over missing goal tools", async () => {
+test("usage limits stop while unknown errors pause when goal tools are missing", async () => {
   for (const [errorMessage, expectedStatus] of [
     ["You have hit your ChatGPT usage limit.", "usage_limited"],
-    ["Permission denied by remote service", "blocked"],
+    ["Permission denied by remote service", "paused"],
   ] as const) {
     const stopped = await startGoalForTest();
     stopped.mock.rawPi.setActiveTools(["read", "bash"]);
@@ -205,7 +210,7 @@ test("terminal agent errors take precedence over missing goal tools", async () =
   }
 });
 
-test("agent_end keeps retryable interruptions recoverable and stops on non-retryable errors", async () => {
+test("agent_end keeps native-retryable interruptions recoverable and stops on recognized usage limits", async () => {
   assert.equal(
     isRetryableGoalInterruption({
       role: "assistant",
@@ -335,6 +340,99 @@ test("agent_end keeps retryable interruptions recoverable and stops on non-retry
     ),
     { block: true, reason: STALE_GOAL_TOOL_REASON },
   );
+});
+
+test("a native-classified connection interruption keeps the same goal active through waiting and follow-up", async () => {
+  let aborts = 0;
+  const branch: unknown[] = [];
+  const messages: unknown[] = [];
+  const fixture = await startGoalForTest({
+    abort: () => aborts++,
+    sessionManager: {
+      getBranch: () => branch,
+      getEntries: () => branch,
+      buildSessionContext: () => ({ messages }),
+    },
+  });
+  try {
+    const originalId = requireLastGoal(fixture.mock).id;
+    const kickoff = fixture.mock.sentUserMessages[0]?.text ?? "";
+    const boundary = (await fixture.mock.events.get("before_agent_start")?.[0]?.(
+      { prompt: kickoff, systemPrompt: "base" },
+      fixture.ctx,
+    )) as { message?: Record<string, unknown> } | undefined;
+    assert.ok(boundary?.message, "expected the active Goal contract before the provider request");
+    branch.push({ type: "custom_message", ...boundary.message });
+    messages.push({ role: "custom", ...boundary.message });
+    fixture.mock.events.get("agent_start")?.[0]?.({}, fixture.ctx);
+
+    await fixture.mock.events.get("agent_end")?.[0]?.(
+      {
+        messages: [
+          {
+            role: "assistant",
+            stopReason: "error",
+            errorMessage: "stream disconnected before completion: stream closed before response.completed",
+          },
+        ],
+      },
+      fixture.ctx,
+    );
+    const afterEnd = requireLastGoal(fixture.mock);
+    assert.equal(afterEnd.status, "active");
+    assert.equal(afterEnd.id, originalId);
+    assert.equal(afterEnd.waiting, undefined, "waiting must start only at settlement");
+
+    await fixture.mock.events.get("agent_settled")?.[0]?.({}, fixture.ctx);
+    const waiting = requireLastGoal(fixture.mock);
+    assert.equal(waiting.status, "active");
+    assert.equal(waiting.id, originalId);
+    assert.match(waiting.waiting?.reason ?? "", /provider retries exhausted/i);
+    assert.equal(waiting.waiting?.resumeAt, undefined);
+    assert.equal(waiting.activeStartedAt, undefined);
+    assert.equal(aborts, 0);
+    assert.equal(fixture.mock.sentUserMessages.length, 1);
+    assert.equal(
+      fixture.mock.events.get("tool_call")?.[0]?.(
+        { toolName: "bash", toolCallId: "premature-close-recovery", input: {} },
+        fixture.ctx,
+      ),
+      undefined,
+    );
+    assert.equal(
+      fixture.mock.sentMessages.some(({ message }) => {
+        const contract = message as { customType?: string; content?: unknown };
+        return (
+          contract.customType === "goal-contract" &&
+          typeof contract.content === "string" &&
+          contract.content.includes("Goal mode is inactive.")
+        );
+      }),
+      false,
+    );
+
+    const entryCount = fixture.mock.entries.length;
+    await fixture.mock.events.get("agent_settled")?.[0]?.({}, fixture.ctx);
+    assert.equal(fixture.mock.entries.length, entryCount);
+    assert.equal(fixture.mock.sentUserMessages.length, 1);
+
+    startInteractiveFollowUp(fixture);
+    const awakened = requireLastGoal(fixture.mock);
+    assert.equal(awakened.id, originalId);
+    assert.equal(awakened.status, "active");
+    assert.equal(awakened.waiting, undefined);
+    const completed = await requireGoalTool(fixture.mock, "goal_complete").execute(
+      "complete-after-premature-close",
+      { goal_id: originalId, summary: "Completed and verified after the provider connection recovered." },
+      undefined,
+      undefined,
+      fixture.ctx,
+    );
+    assert.equal(completed.terminate, true);
+    assert.equal(lastGoalStatus(fixture.mock), null);
+  } finally {
+    await fixture.mock.events.get("session_shutdown")?.[0]?.({}, fixture.ctx);
+  }
 });
 
 test("provider retry waiting state restores without dispatching work", async () => {

@@ -35,14 +35,38 @@ const server = createServer(async (request, response) => {
       name === "lsp_diagnostics"
         ? { root, paths: ["main.go"] }
         : { root, path: "main.go", write: prompt.includes("write") };
+    const chunk = {
+      id: `fixture-${requestCount}`,
+      object: "chat.completion.chunk",
+      created: 0,
+      model: "fixture",
+      choices: [
+        {
+          index: 0,
+          delta: toolResult
+            ? { role: "assistant", content: "done" }
+            : {
+                role: "assistant",
+                tool_calls: [
+                  {
+                    index: 0,
+                    id: `call-${requestCount}`,
+                    type: "function",
+                    function: { name, arguments: JSON.stringify(args) },
+                  },
+                ],
+              },
+          finish_reason: toolResult ? "stop" : "tool_calls",
+        },
+      ],
+    };
     response.writeHead(200, { "content-type": "text/event-stream" });
-    response.write(
-      `data: ${JSON.stringify({ id: `fixture-${requestCount}`, object: "chat.completion.chunk", created: 0, model: "fixture", choices: [{ index: 0, delta: toolResult ? { role: "assistant", content: "done" } : { role: "assistant", tool_calls: [{ index: 0, id: `call-${requestCount}`, type: "function", function: { name, arguments: JSON.stringify(args) } }] }, finish_reason: toolResult ? "stop" : "tool_calls" }] })}\n\n`,
-    );
+    response.write(`data: ${JSON.stringify(chunk)}\n\n`);
     response.end("data: [DONE]\n\n");
   } catch (error) {
+    console.error(error);
     response.writeHead(500);
-    response.end(String(error));
+    response.end("Scripted provider failed.");
   }
 });
 await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
