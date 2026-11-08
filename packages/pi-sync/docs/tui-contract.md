@@ -13,11 +13,13 @@ All settings are private to this device. There are no project overrides. Default
 | Machine-local fields | `sync.localFields`, absent | Current setup | Input and compatibility review; subsequent snapshots exclude whole settings.json root fields; directional migration required |
 | Automatic sync | `sync.automatic`, explicit boolean; setup proposes Off | Current setup | Immediate save; next session start checks once; subsequent shutdown pushes all selected content only if sessions included; reload skips shutdown push |
 | Startup transfer | `sync.automaticTransfer`, false | Current setup | Immediate save; enabling schedules next session start; independent of Automatic sync |
+| Autonomous sync | `sync.agentMode`, false | Current setup | Reviewed opt-in; eligible next-startup and Sync now transfers without another transfer confirmation, plus selected-model assistance for supported conflicts; no transfer from Settings or automatic reload |
+| Continuous sync | `sync.continuous`, false | Current setup | Separate reviewed opt-in; requires Autonomous sync; recurring work starts at eligible startup or after the command/manager closes |
 | On setup switch | `onSwitch`, `ask-before-pull` | All setups | Immediate save; subsequent switches |
 | Storage location | `storage.bucket`, `branch`, `path` as applicable | Current setup | Reviewed save; changes future destination without moving remote history |
 | Manage sync setups | `syncSetups`, `activeSyncSetup` | This device | Existing reviewed catalog flows; replacing/removing the current setup closes its old settings owner |
 | Manage storage connections | `storageConnections` | Shared by named setups | Existing affected-setup review; changes future operations |
-| Merge settings fields | `sync.mergeSettings`, false | Current setup | Immediate save; experimental merge on subsequent sync with a verified ancestor |
+| Merge settings fields | `sync.mergeSettings`, false | Current setup | Immediate save; opt-in merge on subsequent sync with a verified ancestor |
 | Content merge / partial progress | `sync.mergeContent`, `sync.partialSync`, false/false | Current setup | Explicit compatibility review and atomic save; Off, Merge only, Merge + partial, Partial only preserve all combinations |
 | Skip secret scan | `skipSecretScan`, false | All setups | Immediate save; subsequent manual/automatic pushes; Diagnostics still scans |
 | Show sync status | `showStatus`, true | All setups | Immediate save and immediate status visibility change; notifications/widgets remain |
@@ -29,7 +31,7 @@ Writers queue the complete read-modify-write operation, hold the cross-process l
 
 ## Presentation decisions
 
-Settings opens four task categories: Sync content, Sync behavior, Storage & setups, and Advanced. All settings (search) exposes the same rows for cross-category native-style typing-to-search. Each category uses the same row definitions and action handlers; navigation headings are not fake settings. Back returns one level; hard Ctrl+C closes the flow. No `/ Search` hint is added because slash is ordinary search text.
+Selecting **Settings** in `/sync` opens **Pi Sync Settings** directly as one searchable flat list, with all 16 rows in their existing order and no category navigation or headings. Row values, descriptions, actions, reviews, and save behavior are unchanged. Typing searches the list. Back returns directly to the manager; hard Ctrl+C closes the flow. No `/ Search` hint is added because slash is ordinary search text.
 
 The existing public Kit settings adapter is retained rather than adding a second selector or accessing private Pi fields. Installed `SettingsList` provides `updateValue()` and `selectItem()`, but has no injected keybinding or awaited-save/rejection contract and does not expose search focus. Kit already owns ordered pending changes, rollback, retained search/selection, IME focus, bounded frames, and clipped mouse coordinates. This is an intentional existing deviation from the literal native-component convention. No new Kit API, dependency floor, or release is required. A package-owned public rendering boundary returns no lines at zero width and retains the selected row (or search when nothing matches) below five content rows; compact mouse events map back to the original rendered row. It does not access private component state or add key handlers. Search placeholder and position-footer relocation remain unsupported by that public API; the existing native-style hints and position indicator are retained rather than patched through private fields.
 
@@ -47,7 +49,7 @@ Startup transfer summaries report the preference and prerequisites, not a claim 
 | Pull | Remote → local counts and paths; protected loaded session excluded; backup before apply | `sync-mutations.ts`: settings, local hashes, head and baseline rechecked before commit; `recovery-pull-freshness.test.ts`, `local-field-pull-policy.test.ts` |
 | Push | Local → remote active snapshot counts and paths; preserve eligible unmanaged content; removals do not erase retained history | `sync-mutations.ts`: fresh interactive before-image, local hashes/settings/baseline rechecked, expected-head publication; `backend-orchestration.test.ts`, `review-feedback.test.ts` |
 | Forced Pull/Push | Same directional review, not a bypass of conditional publication | Refreshed force-push plan requires new approval; migration confirmation remains mandatory even with `--yes`; `sync-state-revision.test.ts`, `local-field-migration.test.ts` |
-| Merge / partial progress | Effective before/after snapshots, local/remote counts, conflicts/withheld groups, backups and publication | Existing scrollable review; recheck settings, hashes, state and remote before journal/apply; `merged-sync-confirmation.test.ts`, `partial-directional-progress.test.ts`, `merged-sync-summary.test.ts` |
+| Merge / partial progress | Effective before/after snapshots, local/remote counts, conflicts/withheld groups, backups and publication | Existing scrollable review unless Autonomous sync or another explicit transfer authorization applies; recheck settings, hashes, state and remote before journal/apply; `merged-sync-confirmation.test.ts`, `partial-directional-progress.test.ts`, `merged-sync-summary.test.ts` |
 | Conflicts | Review complete dependency group and separately choose authority | Artifact fingerprint, group versions, baseline, config, owner and head checks; `conflict-confirmation.test.ts`, `conflict-preview.test.ts` |
 | Case-variant cleanup | Pull/rollback include the apply engine’s additional top-level alias removals, even when canonical snapshot bytes are unchanged | `apply-review.ts` uses the authoritative apply planner, streams file hashes, records symlink identity without following its target, and rechecks the complete alias set before commit; `transfer-preview.test.ts` covers changed, added, removed, cancelled and symlink aliases plus descriptor cleanup on cancellation. Merge preflight rejects noncanonical changed targets instead of deleting aliases. |
 | History rollback | Historical snapshot → local and active remote head; backup and protected-session summary | Settings, local bytes, current head, selected backend/setup and baseline rechecked; `history-confirmation-cancellation.test.ts`, `history-cancellation.test.ts`, `rollback-field-policy.test.ts` |
@@ -59,3 +61,55 @@ TUI Pull and Push reviews reuse the existing scrollable safe-default confirmatio
 ## Review boundaries
 
 This change does not touch model prompts, tool exposure, shared-terminal handoff, settings formats, credentials, or default sync policies. Existing startup/session signals and Kit/custom-interaction disposal own new UI calls. Any awaited review is followed by owner validation, and each mutating operation revalidates its mutable inputs before its existing commit boundary. Status and differences actions use existing routes; manager opening/refresh remains observational and does not contact the remote. Diagnostics discloses its WebDAV write/repair behavior before execution.
+
+## Quiet footer presentation
+
+Sync publishes optional semantic metadata alongside its unchanged raw `sync` status. A compatible footer hides normal standby, including another local monitoring owner, without stopping monitoring or changing election. Pi Statusline owns glyph selection, reason formatting, and visual suppression through the [extension-neutral v1 contract](https://github.com/narumiruna/pi-extensions/blob/main/packages/pi-statusline/docs/extension-status-protocol.md). Native footers, RPC observers, and older or absent consumers retain the original readable raw value.
+
+The producer inventory is:
+
+| Source | Existing raw status / branch | Semantic activity |
+| --- | --- | --- |
+| `continuous-sync.ts` | Waiting for changes; another local owner | `idle` |
+| `continuous-sync.ts` | Checking; syncing | `checking`; `working` |
+| `continuous-sync.ts` | Scheduled retry; blocked; private-state/settings repair | `retry`; `blocked`, with a safe short reason |
+| `startup-check.ts` | `sync ...` | `checking` |
+| `sync-queries.ts`; `remote-selection-ui.ts` | Setup and selected-content inspection | `checking` |
+| `sync-mutations.ts` | Push; pull | `pushing`; `pulling` |
+| `agent-sync.ts` | Model resolution | `resolving` |
+| `sync-attention.ts` | Local change; remote change; review | `local-change`; `remote-change`; `review` |
+| Status helper, command cleanup, automatic sync, and lifecycle cleanup | Clear; unannotated raw status; Show sync status Off | Withdraw optional metadata; raw behavior stays compatible |
+
+Failure classification stays in Sync. `transient`, `contention`, `stale`, `authentication`, `storage`, `unsafe`, `model`, `budget`, and `unknown` produce `temp`, `busy`, `stale`, `auth`, `storage`, `review`, `model`, `limit`, and `unknown`. Repair uses `repair`. A candidate's exhausted attempt count remains a model block; only the rolling request window uses `limit`. No short label grants permission, resets accounting, or replaces the existing recovery guidance.
+
+The metadata request path is read-only. Publication and snapshot responses use public `sessionManager` identity, not the UI object. Old cleanup must not release a replacement publisher, including a reload with the same session manager. New subscribers request a snapshot after subscribing; late snapshots cannot replace later live activity or withdrawal. Missing or invalid metadata falls back to raw text rather than hiding an unknown state.
+
+## Quiet footer verification
+
+The 2026-11-08 display integration was audited against `docs/extension-conventions.md`, `docs/extension-settings.md`, and `docs/readme-conventions.md`. Producer changes add semantic annotations to existing raw statuses; authorization, scheduler election, request accounting, provider calls, resolver prompts, settings writers, widgets, and notifications remain unchanged. Independent complete-diff and follow-up reviews covered correctness, security, lifecycle, compatibility, regressions, and scope.
+
+Verification evidence:
+
+- Build prerequisites and test compilation passed. The focused Sync, Statusline, public-contract, and Jiti suites passed: 209 files, 3,772 tests, and 19 existing skips. Cases cover every activity/reason, raw fallback, Show sync status, mixed publishers, icons, widths, terminal controls, headless session isolation, reload, disposal, and reentrant updates/cleanup. Reviews produced 25 failing regressions before their fixes; those cases now pass without weaker acceptance criteria or longer test timeouts.
+- Separate root `npm run check` and `npm test` gates passed: 942 files, 20,732 tests, 34 existing skips, and no unhandled errors. The fenced-code-aware heading audit passed for all 37 active package READMEs. Biome retained its existing informational advisories.
+- `npm run package:pack -- sync` and `npm run package:pack -- statusline` passed. Actual temporary tarballs contained 330 Sync entries and 38 Statusline entries, including public docs and declared source/runtime paths, without tests or plans. Package-owned validators checked exact static and dynamic relative imports across all 82 Sync and three Statusline generated runtime files.
+- Finite offline CLI smokes loaded source and extracted packages with Sync alone, Statusline alone, and both together. All six runs exercised lazy help through Pi's Jiti loader, reported zero network attempts and model runs, and shut down with clean EOF. `scripts/smoke-extension-status.mjs` blocks fetch/socket use; the extracted-package fixture supplies declared dependencies and Pi peers from the existing workspace, not a fresh registry installation.
+
+Validation uses canonical temporary paths. The full suite was restarted after review fixes; no path guard, permission check, retry rule, or test deadline was relaxed. Both packages have minor Changesets for the optional public protocol addition; manifests, lockfiles, and historical changelogs were not edited for this change.
+
+Physical-terminal font appearance, live model quality, production backends, a fresh registry install, Windows, and Android remain unverified. A maintainer can inspect marker spacing and distinct transfer/change arrows with the target terminal and font; this is not a new release gate. Live provider/backend checks require their own authorized environment. No publication, version tag, release dispatch, production transfer, or live-provider request was performed.
+
+## Settings wording verification
+
+The 2026-11-08 wording update uses **Autonomous sync**, removes Settings maturity markers at the user's request, and keeps `sync.agentMode`, saved consent, defaults, opt-ins, and risk warnings unchanged. A semantic diff audit checked all 16 changed runtime files against the base plus approved prose substitutions; authorization, settings storage, resolver prompts, cancellation, disposal, session replacement, and shutdown logic are unchanged. Review followed `docs/extension-conventions.md`, `docs/extension-settings.md`, and `docs/readme-conventions.md`, plus the skill editing rules. An independent complete-diff review found no issues.
+
+Verification evidence:
+
+- Root `npm run check` and `npm test` passed: 935 test files, 20,528 passed tests, 34 existing skips, and no unhandled errors.
+- The focused Pi Sync suite passed: 185 files, 3,293 passed tests, and 19 existing skips. Cases cover all four Settings descriptions, TUI/RPC consent, cancellation, the RPC Done exit without authorization, durable saves and failure recovery, Continuous sync dependencies, non-default keys, narrow rendering, and current/legacy documentation anchors.
+- A fenced-code-aware heading audit passed for all 37 package READMEs. Legacy fragment aliases remain in the README, authoritative settings reference, and compatibility index.
+- `npm run package:pack -- sync` and an actual temporary tarball inspection passed: 330 entries include the runtime, source, docs, skill, license, and changelog, without tests or repository plans.
+
+The first direct-Vitest run used a symlinked macOS temporary path and triggered existing alias-path safety checks; the successful focused run used the canonical temporary root, as the root runner does. New RPC choice assertions were corrected to include Kit's existing Done exit, and both consent flows now test that exit. No runtime safety check or acceptance criterion was relaxed. Later full-suite command-level rechecks exceeded the harness's 300-second command limit. A background full-suite recheck hit the readiness watchdog in the unchanged `test/packed-publish-native.test.ts`; that file passed separately. The final full-suite recheck uses a managed background runner without changing per-test limits. Biome reports existing schema-version and unrelated lint advisories; its gates pass without changing repository tooling.
+
+Physical-terminal appearance, rendered Markdown fragment navigation, live model quality, production backends, Windows, and Android were not newly verified. A maintainer needs the relevant terminal/platform and a separately authorized provider/backend environment to check those paths before claiming new coverage. These are not additional gates for this wording-only change; normal CI and explicit publication approval still apply. No live-provider request, production transfer, publication, tag, or release workflow was performed.

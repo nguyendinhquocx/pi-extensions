@@ -7,8 +7,8 @@ The configuration skill provides guidance only; the user performs settings chang
 - [Required backend shapes](#required-backend-shapes)
 - [Status display](#status-display)
 - [Secret scanning](#secret-scanning)
-- [Experimental Agent mode](#experimental-agent-mode)
-- [Experimental Continuous sync](#experimental-continuous-sync)
+- [Autonomous sync](#autonomous-sync)
+- [Continuous sync](#continuous-sync)
 - [Included content](#included-content)
 - [Unsupported old settings and recovery](#unsupported-old-settings-and-recovery)
 
@@ -55,14 +55,20 @@ Global settings apply to all setups on this device; they are not remote policy.
 | Content/partial policy | `sync.mergeContent`, `sync.partialSync` | Enabling either requires version 5. |
 
 Do not downgrade version 4 or 5 merely because an option is turned off.
-The four automatic controls have separate effects: `automatic` enables startup observation and selected-content shutdown pushes when sessions are included; `automaticTransfer` enables one eligible startup transfer; `agentMode` authorizes autonomous merged sync and model disclosure; `continuous` adds recurring work only with Agent mode enabled.
+The four automatic controls have separate effects:
+
+- **Automatic sync** (`sync.automatic`) enables startup observation and selected-content shutdown pushes when sessions are included.
+- **Startup transfer** (`sync.automaticTransfer`) enables one eligible startup transfer.
+- **Autonomous sync** (`sync.agentMode`, unchanged) authorizes eligible startup and **Sync now** transfers without another transfer confirmation, plus model assistance and disclosure for supported conflicts.
+- **Continuous sync** (`sync.continuous`) adds recurring work only with Autonomous sync enabled.
+
 None of these controls is enabled by invoking the configuration skill.
 
 ### Editing in the manager
 
-Open `/sync` → **Settings** and choose **Sync content**, **Sync behavior**, **Storage & setups**, or **Advanced**.
-**All settings (search)** provides cross-category typing-to-search over the same rows.
-**Included paths** and **Compare included paths** are adjacent in Sync content; the latter compares path policies, not file contents.
+Open `/sync` → **Settings** to go directly to **Pi Sync Settings**.
+The screen has one searchable flat list with all 16 rows in their existing order and no category navigation or headings.
+**Included paths** and **Compare included paths** are adjacent; the latter compares path policies, not file contents.
 **Storage location** edits the current setup's coordinates, while **Manage sync setups** and **Manage storage connections** retain the catalog and affected-setup reviews.
 Returning from catalog management refreshes the rows; switching or removing the owning setup closes its old Settings screen.
 
@@ -70,7 +76,7 @@ Descriptions identify the owner: this setup, all setups on this device, or share
 Simple choices report Saving and the durable Saved or failed/rejected result, preserve the selected row and search during refresh, and restore their previous value if saving fails.
 Escape closes the screen without undoing successful saves.
 Complex values retain their input/review flows.
-This navigation change does not alter schema, defaults, automatic-sync behavior, or experimental opt-ins.
+This navigation change does not alter schema, defaults, automatic-sync behavior, or explicit opt-ins.
 
 The manager separates current state from transfer, inspection, and management actions.
 **Check remote status** and **View differences** invoke the existing read/check routes only when selected.
@@ -179,7 +185,7 @@ This check does not contact the server or discover setups configured only on oth
 Every setup requires `sync.include` and explicit `sync.automatic`.
 Setup asks for automatic sync with Off first; existing values are not rewritten.
 When enabled, the current setup receives one background startup check in TUI/RPC, including reload/new/resume/fork.
-Startup no longer performs automatic transfers or opens dialogs; review changes through `/sync`.
+Automatic sync alone does not perform startup transfers or open dialogs; review changes through `/sync`.
 Print/JSON skip startup checks.
 Checks compare local hashes and remote metadata against the last sync baseline, so revision changes and missing baselines require review rather than proving a file conflict.
 
@@ -219,14 +225,25 @@ It accepts:
 ### Status display
 
 The global `showStatus` setting accepts a boolean and defaults to `true` when omitted from an existing version 3 document.
-Set it through **/sync → Settings → Advanced → Show sync status**; changes are saved and applied immediately for every setup.
+Set it through **/sync → Settings → Show sync status**; changes are saved and applied immediately for every setup.
 When `false`, pi-sync clears and suppresses status text for background checks, manual and automatic transfers, and review attention.
 TUI review widgets and TUI/RPC notifications remain available, and lifecycle cleanup still clears any stale status owned by pi-sync.
+
+Pi Sync also publishes optional semantic metadata through the [extension-neutral status protocol](https://github.com/narumiruna/pi-extensions/blob/main/packages/pi-statusline/docs/extension-status-protocol.md).
+Pi Statusline uses that metadata for quiet display: waiting for changes and another local monitoring owner are hidden, while active work uses short static markers.
+The existing configured icon identifies Sync without an extra duplicate label.
+Native Pi footers, RPC observers, and older or absent metadata consumers still receive the original readable status value.
+This is not permission to sync, change retry policy, or erase recovery evidence.
+
+Retry and blocked states keep a short reason: `temp` (temporary service/network failure), `busy` (lock contention), `stale` (changed evidence), `auth` (authentication), `storage` (local storage), `review` (safety barrier), `model` (resolver/model failure or exhausted candidate attempts), `limit` (request-window allowance), or `unknown` (unclassified failure).
+Settings or private-state repair uses `repair`.
+A request-window limit is not a currency budget; exhausted attempts for one candidate remain a model block, not a timer-based allowance reset.
+Use the existing manager and **Check remote status** guidance to inspect recovery requirements rather than treating a short marker as a complete diagnosis.
 
 ### Debug startup timings
 
 The top-level user setting `debug` accepts only `true` or `false` and defaults to `false`.
-Edit `<getAgentDir()>/pi-sync.json` (normally `~/.pi/agent/pi-sync.json`) or use **/sync → Settings → Advanced → Debug startup timings**.
+Edit `<getAgentDir()>/pi-sync.json` (normally `~/.pi/agent/pi-sync.json`) or use **/sync → Settings → Debug startup timings**.
 UI changes save immediately through the existing ordered, atomic settings writer; both manual and UI changes take effect on the next session start, including `/reload`, new, resume, and fork.
 There is no project or environment override.
 
@@ -255,7 +272,7 @@ Set `debug` to `false` or remove it, then start a new session to disable reports
 ### Secret scanning
 
 The global `skipSecretScan` setting accepts a boolean and defaults to `false`, including when omitted from an existing version 3 document.
-Set it through **/sync → Settings → Advanced → Skip secret scan**; changes are saved immediately and apply to subsequent pushes for every sync setup, including automatic pushes.
+Set it through **/sync → Settings → Skip secret scan**; changes are saved immediately and apply to subsequent pushes for every sync setup, including automatic pushes.
 When `true`, pushes skip the local secret scan; other safety checks and confirmations remain unchanged.
 Enable it only after reviewing the destination and selected content because files containing secrets can be uploaded.
 `/sync doctor` still scans and reports possible secrets regardless of this setting.
@@ -295,7 +312,7 @@ RPC remains a read-only summary with the manual `sync.include` path.
 
 Every new snapshot stores the normalized included-content selection separately from the files that happened to exist.
 This preserves selected-but-missing paths without syncing `pi-sync.json`, storage credentials, automatic-sync preferences, or setup names.
-**Settings → Sync content → Compare included paths** opens the same review-first flow as a manager operation when local and remote lists differ.
+**Settings → Compare included paths** opens the same review-first flow as a manager operation when local and remote lists differ.
 Adoption revalidates the remote head, immutable snapshot, and complete reviewed setup configuration, including the shared connection and credentials, before one atomic settings update.
 Cancelling the network check leaves the content list unchanged.
 A settings save that has started its atomic replacement can still finish; later cancellation does not undo it.
@@ -317,7 +334,7 @@ Pull protects the currently open session file; restart Pi or resume a pulled ses
 ### Automatic startup transfer
 
 `sync.automaticTransfer` is optional and accepts only a boolean; absent means `false`.
-Set it through **/sync → Settings → Sync behavior → Startup transfer**.
+Set it through **/sync → Settings → Startup transfer**.
 It is separate from `sync.automatic`: the legacy setting retains observation and selected-content shutdown behavior.
 
 When explicitly enabled, one startup transfer waits for an idle boundary in TUI/RPC.
@@ -345,27 +362,30 @@ Turning **Startup transfer** off does not revert transfers or remove backups/jou
 For interrupted operations, follow [merge recovery](https://github.com/narumiruna/pi-extensions/blob/main/packages/pi-sync/docs/merge-implementation-audit.md).
 Unknown fields remain preserved and malformed/invalid files block saves, just as for the existing policy.
 
-### Experimental Agent mode
+<a id="experimental-agent-mode"></a>
 
-`sync.agentMode` is an optional per-setup boolean, default `false`, in settings versions 3, 4, and 5.
-Open **Settings → Sync behavior → Agent mode (experimental)** and review the setup, destination, selected paths, model disclosure, costs, and autonomous writes before enabling.
+### Autonomous sync
+
+Autonomous sync uses the unchanged `sync.agentMode` key, an optional per-setup boolean, default `false`, in settings versions 3, 4, and 5.
+Open **Settings → Autonomous sync** and review the setup, destination, selected paths, transfer authorization, model disclosure, costs, and autonomous writes before enabling.
 RPC users can explicitly set the same field in the private settings file.
 Setting it to `true` is authorization, not just a display preference.
 
-Agent mode authorizes one eligible merged sync at the next session start and the same autonomous flow from **Sync now** or `/sync sync`.
-It can publish and replace/delete selected content without another transfer confirmation.
+Autonomous sync authorizes one eligible merged sync at the next session startup and the same flow from **Sync now** or `/sync sync`, without another transfer confirmation.
+It can publish, replace, or delete selected local and remote content.
+The selected Pi model resolves supported text and settings conflicts; eligible conflict content is sent to its provider and may incur costs.
 It is independent of `sync.automatic` and `sync.automaticTransfer`; neither existing preference is changed.
-Disabling Startup transfer alone does not disable Agent mode.
+Disabling Startup transfer alone does not disable Autonomous sync.
 Saving never starts a transfer from Settings.
 The atomic write cannot be cancelled after its final cancellation check.
 A completed save remains in effect after cancellation or session replacement; reopen Settings to read the saved value.
 TUI/RPC are supported; print/JSON and shutdown do not start a resolver.
-Agent mode alone adds no polling or daemon.
+Autonomous sync alone adds no polling or daemon.
 Separately enabled Continuous sync provides recurring work while Pi remains open.
 
 An accepted baseline, matching included-content/local-field policies, and conditional or lease-protected publication remain required.
 First-source selection, policy migrations, explicit push/pull, and rollback keep their existing reviewed flows.
-`--yes` does not enable Agent mode or authorize model disclosure.
+`--yes` does not enable Autonomous sync or authorize model disclosure.
 Completed transfers never reload resources automatically.
 
 The resolver uses the initiating session's selected model through Pi's public provider/authentication registry.
@@ -378,14 +398,14 @@ Parent model prompts and tools are not changed.
 This is configuration isolation, not an OS sandbox or proof of semantic correctness.
 
 Eligible text is global `AGENTS.md` and `.md`/`.txt` files under `prompts/` or `skills/`.
-Global `settings.json` uses the existing strict JSON, numeric, coupled-field, unknown-field, and machine-local-field policies. In Agent mode, `packages` merges by source identity and selects the higher explicit SemVer version for each npm package present on both sides, even when one side has not changed from the verified ancestor. No registry lookup occurs. Equal SemVer precedence does not select a winner: one-sided source edits are preserved, and divergent edits require atomic selection. Package filters must match. An existing local or remote array keeps its JSON spelling when it matches the merged result. Accepted settings files keep their bytes unless a package override is required; that override changes only the `packages` value. The ordered npm identity list can change on one side, or identically on both sides; conflicting order or membership changes retain atomic selection. This preserves insertion positions and resource precedence. Non-npm entries must remain unchanged across all three versions for per-package merging. Changed Git refs and local path aliases retain atomic selection instead of being combined as separate sources. Delete/upgrade conflicts, duplicate identities, incompatible filters, version ranges and tags also retain the existing atomic selection rules when deterministic merging is not possible. Other arrays and nested objects remain atomic.
+Global `settings.json` uses the existing strict JSON, numeric, coupled-field, unknown-field, and machine-local-field policies. With Autonomous sync enabled, `packages` merges by source identity and selects the higher explicit SemVer version for each npm package present on both sides, even when one side has not changed from the verified ancestor. No registry lookup occurs. Equal SemVer precedence does not select a winner: one-sided source edits are preserved, and divergent edits require atomic selection. Package filters must match. An existing local or remote array keeps its JSON spelling when it matches the merged result. Accepted settings files keep their bytes unless a package override is required; that override changes only the `packages` value. The ordered npm identity list can change on one side, or identically on both sides; conflicting order or membership changes retain atomic selection. This preserves insertion positions and resource precedence. Non-npm entries must remain unchanged across all three versions for per-package merging. Changed Git refs and local path aliases retain atomic selection instead of being combined as separate sources. Delete/upgrade conflicts, duplicate identities, incompatible filters, version ranges and tags also retain the existing atomic selection rules when deterministic merging is not possible. Other arrays and nested objects remain atomic.
 Code/scripts, keybindings, binaries, unknown formats, session histories, deletion/modification conflicts, path collisions, and session-root transitions are not model-resolved.
 Existing deterministic merges still follow their own explicit settings.
 Unsupported or refused groups remain unresolved; only an explicitly enabled `partialSync` policy permits progress around them.
 Preserving versions does not mean a conflict is resolved.
 
 A verified accepted ancestor is required.
-Enabling Agent mode cannot recover historical ancestor bytes that were never retained.
+Enabling Autonomous sync cannot recover historical ancestor bytes that were never retained.
 If the original accepted bytes are still available on both sides, a conflict-free sync can seed the text ancestors for future runs; otherwise use the existing reviewed recovery flow rather than inventing a base from current edits.
 
 Bounds are 8 KiB per input file, 16 conflict paths/units, 24 KiB of serialized model evidence, 16 KiB of candidate output, 8,192 maximum output tokens (or the selected model's smaller positive output limit), and one provider request per candidate attempt. A separately confirmed refusal retry can request the same candidate evidence again.
@@ -398,7 +418,7 @@ These limits are not an exact currency spending cap; in-flight disclosure or cha
 
 The existing possible-secret scanner always checks model evidence, even when `skipSecretScan` permits uploads without scanning.
 It is a heuristic, not a guarantee that all secrets are detected.
-Do not enable Agent mode for content you cannot disclose to the selected provider.
+Do not enable Autonomous sync for content you cannot disclose to the selected provider.
 Provider errors and model reasoning are not copied into status or persistent records.
 
 Pi sessions sharing one agent directory use one local resolver claim.
@@ -417,7 +437,7 @@ They can contain merged text; retain them as private data.
 Different candidates are retained without automatic retention pruning.
 Ordinary **Sync now** and `/sync sync` reuse a valid cached refusal without another provider request.
 The manager's **Retry refused model result…** action separately reviews the setup, destination, conflict paths, selected model, disclosure and cost before one fresh request for that exact refusal.
-It requires foreground TUI/RPC, Agent mode, an accepted baseline and no pending journal; use ordinary Sync now or reviewed recovery first when those prerequisites are absent.
+It requires foreground TUI/RPC, Autonomous sync, an accepted baseline and no pending journal; use ordinary Sync now or reviewed recovery first when those prerequisites are absent.
 Changed evidence, settings, model, session or cached bytes invalidate the review without disclosure.
 A repeated refusal, invalid response or failed pre-publication replacement retains the original result.
 A complete validated result replaces the active candidate only after the original refusal is archived privately in the same directory.
@@ -432,23 +452,25 @@ Pi-sync's cross-process operation lock excludes other pi-sync transfers, not arb
 Pi file mutation queues coordinate participating writers only within one process.
 Checks near rename reduce stale writes but do not provide an atomic compare-and-swap against another Pi process or editor.
 Session JSONL is not rewritten by the model; other active session writers remain subject to the existing protection limitations.
-Do not use Agent mode as a guarantee of lossless live editing.
+Do not use Autonomous sync as a guarantee of lossless live editing.
 
-Turn Agent mode Off to prevent subsequent requests and invalidate pending authorization.
+Turn Autonomous sync Off to prevent subsequent requests and invalidate pending authorization.
 Keep backups, snapshots, conflicts and pending journals; disabling does not undo completed work or erase history.
 Unknown publication outcomes use the existing journal reconciliation and never authorize blind republishing.
 Pending journals can be reconciled on a read/check/write/verify backend because recovery does not publish.
-New autonomous transfers still require conditional or lease-protected publication; turn Agent mode Off before a reviewed manual transfer on a weaker backend.
+New autonomous transfers still require conditional or lease-protected publication; turn Autonomous sync Off before a reviewed manual transfer on a weaker backend.
 If recovery is blocked, retain evidence and use the existing reviewed recovery routes.
 Finish/reconcile pending merge journals before a downgrade.
 No Pi core changes or other extension are required.
 
-### Experimental Continuous sync
+<a id="experimental-continuous-sync"></a>
+
+### Continuous sync
 
 `sync.continuous` is an optional per-setup boolean, default `false`, in settings versions 3, 4 and 5.
-Open **Settings → Sync behavior → Continuous sync (experimental)** after enabling Agent mode.
+Open **Settings → Continuous sync** after enabling Autonomous sync.
 RPC users can set the field explicitly in the private settings file.
-Existing Agent mode consent does not enable recurring requests.
+Existing Autonomous sync consent does not enable recurring requests.
 
 The separate review names the setup, storage connection, destination, included paths, recurring costs and automatic writes.
 An elected idle session uses its selected Pi model; a different session can use a different provider/model.
@@ -460,8 +482,8 @@ Reopen Settings to read the saved value.
 
 Monitoring starts at an eligible TUI/RPC session startup, after awaited local transaction recovery, or after a foreground `/sync` command or manager closes.
 It replaces the duplicate one-shot startup transfer, not the legacy shutdown policy.
-Turning Continuous sync off stops its work without disabling Agent mode.
-Turning Agent mode off also stops monitoring; a saved Continuous sync On value remains ineffective until Agent mode is enabled again.
+Turning Continuous sync off stops its work without disabling Autonomous sync.
+Turning Autonomous sync off also stops monitoring; a saved Continuous sync On value remains ineffective until Autonomous sync is enabled again.
 
 A control-file change during monitoring is detected by a watcher or the five-second local control check.
 If monitoring is already off, external enablement requires the next session start or a foreground `/sync` command.
@@ -543,7 +565,8 @@ Keep the directory as private evidence; do not delete it to repair a transfer.
 
 #### Status, recovery and downgrade
 
-The existing status key shows waiting, checking/syncing, scheduled retry, another local owner, or a stable blocked reason.
+The existing raw status key shows waiting, checking/syncing, scheduled retry, another local owner, or a stable blocked reason.
+A compatible Statusline uses the [quiet presentation described above](#status-display); normal hidden standby does not mean monitoring or another owner's work has stopped.
 **Check remote status** and the manager show advisory ownership, the last successful background check/transfer and safe next actions.
 Status also shows normalized rolling-window usage, the next window allowance, exhausted-candidate counts, serialized accounting bytes/capacity and on-disk bytes.
 Window allowance is not dispatch permission: candidate, capacity, ownership and safety checks still apply.
@@ -560,14 +583,14 @@ Preserve journals, backups and unresolved versions when proof is unavailable.
 
 Turn Continuous sync off and drain its owner before downgrade.
 Reconcile pending transfers with the current release.
-Existing Agent mode and shutdown preferences remain separately effective.
+Existing Autonomous sync and shutdown preferences remain separately effective.
 Private scheduler records are separate from baseline/journal formats and remain retained; no automatic filesystem rollback or state migration is performed.
 
 For implementation evidence and test scope, see [Continuous sync verification](https://github.com/narumiruna/pi-extensions/blob/main/packages/pi-sync/docs/continuous-sync-verification.md).
 
 ### Settings field merge and machine-local fields
 
-`sync.mergeSettings` is experimental, defaults to `false`, and is available in the owning Settings screen.
+`sync.mergeSettings` is an explicit opt-in, defaults to `false`, and is available through **Settings → Merge settings fields** for the current setup.
 With a verified accepted ancestor, global `settings.json` root fields merge conservatively: absent differs from null, arrays/nested objects are atomic, and provider/model and other coupled fields form one unit.
 Unknown fields are preserved.
 Pi accepts plain UTF-8 JSON with an optional BOM, not JSONC; duplicate/prototype-sensitive keys, invalid encodings, migration-dependent syntax, and over-bound inputs require directional review.
@@ -616,8 +639,8 @@ Never reinterpret portable snapshots with an old binary.
 
 ### Content merge and partial progress
 
-`sync.mergeContent` and `sync.partialSync` are independent experimental booleans, both default `false`.
-The owning **Advanced → Content merge / partial progress** setting offers Off, Merge only, Merge + partial, and Partial only and confirms an explicit settings-version-5 upgrade.
+`sync.mergeContent` and `sync.partialSync` are independent opt-in booleans, both default `false`.
+The owning **Settings → Content merge / partial progress** setting offers Off, Merge only, Merge + partial, and Partial only and confirms an explicit settings-version-5 upgrade.
 Manual configuration must also declare version 5.
 Settings version 5 retains the portable-policy behavior of version 4; moving from a legacy setup can require the existing separately confirmed directional policy migration.
 Disabling options retains the schema and recovery evidence.

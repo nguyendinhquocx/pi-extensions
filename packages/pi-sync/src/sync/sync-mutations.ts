@@ -118,7 +118,7 @@ export async function push(
   const state = input?.state ?? (await readStateForConfig(config));
   validateMutation();
   requireResolvedDirectionalProgress(state, options);
-  setSyncStatus(ctx, `pushing ${config.setupName}`);
+  setSyncStatus(ctx, `pushing ${config.setupName}`, { activity: "pushing" });
   const backend = input?.backend ?? (await factory(config));
   throwIfAborted(options.signal);
   const localRaw =
@@ -272,7 +272,7 @@ export async function pull(
   const config = await loadConfig(options.setup);
   throwIfAborted(options.signal);
   await requireNoMergeJournal(config, options);
-  setSyncStatus(ctx, `pulling ${config.setupName}`);
+  setSyncStatus(ctx, `pulling ${config.setupName}`, { activity: "pulling" });
   const backend = await factory(config);
   const state = await readStateForConfig(config);
   validateMutation();
@@ -433,7 +433,7 @@ export async function syncBoth(
   options.background?.validate(config);
   if (options.agentRetryRefusal) {
     if (!config.agentMode || options.auto || options.background || !ctx.hasUI)
-      throw new Error("Enable Agent mode and use the foreground manager to retry a cached refusal.");
+      throw new Error("Enable Autonomous sync and use the foreground manager to retry a cached refusal.");
     const state = await readStateForConfig(config);
     validateMutation();
     const pending = await readMergeJournal(config);

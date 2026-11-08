@@ -7,11 +7,12 @@ import { updateLocalConfig } from "../src/settings/settings-store.js";
 import { readStateForConfig } from "../src/state/sync-state-store.js";
 import { readContinuousRecord } from "../src/sync/continuous-record.js";
 import { continuousBinding } from "../src/sync/continuous-storage.js";
-import { type ContinuousClock, createContinuousSync } from "../src/sync/continuous-sync.js";
+import { createContinuousSync } from "../src/sync/continuous-sync.js";
 import { inspectSync } from "../src/sync/sync-inspection.js";
 import { agentContext, agentTestModel, selectRemote } from "./agent-test-helpers.js";
 import {
   advanceContinuous,
+  ContinuousTestClock,
   continuousLoaders,
   enableContinuous,
   fakeContinuousTime,
@@ -21,44 +22,42 @@ import {
 import { withTempHome } from "./helpers.js";
 import { createMergeFixture } from "./merged-sync-fixture.js";
 
-test("local and remote-only changes sync without a command; apply events do not loop", async () =>
-  withTempHome(async (agentDir) => {
-    const f = await createMergeFixture(agentDir);
-    const config = await enableContinuous();
-    // Advance only between completed cycles. Fake timers can expire a cycle's
-    // deadline while its real filesystem operations are still running on CI.
-    let now = Date.now();
-    const tasks = new Set<{ at: number; run(): void }>();
-    const clock: ContinuousClock = {
-      now: () => now,
-      random: () => 0,
-      schedule: (ms, run) => {
-        const task = { at: now + ms, run };
-        tasks.add(task);
-        return () => {
-          tasks.delete(task);
-        };
-      },
+const watch = vi.hoisted(() => ({ changed: undefined as ((settings: boolean) => void) | undefined }));
+// Drive watcher hints explicitly so native callbacks cannot race the manual clock.
+vi.mock("../src/sync/continuous-watch.js", () => ({
+  watchContinuous: async (_config: unknown, changed: (settings: boolean) => void) => {
+    watch.changed = changed;
+    return () => {
+      watch.changed = undefined;
     };
-    const mock = agentContext(selectRemote);
-    const service = createContinuousSync(continuousLoaders(f.backend), clock);
-    async function poll() {
-      mock.statuses.clear();
-      now += 67_000;
-      for (const task of [...tasks]) {
-        if (task.at > now) continue;
-        tasks.delete(task);
-        task.run();
+  },
+}));
+
+for (const hints of [false, true])
+  test(`local and remote-only changes sync without a command (${hints ? "watcher hints" : "periodic polls"})`, async () =>
+    withTempHome(async (agentDir) => {
+      const f = await createMergeFixture(agentDir);
+      const config = await enableContinuous();
+      const clock = new ContinuousTestClock();
+      const mock = agentContext(selectRemote);
+      const service = createContinuousSync(continuousLoaders(f.backend), clock);
+      function hint() {
+        if (!hints) return;
+        assert.ok(watch.changed);
+        watch.changed(false);
       }
-      await waitStatus(mock.statuses, /waiting for changes/);
-    }
-    const publish = vi.spyOn(f.backend, "publishSnapshot");
-    try {
-      service.start(mock.ctx, new AbortController().signal);
-      await waitStatus(mock.statuses, /waiting for changes/);
-      await fs.writeFile(path.join(agentDir, "AGENTS.md"), "local only\n");
-      await poll();
-      await vi.waitFor(async () => {
+      async function poll(ms = 67_000) {
+        mock.statuses.clear();
+        clock.advance(ms);
+        await waitStatus(mock.statuses, /waiting for changes/);
+      }
+      const publish = vi.spyOn(f.backend, "publishSnapshot");
+      try {
+        service.start(mock.ctx, new AbortController().signal);
+        await waitStatus(mock.statuses, /waiting for changes/);
+        await fs.writeFile(path.join(agentDir, "AGENTS.md"), "local only\n");
+        hint();
+        await poll(hints ? 1000 : 67_000);
         const head = await f.backend.readHead();
         assert.ok(head);
         const remote = await f.backend.readSnapshot(head.snapshotRef);
@@ -68,30 +67,28 @@ test("local and remote-only changes sync without a command; apply events do not 
               file.path === "AGENTS.md" && Buffer.from(file.contentBase64, "base64").toString() === "local only\n",
           ),
         );
-      });
-      await waitStatus(mock.statuses, /waiting for changes/);
-      const first = publish.mock.calls.length;
-      assert.equal(first, 1);
-      await f.remoteEdit("AGENTS.md", "remote only\n");
-      await poll();
-      await vi.waitFor(async () =>
-        assert.equal(await fs.readFile(path.join(agentDir, "AGENTS.md"), "utf8"), "remote only\n"),
-      );
-      await poll();
-      assert.equal(
-        publish.mock.calls.length,
-        first + 1,
-        "remote edit alone published; apply did not publish itself again",
-      );
-      assert.equal(mock.requests.length, 0);
-      const record = await readContinuousRecord(await continuousBinding(config));
-      assert.ok(record.checked);
-      assert.ok(record.transferred);
-    } finally {
-      await service.stop();
-      assert.equal(tasks.size, 0, "stop releases every scheduled callback");
-    }
-  }));
+        const first = publish.mock.calls.length;
+        assert.equal(first, 1);
+        await f.remoteEdit("AGENTS.md", "remote only\n");
+        await poll();
+        assert.equal(await fs.readFile(path.join(agentDir, "AGENTS.md"), "utf8"), "remote only\n");
+        hint();
+        await poll(hints ? 1000 : 67_000);
+        assert.equal(
+          publish.mock.calls.length,
+          first + 1,
+          "remote edit alone published; apply did not publish itself again",
+        );
+        assert.equal(mock.requests.length, 0);
+        const record = await readContinuousRecord(await continuousBinding(config));
+        assert.ok(record.checked);
+        assert.ok(record.transferred);
+      } finally {
+        await service.stop();
+        assert.equal(clock.tasks.size, 0, "stop releases every scheduled callback");
+        assert.equal(watch.changed, undefined, "stop releases the watcher callback");
+      }
+    }));
 
 test("temporary outage recovers automatically and saved backoff survives service restart", async () =>
   withTempHome(async (agentDir) => {
@@ -141,15 +138,15 @@ test("uncertain committed publication recovers from its journal without republis
     f.backend.failNextPublicationAfterCommit = true;
     const publish = vi.spyOn(f.backend, "publishSnapshot");
     const mock = agentContext(selectRemote);
-    const service = createContinuousSync(continuousLoaders(f.backend));
-    fakeContinuousTime();
+    const clock = new ContinuousTestClock();
+    const service = createContinuousSync(continuousLoaders(f.backend), clock);
     try {
       service.start(mock.ctx, new AbortController().signal);
       await waitStatus(mock.statuses, /blocked/);
       const { readMergeJournal } = await import("../src/sync/merge-journal.js");
       assert.ok(await readMergeJournal(await loadConfig()));
       const head = await f.backend.readHead();
-      await advanceContinuous(67_000);
+      clock.advance(67_000);
       await waitStatus(mock.statuses, /waiting for changes/);
       assert.equal(await readMergeJournal(await loadConfig()), undefined);
       assert.deepEqual(await f.backend.readHead(), head);
@@ -157,7 +154,7 @@ test("uncertain committed publication recovers from its journal without republis
       assert.equal(mock.requests.length, 0);
     } finally {
       await service.stop();
-      vi.useRealTimers();
+      assert.equal(clock.tasks.size, 0, "stop releases every scheduled callback");
     }
   }));
 
@@ -173,8 +170,8 @@ for (const response of ["refuse", "invalid"] as const)
           ? "not JSON"
           : JSON.stringify({ version: 1, results: units.map((unit) => ({ id: unit.id, refuse: true })) }),
       );
-      fakeContinuousTime();
-      let service = createContinuousSync(continuousLoaders(f.backend));
+      const clock = new ContinuousTestClock();
+      let service = createContinuousSync(continuousLoaders(f.backend), clock);
       try {
         service.start(mock.ctx, new AbortController().signal);
         await waitStatus(mock.statuses, /blocked/);
@@ -182,10 +179,12 @@ for (const response of ["refuse", "invalid"] as const)
         const notifications = mock.notifications.filter((item) =>
           item.message.startsWith("Continuous sync blocked"),
         ).length;
-        await advanceContinuous(67_000);
+        mock.statuses.clear();
+        clock.advance(67_000);
         await waitStatus(mock.statuses, /blocked/);
         await service.stop();
-        service = createContinuousSync(continuousLoaders(f.backend));
+        assert.equal(clock.tasks.size, 0, "stop releases every scheduled callback");
+        service = createContinuousSync(continuousLoaders(f.backend), clock);
         service.start(mock.ctx, new AbortController().signal);
         await waitStatus(mock.statuses, /blocked/);
         assert.equal(mock.requests.length, 1);
@@ -197,7 +196,7 @@ for (const response of ["refuse", "invalid"] as const)
         assert.equal(await fs.readFile(path.join(agentDir, "AGENTS.md"), "utf8"), "local\n");
       } finally {
         await service.stop();
-        vi.useRealTimers();
+        assert.equal(clock.tasks.size, 0, "stop releases every scheduled callback");
       }
     }));
 
@@ -366,6 +365,8 @@ test("a full model window does not block conflict-free progress after evidence c
       await waitStatus(mock.statuses, /retry scheduled: budget/);
       assert.equal(mock.requests.length, 0);
       await fs.writeFile(path.join(agentDir, "AGENTS.md"), "remote\n");
+      assert.ok(watch.changed);
+      watch.changed(false);
       await advanceContinuous(6000);
       await waitStatus(mock.statuses, /waiting for changes/);
       assert.equal(mock.requests.length, 0);

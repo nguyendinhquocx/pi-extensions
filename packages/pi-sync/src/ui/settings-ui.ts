@@ -92,32 +92,20 @@ export async function showSyncSettings(
     | "storage-location"
     | "setups"
     | "connections";
-  type Group = "content" | "behavior" | "storage" | "advanced" | "all";
-  type Screen = "categories" | Group;
-  const groups: Record<Group, { label: string; ids: readonly string[] }> = {
-    content: { label: "Sync content", ids: ["include", "remoteInclude", "localFields"] },
-    behavior: {
-      label: "Sync behavior",
-      ids: ["automatic", "automaticTransfer", "agentMode", "continuous", "onSwitch"],
-    },
-    storage: { label: "Storage & setups", ids: ["storageLocation", "setups", "connections"] },
-    advanced: { label: "Advanced", ids: ["mergeSettings", "contentPolicy", "skipSecretScan", "showStatus", "debug"] },
-    all: { label: "All settings (search)", ids: [] },
-  };
   let saveStatus = "Simple choices save immediately. Back does not undo saved changes.";
   // Keep Kit's existing settings adapter: native SettingsList has no async save/rollback
   // contract or injected keybindings. Kit preserves these safety and accessibility behaviors.
-  // Categories use public navigation; All settings retains cross-category search.
-  const settingsScreen = (state: Awaited<ReturnType<typeof loadConfig>>, group: Group) =>
-    ({
-      kind: "settings",
-      title: `Pi Sync Settings · ${groups[group].label}`,
-      lines: [
-        `Setup: ${safeTerminalText(state.setupName)} · Connection: ${safeTerminalText(state.connectionName)}`,
-        saveStatus,
-      ],
-      items: (
-        [
+  const menu = defineMenu<Awaited<ReturnType<typeof loadConfig>>, "settings", Action, ExtensionCommandContext>({
+    start: "settings",
+    screens: {
+      settings: ({ state }) => ({
+        kind: "settings",
+        title: "Pi Sync Settings",
+        lines: [
+          `Setup: ${safeTerminalText(state.setupName)} · Connection: ${safeTerminalText(state.connectionName)}`,
+          saveStatus,
+        ],
+        items: [
           {
             id: "include",
             label: "Included paths",
@@ -188,7 +176,7 @@ export async function showSyncSettings(
           },
           {
             id: "agentMode",
-            label: "Agent mode (experimental)",
+            label: "Autonomous sync",
             description: AGENT_MODE_DESCRIPTION,
             currentValue: state.agentMode ? "On" : "Off",
             values: ["On", "Off"],
@@ -196,8 +184,8 @@ export async function showSyncSettings(
           },
           {
             id: "continuous",
-            label: "Continuous sync (experimental)",
-            description: `${CONTINUOUS_DESCRIPTION}${state.continuous && !state.agentMode ? " Saved On, but paused until Agent mode is enabled." : ""}`,
+            label: "Continuous sync",
+            description: `${CONTINUOUS_DESCRIPTION}${state.continuous && !state.agentMode ? " Saved On, but paused until Autonomous sync is enabled." : ""}`,
             currentValue: state.continuous ? "On" : "Off",
             values: ["On", "Off"],
             action: "continuous",
@@ -215,7 +203,7 @@ export async function showSyncSettings(
             id: "mergeSettings",
             label: "Merge settings fields",
             description:
-              "This setup, experimental opt-in: merge independent global settings.json root fields with a verified private ancestor. Arrays and nested objects remain atomic. Applies to subsequent sync; no reload.",
+              "This setup, opt-in: merge independent global settings.json root fields with a verified private ancestor. Arrays and nested objects remain atomic. Applies to subsequent sync; no reload.",
             currentValue: state.mergeSettings ? "On" : "Off",
             values: ["On", "Off"],
             action: "merge-settings",
@@ -224,7 +212,7 @@ export async function showSyncSettings(
             id: "contentPolicy",
             label: "Content merge / partial progress",
             description:
-              "This setup, experimental opt-in: review the version-5 upgrade before saving. Merge bounded text and prefix-only sessions; partial progress keeps withheld versions and baselines. Applies to subsequent sync; disabling does not clear recovery evidence.",
+              "This setup, opt-in: review the version-5 upgrade before saving. Merge bounded text and prefix-only sessions; partial progress keeps withheld versions and baselines. Applies to subsequent sync; disabling does not clear recovery evidence.",
             currentValue: state.mergeContent
               ? state.partialSync
                 ? "Merge + partial"
@@ -262,32 +250,8 @@ export async function showSyncSettings(
             values: ["On", "Off"],
             action: "debug",
           },
-        ] satisfies MenuSettingItem<Action>[]
-      ).filter((item) => group === "all" || groups[group].ids.includes(item.id)),
-    }) as const;
-  const menu = defineMenu<Awaited<ReturnType<typeof loadConfig>>, Screen, Action, ExtensionCommandContext>({
-    start: "categories",
-    screens: {
-      categories: ({ state }) => ({
-        kind: "actions",
-        title: "Pi Sync Settings",
-        lines: [
-          `Setup: ${safeTerminalText(state.setupName)} · Connection: ${safeTerminalText(state.connectionName)}`,
-          "Choose a task, or search all settings. Scope is shown in each setting's description.",
-          saveStatus,
-        ],
-        items: (Object.entries(groups) as [Group, (typeof groups)[Group]][]).map(([id, group]) => ({
-          id,
-          label: group.label,
-          to: id,
-        })),
-        hint: "back",
+        ] satisfies MenuSettingItem<Action>[],
       }),
-      content: ({ state }) => settingsScreen(state, "content"),
-      behavior: ({ state }) => settingsScreen(state, "behavior"),
-      storage: ({ state }) => settingsScreen(state, "storage"),
-      advanced: ({ state }) => settingsScreen(state, "advanced"),
-      all: ({ state }) => settingsScreen(state, "all"),
     },
     actions: {
       "storage-location": async ({ signal: actionSignal }) => {
@@ -315,7 +279,7 @@ export async function showSyncSettings(
           const partialSync = value === "Partial only" || value === "Merge + partial";
           if (
             !(await ctx.ui.confirm(
-              "Save experimental content policy?",
+              "Save content policy?",
               "This explicitly upgrades settings to version 5; partial snapshots use version 3 and older clients must refuse them. Text/session merge is conservative. Partial sync preserves withheld versions and old baselines. Disabling does not clear unresolved groups or recovery evidence. Review a directional migration first if portable policy changes.",
               { signal: mutationSignal },
             ))
@@ -450,7 +414,7 @@ export async function showSyncSettings(
           try {
             validate();
             ctx.ui.notify(
-              "Agent mode saved. Applies to subsequent sync and the next session start; no transfer started.",
+              "Autonomous sync saved. Applies to subsequent sync and the next session start; no transfer started.",
               "info",
             );
           } catch {
