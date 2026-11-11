@@ -1,5 +1,17 @@
 # @narumitw/pi-btw
 
+## 0.63.7
+
+### Patch Changes
+
+- b2b91fa: Reduce main-thread tree picker allocations by joining raw text fragments only when copying and storing saved labels only when needed.
+
+## 0.63.6
+
+### Patch Changes
+
+- aca87cf: Fix call stack overflows when opening the main-thread tree picker for deep session histories.
+
 ## 0.63.5
 
 ### Patch Changes
