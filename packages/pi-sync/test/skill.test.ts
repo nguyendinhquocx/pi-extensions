@@ -20,7 +20,6 @@ const referencePath = path.join(skillDirectory, "references/configuration.md");
 const skillText = readFileSync(path.join(skillDirectory, "SKILL.md"), "utf8");
 const reference = readFileSync(referencePath, "utf8");
 const readme = readFileSync(path.join(packageDirectory, "README.md"), "utf8");
-const oldReference = readFileSync(path.join(packageDirectory, "docs/settings.md"), "utf8");
 const manifest = JSON.parse(readFileSync(path.join(packageDirectory, "package.json"), "utf8"));
 
 function headingId(heading: string): string {
@@ -56,9 +55,13 @@ function fragmentIds(markdown: string): Set<string> {
 }
 
 function configurationExample(): Record<string, unknown> {
-  const examples = [...reference.matchAll(/```json\n([\s\S]*?)\n```/gu)];
+  const examples = [...reference.matchAll(/```json\n([\s\S]*?)\n```/gu)]
+    .map((match) => JSON.parse(match[1] ?? "") as Record<string, unknown>)
+    .filter((example) => Object.hasOwn(example, "storageConnections"));
   assert.equal(examples.length, 1, "keep one authoritative complete example");
-  return JSON.parse(examples[0]?.[1] ?? "");
+  const example = examples[0];
+  assert.ok(example);
+  return example;
 }
 
 test("manifest publishes one manual-only skill without changing the extension entrypoint", () => {
@@ -187,7 +190,20 @@ test("moved operational links still name existing repository files and fragments
   }
 });
 
-test("old settings URLs retain all original fragments and link to current reference headings", () => {
+test("operational verification links point directly to authoritative settings fragments", () => {
+  for (const [file, fragment] of [
+    ["agent-mode-verification.md", "autonomous-sync"],
+    ["agent-quality-verification.md", "autonomous-sync"],
+    ["continuous-sync-verification.md", "continuous-sync"],
+  ] as const) {
+    const document = readFileSync(path.join(packageDirectory, "docs", file), "utf8");
+    const target = `../skills/configure-pi-sync/references/configuration.md#${fragment}`;
+    assert.ok(document.includes(`](${target})`), `${file}: ${target}`);
+    assert.ok(fragmentIds(reference).has(fragment), target);
+  }
+});
+
+test("the authoritative settings reference retains original fragments and current headings", () => {
   const originalHeadings = [
     "⚙️ Settings",
     "Editing in the manager",
@@ -214,25 +230,17 @@ test("old settings URLs retain all original fragments and link to current refere
     ["Experimental Agent mode", "Autonomous sync"],
     ["Experimental Continuous sync", "Continuous sync"],
   ]);
-  assert.deepEqual(
-    headings(oldReference),
-    originalHeadings.map((heading) => renamedHeadings.get(heading) ?? heading),
-  );
   for (const heading of originalHeadings) {
     const currentHeading = renamedHeadings.get(heading) ?? heading;
     assert.ok(headings(reference).includes(currentHeading), currentHeading);
-    assert.ok(fragmentIds(oldReference).has(headingId(heading)), `missing old URL: ${heading}`);
     assert.ok(fragmentIds(reference).has(headingId(heading)), `missing reference URL: ${heading}`);
-    assert.ok(oldReference.includes(`references/configuration.md#${headingId(currentHeading)}`));
   }
-  assert.doesNotMatch(oldReference, /```json/u, "the compatibility index must not duplicate the schema example");
 });
 
 test("all settings documents expose current headings and invisible legacy fragment anchors", () => {
   for (const [label, document] of [
     ["README", readme],
     ["authoritative reference", reference],
-    ["compatibility index", oldReference],
   ] as const) {
     for (const [heading, legacyFragment] of [
       ["Autonomous sync", "experimental-agent-mode"],
@@ -244,7 +252,11 @@ test("all settings documents expose current headings and invisible legacy fragme
       assert.ok(fragmentIds(document).has(legacyFragment), `${label}: ${legacyFragment}`);
     }
     const visibleText = document.replace(/<a\s+id="[^"]+"\s*><\/a>/gu, "");
-    assert.doesNotMatch(visibleText, /experimental|agent[ -]mode/iu, label);
+    assert.doesNotMatch(
+      visibleText,
+      /experimental\s+(?:agent[ -]mode|autonomous sync|continuous sync)|\bagent[ -]mode\b/iu,
+      label,
+    );
     assert.doesNotMatch(document, /\]\([^)\n]*#experimental-(?:agent-mode|continuous-sync)\)/u, label);
   }
   assert.match(skillText, /\*\*Autonomous sync\*\*/u);
@@ -273,6 +285,7 @@ for (const [version, policy] of [
   [4, { localFields: [] }],
   [4, { localFields: ["shellPath"] }],
   [5, { localFields: ["shellPath"], mergeContent: true, partialSync: true }],
+  [6, { exclude: ["skills/private"] }],
 ] as const) {
   test(`documented version ${version} accepts ${JSON.stringify(policy)} without accepting a downgrade`, () => {
     const settings = validateSettingsDocument(configurationExample());
@@ -285,7 +298,20 @@ for (const [version, policy] of [
   });
 }
 
-for (const version of [undefined, 1, 2, 6]) {
+test("the exclusion policy fragment validates inside a version-6 setup", () => {
+  const fragments = [...reference.matchAll(/```json\n([\s\S]*?)\n```/gu)]
+    .map((match) => JSON.parse(match[1] ?? "") as Record<string, unknown>)
+    .filter((value) => Object.hasOwn(value, "exclude"));
+  assert.equal(fragments.length, 1);
+  const settings = validateSettingsDocument(configurationExample());
+  settings.version = 6;
+  const setup = settings.syncSetups.home;
+  assert.ok(setup);
+  Object.assign(setup.sync, fragments[0]);
+  validateSettingsDocument(settings);
+});
+
+for (const version of [undefined, 1, 2, 7]) {
   test(`unsupported settings version ${String(version)} is not interpreted as a supported example`, () => {
     const settings = configurationExample();
     settings.version = version;

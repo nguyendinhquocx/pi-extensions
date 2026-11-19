@@ -73,10 +73,8 @@ Use messaging only when needed:
 - If `subagent_wait` returns `reason: "subagent_message"`, handle the visible request or response and wait for the job again only when needed.
 - Answer a child-originated request by calling `subagent_send` with its `requestId`.
 
-Completion messages and child requests and responses follow Pi's global tool-output expansion state and the `app.tools.expand` binding (`Ctrl+O` by default).
-Collapsed messages show a summary and the host's configured expansion keys.
-The hint is omitted when the action is unbound or an older host does not supply renderer key formatting.
-Expanded messages show the full content; this display state does not change the content sent to the model.
+Expand tool results and notifications with Pi's `app.tools.expand` binding (`Ctrl+O` by default).
+See [Conversation presentation](./docs/conversation-display.md) for tool summaries, notification details, and expansion behavior.
 
 ## 💬 Commands
 
@@ -95,7 +93,7 @@ The widget is TUI-only and contains only queued or running jobs. Each row starts
 For example, with a main-agent thinking level of `high` at spawn:
 
 ```text
-Subagents · 2 active
+─ ▾ Subagents · 1 running · 1 queued ───────
 ▶ Review widget tests · 12s
 ○ Audit settings · thinking: medium · queued
 ```
@@ -108,9 +106,13 @@ The task preview removes terminal controls, collapses whitespace, and uses at mo
 Task text is visible in this local widget, but `subagent_inspect` continues to omit it. Optional tool names include selected core and extension tools, not fixed communication tools.
 The widget omits attachment paths and resource totals, disappears when no jobs remain active, and clears when the session ends.
 
+The separator shows **Subagents** and current running and queued counts, including while collapsed. In fullscreen TUI mode, click anywhere in the widget, including blank columns, to collapse it to that separator. Click the separator to restore the latest jobs without moving keyboard focus.
+Disclosure survives job updates, temporary absence, and host remounts. Select a visible view in `/subagents` to restore disclosure with the keyboard. Session start and tree navigation reset it.
+Collapse does not change jobs, settings, item views, pins, or automatic rules.
+
 Ordinary updates refresh the mounted widget without changing its position among other widgets. Hiding and showing it again can change that position.
 The widget uses at most ten rows, including one separator, and reserves eight terminal rows for the editor and footer. This is a local height limit, not a calculation of space left by other widgets.
-With fewer than two available rows it renders nothing. Short layouts use a summary with active, running, queued, and omitted-row counts. Narrow layouts clip each line to the terminal width.
+With no available rows it renders nothing. One available row shows only the separator with current counts and omitted-row information. Summary view also uses only the separator, but does not count its intentionally absent job rows as omitted. Narrow layouts clip each line to the terminal width.
 
 In `/subagents`, **Widget view** provides details, summary, hide/show, pin/unpin, automatic compaction, and item-view reset controls.
 These controls are session-local and do not write settings. Manual hide remains in effect across job changes until you show the widget again.
@@ -333,6 +335,9 @@ packages/pi-subagents/
 ├── src/                               # Authoritative implementation and helpers
 │   ├── index.ts                       # Thin Pi entrypoint
 │   ├── subagents.ts                   # Commands and session lifecycle
+│   ├── tool-renderers.ts              # Conversation tool summaries and expanded details
+│   ├── message-renderers.ts           # Conversation completion and broker notifications
+│   ├── conversation-view.ts           # Shared bounded, sanitized conversation rendering
 │   ├── menu.ts                        # Job manager and session-local display controls
 │   ├── widget.ts                      # Retained widget ownership and event policies
 │   ├── widget-renderer.ts             # Bounded rows and active-job summaries

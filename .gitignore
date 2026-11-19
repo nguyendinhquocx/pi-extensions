@@ -95,8 +95,13 @@ bower_components
 # Compiled binary addons (https://nodejs.org/api/addons.html)
 build/Release
 
+# npm is the repository package manager
+/bun.lock
+
 # Dependency directories
 node_modules/
+packages/*/.workspace-runtime-staging-*/
+packages/*/.workspace-runtime-backup-*/
 jspm_packages/
 
 # Snowpack dependency directory (https://snowpack.dev/)

@@ -9,6 +9,7 @@ import type {
   InputEvent,
   InputSource,
 } from "@earendil-works/pi-coding-agent";
+import type { EditorStatusWidgetState } from "@narumitw/pi-tui-kit/editor-status-widget";
 import { completePlanArguments } from "./command.js";
 import {
   normalizePlanModeCompletion,
@@ -90,6 +91,7 @@ import {
   type PlanModeWorkflowToolPolicy,
   restorePlanModeState,
 } from "./state.js";
+import { createPlanModeStatePersistence } from "./state-persistence.js";
 import { planModeToolAvailability } from "./tool-availability.js";
 import {
   canSelectToolInPlanMode,
@@ -167,6 +169,9 @@ export default function planMode(pi: ExtensionAPI, dependencies: PlanModeDepende
   let workflowOwner: WorkflowMutexOwner | undefined;
   let currentSession: object | undefined;
   let currentSessionContext: ExtensionContext | undefined;
+  let shutdownStarted = false;
+  let shutdownTask: Promise<void> | undefined;
+  let widgetState: EditorStatusWidgetState = { collapsed: false };
   let interactiveUiPromise: Promise<InteractiveUi> | undefined;
   const loadInteractiveUi = () => {
     if (dependencies.loadInteractiveUi) return dependencies.loadInteractiveUi();
@@ -204,7 +209,10 @@ export default function planMode(pi: ExtensionAPI, dependencies: PlanModeDepende
   let settingsReloadTimer: ReturnType<typeof setTimeout> | undefined;
   const implementationRetention = createImplementationRetentionCoordinator();
   const finalizationRequest = createFinalizationRequestCoordinator();
-  const persistState = () => pi.appendEntry<PlanModeState>(STATE_ENTRY_TYPE, state);
+  const statePersistence = createPlanModeStatePersistence(STATE_ENTRY_TYPE, (snapshot) =>
+    pi.appendEntry<PlanModeState>(STATE_ENTRY_TYPE, snapshot),
+  );
+  const persistState = () => statePersistence.persist(state, currentSessionContext?.sessionManager.getBranch() ?? []);
   const interaction = createInteractionCoordinator(pi, {
     getState: () => state,
     setState: (next) => {
@@ -409,6 +417,11 @@ export default function planMode(pi: ExtensionAPI, dependencies: PlanModeDepende
           "The interactive /plan menu is unavailable in print and JSON modes. Use /plan start or /plan <prompt>.",
         );
       }
+      // Opening the existing manager restores the summary without changing Plan mode.
+      if (ctx.mode === "tui" && widgetState.collapsed) {
+        widgetState.collapsed = false;
+        updateUi(ctx);
+      }
       if (!state.enabled) {
         if (state.activeImplementation && ctx.hasUI) {
           await showActivePlanMenu(ctx);
@@ -515,8 +528,11 @@ export default function planMode(pi: ExtensionAPI, dependencies: PlanModeDepende
     cancelDeferredFreshImplementation();
     const generation = ++menuGeneration;
     finalizationRequest.reset();
+    widgetState = { collapsed: false };
     currentSession = ctx.sessionManager;
     currentSessionContext = ctx;
+    shutdownStarted = false;
+    shutdownTask = undefined;
     workflowOwner = undefined;
     workflowMutex.bindSession(ctx.sessionManager);
     refreshStateBeforeFirstAgentStart = event.reason === "new";
@@ -532,6 +548,7 @@ export default function planMode(pi: ExtensionAPI, dependencies: PlanModeDepende
     settings = { thinkingLevel: "inherit" };
     const branch = ctx.sessionManager.getBranch();
     const restoredState = restorePlanModeState(branch, STATE_ENTRY_TYPE);
+    statePersistence.restore(restoredState);
     restoreModeContractTracking(branch, restoredState);
     state = { enabled: false, awaitingAction: false };
     await applyPlanModeSettings(generation, ctx, true);
@@ -588,6 +605,7 @@ export default function planMode(pi: ExtensionAPI, dependencies: PlanModeDepende
     const branch = ctx.sessionManager.getBranch();
     const restoredState = restorePlanModeState(branch, STATE_ENTRY_TYPE);
     restoreModeContractTracking(branch, restoredState);
+    statePersistence.restore(restoredState);
     if (!installRestoredState(restoredState, ctx)) return;
     implementationRetention.restore(state.activeImplementation);
     startPlanModeSettingsWatch(menuGeneration);
@@ -596,7 +614,7 @@ export default function planMode(pi: ExtensionAPI, dependencies: PlanModeDepende
   });
 
   pi.on("thinking_level_select", (event) => {
-    if (!state.enabled || !state.appliedThinkingLevel) return;
+    if (shutdownStarted || !state.enabled || !state.appliedThinkingLevel) return;
     if (event.level !== state.appliedThinkingLevel) {
       state = {
         ...state,
@@ -608,11 +626,17 @@ export default function planMode(pi: ExtensionAPI, dependencies: PlanModeDepende
     }
   });
 
-  pi.on("session_shutdown", async (_event, ctx) => {
+  pi.on("session_shutdown", (_event, ctx) => {
     if (currentSession !== undefined && currentSession !== ctx.sessionManager) {
       workflowMutex.unbindSession(ctx.sessionManager);
       return;
     }
+    shutdownTask ??= shutdownPlanModeSession(ctx);
+    return shutdownTask;
+  });
+
+  async function shutdownPlanModeSession(ctx: ExtensionContext) {
+    shutdownStarted = true;
     interaction.disposeSession();
     invalidateReadyMenu();
     cancelDeferredFreshImplementation();
@@ -635,7 +659,7 @@ export default function planMode(pi: ExtensionAPI, dependencies: PlanModeDepende
       );
     }
     finalizationRequest.reset();
-    menuGeneration += 1;
+    const shutdownGeneration = ++menuGeneration;
     menuController.abort(new DOMException("Plan-mode session shut down", "AbortError"));
     readyPresentationIntent = undefined;
     latestCommandContext = undefined;
@@ -645,28 +669,37 @@ export default function planMode(pi: ExtensionAPI, dependencies: PlanModeDepende
     workflowAllowedToolNames = undefined;
     pendingWorkflowToolPolicy = undefined;
     implementationRetention.reset();
+    const shutdownIsCurrent = () =>
+      shutdownGeneration === menuGeneration && (currentSession === undefined || currentSession === shutdownSession);
     if (runtimeApplication) await runtimeApplication.completion;
-    if (currentSession !== undefined && currentSession !== shutdownSession) {
-      workflowMutex.unbindSession(shutdownSession);
+    if (!shutdownIsCurrent()) {
+      if (currentSession !== shutdownSession) workflowMutex.unbindSession(shutdownSession);
       return;
     }
     await awaitPlanModeSettingsWrites(dependencies.settingsPath);
-    if (currentSession !== undefined && currentSession !== shutdownSession) {
-      workflowMutex.unbindSession(shutdownSession);
+    if (!shutdownIsCurrent()) {
+      if (currentSession !== shutdownSession) workflowMutex.unbindSession(shutdownSession);
       return;
     }
-    captureManualThinkingLevel();
-    persistState();
-    if (state.enabled) restoreThinkingLevel();
-    stopPlanModeSettingsWatch();
-    clearUi(ctx);
-    releaseWorkflowOwner();
-    workflowMutex.unbindSession(ctx.sessionManager);
-    if (currentSession === ctx.sessionManager) {
-      currentSession = undefined;
-      currentSessionContext = undefined;
+    try {
+      captureManualThinkingLevel();
+      persistState();
+    } finally {
+      try {
+        if (state.enabled) restoreThinkingLevel();
+      } finally {
+        stopPlanModeSettingsWatch();
+        clearUi(ctx);
+        releaseWorkflowOwner();
+        workflowMutex.unbindSession(ctx.sessionManager);
+        if (currentSession === ctx.sessionManager) {
+          currentSession = undefined;
+          currentSessionContext = undefined;
+          widgetState = { collapsed: false };
+        }
+      }
     }
-  });
+  }
 
   pi.on("tool_call", async (event, ctx) => {
     const requiredHelper =
@@ -1761,6 +1794,7 @@ export default function planMode(pi: ExtensionAPI, dependencies: PlanModeDepende
     implementationRetention.reset();
     const branch = ctx.sessionManager.getBranch();
     const restoredState = restorePlanModeState(branch, STATE_ENTRY_TYPE);
+    statePersistence.restore(restoredState);
     restoreModeContractTracking(branch, restoredState);
     if (!installRestoredState(restoredState, ctx)) return;
     implementationRetention.restore(state.activeImplementation);
@@ -2065,6 +2099,7 @@ export default function planMode(pi: ExtensionAPI, dependencies: PlanModeDepende
 
   function bindWorkflowSessionIfNeeded(ctx: ExtensionContext) {
     if (currentSession === ctx.sessionManager) return;
+    widgetState = { collapsed: false };
     currentSession = ctx.sessionManager;
     workflowOwner = undefined;
     workflowMutex.bindSession(ctx.sessionManager);
@@ -2108,7 +2143,7 @@ export default function planMode(pi: ExtensionAPI, dependencies: PlanModeDepende
   }
 
   function updateUi(ctx: ExtensionContext) {
-    updatePlanModeUi(ctx, state, formatToolSummary, interaction.shortcutLabel(ctx));
+    updatePlanModeUi(ctx, state, formatToolSummary, interaction.shortcutLabel(ctx), widgetState);
   }
 
   function clearUi(ctx: ExtensionContext) {

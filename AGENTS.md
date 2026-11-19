@@ -5,6 +5,7 @@
 - Lead with the most important information and use concise, accurate prose without repetition.
 - Use concise paragraphs for human-facing narrative and lists only when separate items are easier to scan.
 - Keep `AGENTS.md` instructions as one-sentence, enforceable bullet points.
+- Prefer static checks or linters over written agent rules when a required workflow runs the check and it fully covers the rule.
 - Follow `docs/readme-conventions.md` for active package READMEs, including its required sections, warnings, scope rules, and verification checklist.
 - Keep package versions out of long-lived guidance and derive them from manifests, lockfiles, or workflows.
 
@@ -21,7 +22,7 @@
 - Use `npm install` to install dependencies, `npm run format` to apply Biome formatting, and `npm run typecheck` to typecheck every workspace.
 - Run `npm run` before adding or documenting a root workflow command.
 - Keep root npm scripts as canonical entrypoints only for workflows users run from the root, and move complex implementations under `scripts/`.
-- Keep pre-commit hook logic in `scripts/pre-commit.sh`, invoke it directly from `.husky/pre-commit`, and do not add a duplicate root npm script.
+- Define each pre-commit check directly in `prek.toml` with distinct ordered priorities and fail-fast behavior, and do not add a wrapper script or duplicate root npm script.
 - Do not run root checks concurrently with a `pi-tui-kit` build or check because both clear `packages/pi-tui-kit/dist`.
 - Rebuild `pi-tui-kit` before consumer tests because consumers resolve its built output.
 - After raising a consumer's Kit floor, run root `npm install`, verify the resolution with `npm ls @narumitw/pi-tui-kit`, and then typecheck.
@@ -35,7 +36,6 @@
 - Keep publishable extension packages and reusable libraries under `packages/<package>/`, with implementation source under `packages/<package>/src/`.
 - Keep deprecated references under `deprecated/`, which active checks exclude.
 - Keep each package's manifest, README, license, and TypeScript configuration inside that package.
-- Preserve each README's emoji title; npm, Pi, and license badges; and applicable `✨ Features`, `📦 Install`, `🚀 Quick start`, `⚙️ Settings`, `💬 Commands`, `🗂️ Package layout`, `🔎 Keywords`, and `📄 License` sections.
 - Keep small repository-only extensions and their helpers, documentation, and requested tests under `.pi/extensions/<extension>/`, with `index.ts` as the entrypoint.
 - Treat `.pi/extensions/` as a self-contained project-resource boundary unrelated to packages under `packages/`.
 - Do not add package manifests, workspaces, Changesets, package tests, root test support, or shared TypeScript configuration for a project-local extension unless the user explicitly asks.
@@ -118,6 +118,13 @@
 - Disable `commit.gpgsign` only through command-scoped Git configuration when root tests cannot reach a signing agent.
 - Keep worktrees outside the repository because root Biome checks reject nested worktrees with another `biome.json`.
 - Stop after one clear external or entitlement failure in a live-provider smoke and fall back to deterministic tests unless the user asks to retry.
+
+### Enforced repeat-mistake rules
+
+| Rule | Enforcement |
+| --- | --- |
+| Derive workspace build order from package dependencies, not the root workspace list. | `scripts/run-builds.mjs` and `scripts/workspace-graph.mjs`; cold-build, historical-failure, cycle, and fail-fast tests in `test/workspace-build-order.test.ts` through `npm test`; CI runs `npm run check` and `npm test`. |
+| Keep SemVer dev dependency ranges within declared peer ranges and install compatible dependencies. | `scripts/check-dependencies.mjs` via `npm run check:dependencies` in the local/CI `npm run check` gate; historical durable and hoisted OpenTelemetry regressions in `test/dependency-compatibility.test.ts` via `npm test`. |
 
 ## Publishing and release safety
 

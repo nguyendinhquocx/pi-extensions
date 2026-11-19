@@ -3,9 +3,10 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { initTheme } from "@earendil-works/pi-coding-agent";
 import { visibleWidth } from "@earendil-works/pi-tui";
+import { syncBoth } from "@narumitw/pi-sync-daemon/engine/sync/sync-operations";
 import { createTuiHarness } from "@narumitw/pi-tui-kit/testing";
 import { test } from "vitest";
-import { createCustomSelectorHarness, createMockContext, createMockPi } from "../../../test/support.js";
+import { createCustomSelectorHarness, createMockContext } from "../../../test/support.js";
 import {
   completeSyncArguments,
   parseOptions,
@@ -17,11 +18,11 @@ import {
 import { loadConfig, syncConfigReviewFingerprint } from "../src/settings/config.js";
 import { localConfigPath } from "../src/settings/config-file.js";
 import { readLocalConfigObject, updateLocalConfig } from "../src/settings/settings-store.js";
-import { syncBoth } from "../src/sync/sync-operations.js";
 import { BUILT_IN_SYNC_ROOTS, RemoteSelectionMismatchError } from "../src/sync/sync-policy.js";
 import sync from "../src/sync.js";
 import { showFileSelection } from "../src/ui/file-selection.js";
 import { v3S3Settings, withTempHome } from "./helpers.js";
+import { createRegisteredMockPi as createMockPi } from "./registered-fixture.js";
 import { contextUi, deferred, inspectionFixture, observeCheckCompletion } from "./startup-check-helpers.js";
 
 initTheme("dark", false);
@@ -535,10 +536,24 @@ test("startup selection mismatch stays passive until the user opens the manager"
         return undefined;
       },
     });
-    await mock.events.get("session_shutdown")?.[0]?.({ reason: "exit" }, shutdown.ctx);
+    const { pushSessionsOnShutdown } = await import("@narumitw/pi-sync-daemon/engine/sync/session-push");
+    await assert.rejects(
+      pushSessionsOnShutdown(
+        shutdown.ctx,
+        { ...parseOptions([]), signal: new AbortController().signal },
+        {
+          operations: async () =>
+            ({
+              push: async () => {
+                throw await selectionMismatch();
+              },
+            }) as never,
+        },
+      ),
+      /Remote-only: pi-starship\.toml/u,
+    );
+    await mock.events.get("session_shutdown")?.[0]?.({ reason: "reload" }, ctx);
     assert.equal(shutdownCustomCalls, 0);
-    assert.match(shutdown.notifications.at(-1)?.message ?? "", /session push skipped/u);
-    assert.match(shutdown.notifications.at(-1)?.message ?? "", /Remote-only: pi-starship\.toml/u);
     assert.equal(shutdown.widgets.get("sync:attention"), undefined);
     assert.equal(shutdown.statuses.get("sync"), undefined);
 
@@ -918,7 +933,10 @@ test("included-content save preserves a concurrent include change", async () => 
     });
     await showFileSelection(ctx, "home");
     assert.deepEqual((await readLocalConfigObject())?.syncSetups.home.sync.include, ["models.json"]);
-    assert.match(notifications.at(-1)?.message ?? "", /included content changed.*reopen/iu);
+    assert.match(
+      notifications.at(-1)?.message ?? "",
+      /Sync setup “home” changed while it was open; reopen it and review the current configuration/iu,
+    );
   });
 });
 
@@ -1007,7 +1025,7 @@ test("unsupported settings pause startup automatic sync and remain unchanged", a
     await notified.promise;
     await mock.events.get("session_shutdown")?.[0]?.({ reason: "reload" }, ctx);
     const output = notifications.map((item) => item.message).join("\n");
-    assert.match(output, /startup check skipped|version 3 or 4 is required/u);
+    assert.match(output, /recovery required.*Unsupported pi-sync settings.*version 3, 4, 5 or 6/su);
     assert.doesNotMatch(output, /hidden/u);
     assert.deepEqual(readFileSync(localConfigPath()), bytes);
   });

@@ -2,6 +2,18 @@
 
 This reference records the setting and transfer contracts used by the TUI. It does not add a settings format or change transfer authorization.
 
+## Action palette
+
+The `/sync` TUI manager uses Kit's public searchable `ChoiceScreen` with at most five visible choices. Ordinary rows contain only labels; the selected action's short description appears below the list and is included in search. Search and selection survive a cancelled operation. Navigation, confirmation, cancellation, paste, focus, scrolling and constrained-height framing remain Kit-owned. RPC keeps an unfiltered list with the established **Sync now** label and a **Done** exit; TUI displays **Sync…** for that same action.
+
+The homepage shows setup/storage, cached remote observations, last applied state and relevant automatic-transfer permissions. It does not render scheduler owners, leases, request accounting or candidate limits. Recorded background phases and successful background-transfer timestamps are explicitly historical; neither replaces a fresh remote check. Missing records show **not yet observed**, and unreadable or invalid records show **Unknown**. Last applied does not invent a timestamp or direction.
+
+When Continuous sync is configured, **Diagnostics** opens a scrollable, read-only local report before offering **Continue to backend checks…**. Back returns to the palette; hard Ctrl+C closes the manager. Continuing still requires the existing backend-probe consent and setup-fingerprint recheck. The direct `/sync doctor` route remains unchanged.
+
+The attention widget retains its labeled muted separator and one body row: **Open /sync to review** with the setup name. It remains passive, preserves collapse state and observation classification, and exposes detailed reasons through the manager and existing notifications. Session replacement, shutdown and stale asynchronous publication retain their existing cleanup guards.
+
+Verification follows `docs/extension-conventions.md`, `docs/extension-settings.md`, and `docs/readme-conventions.md`. Palette tests cover bounded rendering, stable normal-height navigation, selected-action help, search/paste, non-default bindings, RPC and owner cancellation; existing transfer and stale-setup tests remain applicable. Physical-terminal appearance with the target font and pane sizes requires maintainer inspection. Live provider/backend behavior, Windows and Android were not newly verified by this presentation change. No settings schema, Kit API, transfer authorization or model-visible prefix changes are intended.
+
 ## Settings
 
 All settings are private to this device. There are no project overrides. Defaults and validation are defined in `src/settings/settings-validation.ts` and `src/settings/config.ts`; mutation is owned by `settings-management.ts` and `settings-store.ts`.
@@ -31,7 +43,7 @@ Writers queue the complete read-modify-write operation, hold the cross-process l
 
 ## Presentation decisions
 
-Selecting **Settings** in `/sync` opens **Pi Sync Settings** directly as one searchable flat list, with all 16 rows in their existing order and no category navigation or headings. Row values, descriptions, actions, reviews, and save behavior are unchanged. Typing searches the list. Back returns directly to the manager; hard Ctrl+C closes the flow. No `/ Search` hint is added because slash is ordinary search text.
+Selecting **Settings** in `/sync` opens **Pi Sync Settings** directly as one searchable flat list, with 17 rows and no category navigation or headings. Included paths, Excluded paths, and Compare included paths keep both content policies together. Excluded paths has a transactional JSON-array draft and reviewed Save/Discard/Continue flow; other rows retain their existing actions and save behavior. Typing searches the list. Back returns directly to the manager; hard Ctrl+C closes the flow. No `/ Search` hint is added because slash is ordinary search text.
 
 The existing public Kit settings adapter is retained rather than adding a second selector or accessing private Pi fields. Installed `SettingsList` provides `updateValue()` and `selectItem()`, but has no injected keybinding or awaited-save/rejection contract and does not expose search focus. Kit already owns ordered pending changes, rollback, retained search/selection, IME focus, bounded frames, and clipped mouse coordinates. This is an intentional existing deviation from the literal native-component convention. No new Kit API, dependency floor, or release is required. A package-owned public rendering boundary returns no lines at zero width and retains the selected row (or search when nothing matches) below five content rows; compact mouse events map back to the original rendered row. It does not access private component state or add key handlers. Search placeholder and position-footer relocation remain unsupported by that public API; the existing native-style hints and position indicator are retained rather than patched through private fields.
 
@@ -57,6 +69,12 @@ Startup transfer summaries report the preference and prerequisites, not a claim 
 | Automatic startup / shutdown | No new modal; existing opt-in, capability, idle, all-or-nothing conflict and secret policies | `automatic-transfer.test.ts`, `startup-check.test.ts`, `backend-orchestration.test.ts` |
 
 TUI Pull and Push reviews reuse the existing scrollable safe-default confirmation and exact Details document; RPC and History rollback retain their observable confirmation protocols. The existing History dialog ownership/cancellation flow is not replaced. All changed counts come from effective snapshot differences rather than raw merge decisions. Protected paths, preserved remote files, merged bytes, and withheld paths must be accounted for before rendering. Cancellation performs no transfer; pre-commit preparation may retain recovery evidence. After the commit boundary, existing completion/recovery rules apply instead of promising undo.
+
+## Resource reload after a transfer
+
+If the user accepts the reload prompt after a pull or rollback, `/sync` waits for the daemon job and closes its dialogs before asking Pi to reload. Declining leaves the completed transfer in place without reloading. Reload still waits for session shutdown and daemon cleanup.
+
+RPC and the TUI harness verify this ordering. The native Fedora/tmux flow from [issue #1935](https://github.com/narumiruna/pi-extensions/issues/1935) was not run. To verify it, repeat the issue's loopback WebDAV steps with a temporary agent directory. After accepting reload, check that the progress display closes and the next editor input or `/sync` command works.
 
 ## Review boundaries
 
@@ -107,7 +125,7 @@ Verification evidence:
 
 - Root `npm run check` and `npm test` passed: 935 test files, 20,528 passed tests, 34 existing skips, and no unhandled errors.
 - The focused Pi Sync suite passed: 185 files, 3,293 passed tests, and 19 existing skips. Cases cover all four Settings descriptions, TUI/RPC consent, cancellation, the RPC Done exit without authorization, durable saves and failure recovery, Continuous sync dependencies, non-default keys, narrow rendering, and current/legacy documentation anchors.
-- A fenced-code-aware heading audit passed for all 37 package READMEs. Legacy fragment aliases remain in the README, authoritative settings reference, and compatibility index.
+- A fenced-code-aware heading audit passed for all 37 package READMEs. Legacy fragment aliases were verified in the README and authoritative settings reference.
 - `npm run package:pack -- sync` and an actual temporary tarball inspection passed: 330 entries include the runtime, source, docs, skill, license, and changelog, without tests or repository plans.
 
 The first direct-Vitest run used a symlinked macOS temporary path and triggered existing alias-path safety checks; the successful focused run used the canonical temporary root, as the root runner does. New RPC choice assertions were corrected to include Kit's existing Done exit, and both consent flows now test that exit. No runtime safety check or acceptance criterion was relaxed. Later full-suite command-level rechecks exceeded the harness's 300-second command limit. A background full-suite recheck hit the readiness watchdog in the unchanged `test/packed-publish-native.test.ts`; that file passed separately. The final full-suite recheck uses a managed background runner without changing per-test limits. Biome reports existing schema-version and unrelated lint advisories; its gates pass without changing repository tooling.

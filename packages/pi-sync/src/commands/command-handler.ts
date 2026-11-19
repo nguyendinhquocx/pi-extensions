@@ -56,6 +56,7 @@ export async function handleCommand(
     );
   };
   if (!rawArgs.trim()) {
+    attention.expand();
     try {
       const { showSyncManager } = await import("../ui/manager-ui.js");
       if (sessionSignal.aborted) return;
@@ -72,11 +73,13 @@ export async function handleCommand(
       setSyncStatus(ctx, undefined);
       ctx.ui.notify(errorMessage(error), "error");
     }
+    if (sessionSignal.aborted) return;
     await reconcileObservation(attention, sessionSignal);
     if (!sessionSignal.aborted) await attention.publish(ctx, sessionSignal);
     return;
   }
   const result = await run(rawArgs);
+  if (sessionSignal.aborted) return;
   if (result.kind === "decision-required") {
     ctx.ui.notify(result.decision.directMessage, "error");
   } else if (result.kind === "remote-selection-required") {

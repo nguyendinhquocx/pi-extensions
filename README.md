@@ -59,9 +59,17 @@ These extensions are part of my daily Pi setup:
 | [`pi-codex-imagegen`](./packages/pi-codex-imagegen) | Generate images through `/codex-imagegen` and a default-enabled Codex tool, without starting a Codex agent. | `pi install npm:@narumitw/pi-codex-imagegen` |
 | [`pi-context-management`](./packages/pi-context-management) | Opt into experimental summary-free context rollover with bounded branch-history recall and branch-local notes. | `pi install npm:@narumitw/pi-context-management` |
 | [`pi-files`](./packages/pi-files) | Browse and attach exact file snapshots, and independently restrict native edits to selected targets through `/files`. | [Build and install locally](./packages/pi-files#-install); not yet published |
+| [`pi-illustrate`](./packages/pi-illustrate) | Preview static SVG and Mermaid diagrams through Kitty graphics, with appearance-aware resizing and optional model images. | [Install locally](./packages/pi-illustrate#-install); not yet published |
 | [`pi-lsp`](./packages/pi-lsp) | Language-server diagnostics and code actions across JavaScript, TypeScript, Python, Rust, Go, Ruby, C/C++, JVM, .NET, Swift, shell, infrastructure formats, and more. | `pi install npm:@narumitw/pi-lsp` |
 | [`pi-plan-mode`](./packages/pi-plan-mode) | Codex-like, read-only `/plan` collaboration before implementation begins. | `pi install npm:@narumitw/pi-plan-mode` |
 | [`pi-subagents`](./packages/pi-subagents) | Start bounded background Pi jobs with authenticated main-agent messaging. | `pi install npm:@narumitw/pi-subagents` |
+
+### Browser and research
+
+| Package | Use it for | Install |
+| --- | --- | --- |
+| [`pi-chrome-devtools`](./packages/pi-chrome-devtools) | Inspect tabs, navigate pages, evaluate JavaScript, and capture screenshots through Chrome DevTools Protocol. | `pi install npm:@narumitw/pi-chrome-devtools` |
+| [`pi-firecrawl`](./packages/pi-firecrawl) | Scrape pages, crawl websites, discover URLs, and search the web with Firecrawl. | `pi install npm:@narumitw/pi-firecrawl` |
 
 ### Task and workspace workflows
 
@@ -83,7 +91,7 @@ The deprecated combined `pi-workflow` package has no atomic Plan-to-Goal replace
 | --- | --- | --- |
 | [`pi-chat`](./packages/pi-chat) | Join ephemeral peer-to-peer chat rooms that stay separate from Pi sessions, prompts, and model context. | `pi install npm:@narumitw/pi-chat` |
 | [`pi-fleet`](./packages/pi-fleet) | Start a separate Pi process in a terminal split and connect explicit local Pi sessions for bounded messages and one-turn requests. | `pi install npm:@narumitw/pi-fleet` |
-| [`pi-herdr`](./packages/pi-herdr) | Report Pi lifecycle state to Herdr and bundle safe Herdr terminal-orchestration guidance. | `pi install npm:@narumitw/pi-herdr` |
+| [`pi-herdr`](./packages/pi-herdr) | Show agent status and spawn relationships in Herdr or hc. Start and message independent Pi peers in hc only. | `pi install npm:@narumitw/pi-herdr` |
 
 ### Accounts and data
 
@@ -105,6 +113,7 @@ The deprecated combined `pi-workflow` package has no atomic Plan-to-Goal replace
 | [`pi-inspect`](./packages/pi-inspect) | Inspect current session context and live tool calls in a private, read-only browser viewer with `/inspect`. | `pi install ./packages/pi-inspect` |
 | [`pi-langfuse`](./packages/pi-langfuse) | Send agent runs, generations, token usage, costs, and tool activity to Langfuse. | `pi install npm:@narumitw/pi-langfuse` |
 | [`pi-notify`](./packages/pi-notify) | Send Telegram reminders when Pi settles, with optional inactivity timing and computer/session/worktree details. | `pi install ./packages/pi-notify` |
+| [`pi-rex`](./packages/pi-rex) | Show Pi sessions in Rex above the editor and switch to their terminal panes with a click or keyboard picker. | `pi install ./packages/pi-rex`; not yet published |
 | [`pi-stamp`](./packages/pi-stamp) | Show configurable timestamps with opt-in assistant metadata, response timing, and tool timing in the TUI transcript. | `pi install npm:@narumitw/pi-stamp` |
 | [`pi-starship`](./packages/pi-starship) | Use a native Starship-style TOML footer with Pi-specific modules and no Starship binary dependency. | `pi install npm:@narumitw/pi-starship` |
 | [`pi-statusline`](./packages/pi-statusline) | Show model, tools, Git state, context usage, tokens, cost, and time in a preset or JSON-configured footer. | `pi install npm:@narumitw/pi-statusline` |
@@ -117,10 +126,11 @@ Choose either `pi-starship` or `pi-statusline`; do not enable both footer extens
 
 | Package | Use it for | Install |
 | --- | --- | --- |
+| [`@narumitw/pi-sync-daemon`](./packages/pi-sync-daemon) | Detached synchronization owner used by Pi Sync; not a Pi extension. | Installed with Pi Sync; first publication requires approval |
 | [`pi-tui-kit`](./packages/pi-tui-kit) | Extend `@earendil-works/pi-tui` with reusable navigation helpers and declarative action, detail, settings, and multi-select flows. | `npm install @narumitw/pi-tui-kit` |
 
 Libraries are runtime dependencies for extension authors, not standalone Pi extensions. New standard
-manager menus should use `@narumitw/pi-tui-kit`; extensions continue to own domain state,
+manager menus should use `@narumitw/pi-tui-kit`; when using UI libraries, extensions continue to own domain state,
 commands, settings persistence, confirmations, and specialized UI.
 
 ## 🔧 Advanced installation
@@ -134,7 +144,7 @@ Install the repository as one Pi package:
 pi install git:github.com/narumiruna/pi-extensions
 ```
 
-The repository root Pi manifest explicitly lists every extension under `packages/`, so this enables all of them. Its install prepare step generates Kit runtime JavaScript and builds Inspector browser assets before hook setup, even when Pi omits development dependencies.
+The repository root Pi manifest explicitly lists every extension under `packages/`, so this enables all of them. Its install prepare step generates Kit and pi-sync-daemon runtime JavaScript, then builds Inspector browser assets without hook setup, even when Pi omits development dependencies; normal package builds still emit library declarations.
 
 To load only selected extensions, replace the installed package entry in `~/.pi/agent/settings.json` with a resource filter:
 
@@ -173,9 +183,58 @@ npm test
 npm run check
 ```
 
-`npm test` typechecks the test sources and runs the root and workspace suites with Vitest.
+`npm test` builds prerequisites, typechecks the test sources, and runs the root and workspace suites with Vitest.
+`npm run build` derives dependency-first order from workspace manifests, builds each prerequisite once,
+and stops before consumers if a prerequisite fails; workspace-list order is not a build contract.
+Staged typechecks use the same build planner.
+
+Install [uv](https://docs.astral.sh/uv/getting-started/installation/), then
+install [prek](https://prek.j178.dev/) and enable the Git pre-commit hook:
+
+```bash
+uv tool install prek
+prek install
+```
+
+For an existing Husky checkout, run `git config --local --unset-all core.hooksPath`
+before `prek install` if the local hook path is still `.husky/_`.
+Hook installation is explicit; `npm install` does not install Git hooks.
+
+[`prek.toml`](./prek.toml) runs Biome configuration migration, Biome checks,
+the package README linter, `uvx zizmor --pedantic .github`, and staged
+typechecks, in that order. The migration hook runs
+`npx @biomejs/biome migrate --write` on every commit before file checks.
+The Biome check hook uses the installed `@biomejs/biome` dependency and receives
+matching staged text files: JavaScript, TypeScript, JSON/JSONC, and CSS.
+`biome check --write` applies formatting and safe fixes in one pass without
+scanning all of `packages/` on every commit.
+The other hooks run without filename arguments, even when no files match.
+The README linter scans every package so it can catch deleted READMEs.
+Run it on its own with `uv run scripts/check_readmes.py`.
+Distinct priorities keep the hooks sequential, and `fail_fast` stops later hooks
+when a check fails or modifies files.
+Run `prek run --all-files` to run all hooks manually, or select one by ID, such as
+`prek run zizmor --all-files`; typechecks still use the Git index.
+Root `npm run typecheck` uses the installed `tsc-rs` binary for workspace
+`--noEmit` checks by default; no compiler flag is needed.
+The runner starts the compiler launcher with Node.js directly in each workspace,
+without passing checkout paths through an npm shell.
+The prek hook uses `npm run typecheck -- --staged` to check affected workspaces
+after building their prerequisites.
+`tsc-rs` is an early-release compiler: combined test compilation showed diagnostic
+differences during evaluation, so test compilation and JavaScript/declaration builds
+still use official TypeScript. The runner preserves documentation-only skips and
+full-check fallbacks; it does not download a compiler on demand.
+The selectors treat `prek.toml` changes as full-workspace inputs for typechecks
+and tests.
+During commits, prek temporarily stashes unstaged changes and blocks the commit
+if checks fail or modify files. Review and stage fixes before retrying; the hook
+does not stage them automatically.
+
 See [test performance and isolation](./docs/test-performance.md) for package timing reports,
 cache behavior, and the reviewed shared-module test boundary.
+The [terminal and provider handoff](./docs/verification/terminal-and-provider-handoff.md) retains
+unverified external checks from completed UI changes.
 CI and release use `npm ci` with strict dependency script review and a three-day minimum age for new resolution.
 See [dependency installation policy](./docs/dependency-installation.md) for script approvals, lockfile-age limitations,
 failed-update recovery, urgent-patch review, and toolchain upgrades.
@@ -241,7 +300,8 @@ consumer together.
 packages/                Extension packages and reusable libraries
 deprecated/              Reference packages excluded from active workspace scripts
 docs/                    Repository conventions and plans
-scripts/                 Shared checks, tests, versioning, and release helpers
+.github/scripts/         GitHub Actions versioning and publishing helpers
+scripts/                 Shared builds, checks, tests, and local workflow helpers
 test/                    Root integration and repository tests
 ```
 
@@ -258,8 +318,6 @@ The following packages remain available as source references but are excluded fr
 - `pi-codex-accounts` — replaced by [`pi-accounts`](./packages/pi-accounts)
 - [`pi-file-context`](./deprecated/pi-file-context) and [`pi-edit-scope`](./deprecated/pi-edit-scope) — merged into [`pi-files`](./packages/pi-files); follow the [migration guide](./packages/pi-files/docs/migration.md) and do not co-load predecessors with the successor
 - [`pi-cbmem`](./deprecated/pi-cbmem) — deprecated without a replacement because a simple benchmark found insufficient benefit and substantially higher token usage
-- [`pi-chrome-devtools`](./deprecated/pi-chrome-devtools) — replaced by Chrome DevTools MCP through Pi's native MCP support; review the [migration instructions and compatibility differences](./deprecated/pi-chrome-devtools/README.md#-migration-to-native-mcp)
-- [`pi-firecrawl`](./deprecated/pi-firecrawl) — replaced by Firecrawl MCP through Pi's native MCP support; follow the [migration instructions](./deprecated/pi-firecrawl/README.md#-migration-to-native-mcp)
 - `pi-retry` — replaced by Pi's built-in provider retry and timeout behavior
 - `pi-google-genai` — replaced by the `grounding-with-google-genai` agent skill
 - `pi-image-drop` — deprecated without a replacement

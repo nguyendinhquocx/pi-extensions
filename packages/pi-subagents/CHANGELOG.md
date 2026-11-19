@@ -1,5 +1,27 @@
 # @narumitw/pi-subagents
 
+## 3.4.5
+
+### Patch Changes
+
+- b216ebc: Preserve complete tool arguments in expanded HTML exports and show pending progress during main-session tool execution without changing final tool results.
+
+## 3.4.4
+
+### Patch Changes
+
+- 49c68d4: Show readable tool summaries and job notifications in the conversation. Keep job identity, state, and message direction visible when collapsed, and render expanded subagent results as Markdown without changing model data or widget behavior.
+
+## 3.4.3
+
+### Patch Changes
+
+- cf7b63d: Put editor widget names and short current count/state summaries in their divider lines. Remove duplicate body titles while retaining safety text, detail rows, privacy modes, and standalone RPC/tool output. In fullscreen Pi, click anywhere in a widget to collapse it to one named line, then click that line to restore the latest content. Preserve independent, session-local disclosure through updates without taking editor focus, changing domain data, or stopping background work. Existing owner controls provide keyboard restoration; regular-mode mouse input remains terminal-owned.
+  
+  The Kit minor release supplies the named widget state and publisher disclosure APIs. Changesets raises all adopting consumers' Kit dependency floors in the same Version PR. Publish and verify the exact Kit artifact before its consumers.
+- Updated dependencies [cf7b63d]
+  - @narumitw/pi-tui-kit@0.70.0
+
 ## 3.4.2
 
 ### Patch Changes

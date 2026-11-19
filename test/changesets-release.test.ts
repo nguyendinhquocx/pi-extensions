@@ -167,6 +167,23 @@ for (const { label, packageNames, minorConsumers } of [
   },
   { label: "fullscreen handoff", packageNames: ["pi-tui-kit", "pi-starship", "pi-btw"], minorConsumers: [] },
   {
+    label: "named collapsible editor widgets",
+    packageNames: [
+      "pi-tui-kit",
+      "pi-cache-hit-monitor",
+      "pi-chat",
+      "pi-files",
+      "pi-herdr",
+      "pi-plan-mode",
+      "pi-progress",
+      "pi-subagents",
+      "pi-sync",
+      "pi-ticker",
+      "pi-tool",
+    ],
+    minorConsumers: [],
+  },
+  {
     label: "editor status presentation",
     packageNames: ["pi-tui-kit", "pi-progress", "pi-subagents", "pi-herdr"],
     minorConsumers: ["@narumitw/pi-progress", "@narumitw/pi-subagents"],
@@ -364,7 +381,7 @@ test("sequential publishing reports a failure and continues with later packages"
     const failuresPath = path.join(fixture, "publish-failures.ndjson");
     const publishedPackagesPath = path.join(fixture, "published-packages.ndjson");
     const callsPath = path.join(fixture, "publish-calls.ndjson");
-    const script = path.join(repositoryRoot, "scripts/publish-packages-sequentially.mjs");
+    const script = path.join(repositoryRoot, ".github/scripts/publish-packages-sequentially.mjs");
     const result = spawnSync(process.execPath, [script], {
       cwd: fixture,
       encoding: "utf8",

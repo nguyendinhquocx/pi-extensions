@@ -48,6 +48,7 @@ function enabledOptions(requests: HerdrRequest[]): HerdrAgentStateOptions {
     },
     widgetObserver: {
       start() {},
+      restore: () => false,
       async shutdown() {},
     },
   };
@@ -95,6 +96,67 @@ test("disabled factory registers no lifecycle work", () => {
     environment: { enabled: false, paneId: "", socketEndpoint: "" },
   })(mock.pi);
   assert.deepEqual([...mock.events.keys()], []);
+});
+
+test.each(["HERDR_PANE_ID", "HERDR_SOCKET_PATH"])(
+  "blank or missing %s disables the runtime before context discovery",
+  (key) => {
+    const previous = {
+      HERDR_ENV: process.env.HERDR_ENV,
+      HERDR_PANE_ID: process.env.HERDR_PANE_ID,
+      HERDR_SOCKET_PATH: process.env.HERDR_SOCKET_PATH,
+    };
+    try {
+      for (const value of [undefined, "", "  "]) {
+        process.env.HERDR_ENV = "1";
+        process.env.HERDR_PANE_ID = "fixture-pane";
+        process.env.HERDR_SOCKET_PATH = "/tmp/unused.sock";
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+        const mock = createMockPi();
+        const options = enabledOptions([]);
+        delete options.environment;
+        herdrModule.createHerdrAgentStateExtension(options)(mock.pi);
+        assert.equal(mock.events.size, 0);
+        assert.equal(mock.commands.size, 0);
+      }
+    } finally {
+      for (const [name, value] of Object.entries(previous)) {
+        if (value === undefined) delete process.env[name];
+        else process.env[name] = value;
+      }
+    }
+  },
+);
+
+test("same-package copies claim one runtime and release it across session replacement and reload", async () => {
+  const requests: HerdrRequest[] = [];
+  const first = createMockPi();
+  const duplicate = createMockPi();
+  duplicate.rawPi.events = first.eventBus;
+  const factory = herdrModule.createHerdrAgentStateExtension(enabledOptions(requests));
+  factory(first.pi);
+  factory(duplicate.pi);
+  assert.ok(first.commands.has("herdr"));
+  assert.equal(duplicate.commands.size, 0);
+  assert.equal(duplicate.events.size, 0);
+  const started = tuiContext();
+  await emit(first, "session_start", { reason: "startup" }, started.ctx);
+  await emit(first, "session_shutdown", { reason: "new" }, started.ctx);
+  const replacement = tuiContext();
+  await emit(first, "session_start", { reason: "new" }, replacement.ctx);
+  const another = createMockPi();
+  another.rawPi.events = first.eventBus;
+  factory(another.pi);
+  assert.equal(another.commands.size, 0);
+  await emit(first, "session_shutdown", { reason: "reload" }, replacement.ctx);
+  const reloaded = createMockPi();
+  reloaded.rawPi.events = first.eventBus;
+  factory(reloaded.pi);
+  assert.ok(reloaded.commands.has("herdr"));
+  const next = tuiContext();
+  await emit(reloaded, "session_start", { reason: "reload" }, next.ctx);
+  await emit(reloaded, "session_shutdown", { reason: "quit" }, next.ctx);
 });
 
 test("TUI lifecycle reports the session and coalesced agent states", async () => {
@@ -159,6 +221,7 @@ test.each(["rpc", "json", "print"])("%s sessions never report or mutate native o
       start(ctx) {
         observerStarts.push(ctx.mode);
       },
+      restore: () => false,
       async shutdown(ctx) {
         observerShutdowns.push(ctx.mode);
       },
@@ -221,6 +284,7 @@ test("TUI sessions start and shut down the widget observer", async () => {
       start(ctx) {
         events.push(`start:${ctx.mode}`);
       },
+      restore: () => false,
       async shutdown(ctx) {
         events.push(`shutdown:${ctx.mode}`);
       },
@@ -571,7 +635,7 @@ test("quit drains every normal report and widget shutdown before cleanup", async
         await new Promise<void>((finish) => pending.push({ signal, finish }));
       }
     },
-    widgetObserver: { start() {}, shutdown: () => stopped },
+    widgetObserver: { start() {}, restore: () => false, shutdown: () => stopped },
   })(mock.pi);
   const started = tuiContext();
   await emit(mock, "session_start", { reason: "startup" }, started.ctx);
@@ -650,7 +714,7 @@ test("unavailable socket does not interrupt quit or repeated shutdown", async ()
   const mock = createMockPi();
   herdrModule.createHerdrAgentStateExtension({
     environment: { enabled: true, paneId: "w1:p2", socketEndpoint: join(agentDir, "missing.sock") },
-    widgetObserver: { start() {}, async shutdown() {} },
+    widgetObserver: { start() {}, restore: () => false, async shutdown() {} },
   })(mock.pi);
   const started = tuiContext();
   await emit(mock, "session_start", { reason: "startup" }, started.ctx);
@@ -709,6 +773,7 @@ test("socket transport retries one failed delivery and preserves the request", a
     environment: { enabled: true, paneId: "w1:p2", socketEndpoint: socketPath },
     widgetObserver: {
       start() {},
+      restore: () => false,
       async shutdown() {},
     },
   })(mock.pi);
@@ -754,7 +819,7 @@ test("shutdown aborts a delayed session report before it can publish state", asy
   const starting = emit(mock, "session_start", { reason: "startup" }, started.ctx);
   await flushReporting();
   assert.equal(requests.filter(({ method }) => method === "pane.report_agent_session").length, 1);
-  assert.equal(requests.filter(({ method }) => method === "pane.report_metadata").length, 1);
+  assert.equal(requests.filter(({ method }) => method === "pane.report_metadata").length, 0);
   const shuttingDown = emit(mock, "session_shutdown", { reason: "reload" }, started.ctx);
   assert.equal(firstSignal?.aborted, true);
   release();
@@ -772,6 +837,49 @@ test("shutdown aborts a delayed session report before it can publish state", asy
   assert.equal(requests.length, requestCount);
 });
 
+test.each([false, true])(
+  "session identity acknowledgement precedes forced metadata invalidation (early update: %s)",
+  async (earlyUpdate) => {
+    const requests: HerdrRequest[] = [];
+    const acknowledged: boolean[] = [];
+    let sessionAcknowledged = false;
+    let release!: () => void;
+    const pending = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const mock = createMockPi();
+    herdrModule.createHerdrAgentStateExtension({
+      ...enabledOptions(requests),
+      async sendRequest(request) {
+        requests.push(request);
+        if (request.method === "pane.report_agent_session") {
+          await pending;
+          sessionAcknowledged = true;
+        } else if (request.method === "pane.report_metadata") {
+          acknowledged.push(sessionAcknowledged);
+        }
+      },
+    })(mock.pi);
+    const started = tuiContext();
+    const starting = emit(mock, "session_start", { reason: "resume" }, started.ctx);
+    await flushReporting();
+    assert.deepEqual(acknowledged, []);
+    if (earlyUpdate) {
+      await emit(mock, "model_select", {}, started.ctx);
+      await flushReporting();
+      assert.deepEqual(acknowledged, [false]);
+    }
+    release();
+    await starting;
+    await flushReporting();
+    assert.deepEqual(acknowledged, earlyUpdate ? [false, true] : [true]);
+    const metadata = requests.filter((request) => request.method === "pane.report_metadata");
+    assert.equal(metadata.at(-1)?.params.ttl_ms, 3_600_000);
+    if (earlyUpdate) assert.deepEqual(metadata[0]?.params.tokens, metadata[1]?.params.tokens);
+    await emit(mock, "session_shutdown", { reason: "quit" }, started.ctx);
+  },
+);
+
 test("a disabled widget does not disable lifecycle or metadata reporting", async () => {
   const settingsPath = join(agentDir, "disabled-widget.json");
   await writeFile(settingsPath, JSON.stringify({ widget: false }));
@@ -781,7 +889,7 @@ test("a disabled widget does not disable lifecycle or metadata reporting", async
   herdrModule.createHerdrAgentStateExtension({
     ...enabledOptions(requests),
     settingsPath,
-    widgetObserver: { start, async shutdown() {} },
+    widgetObserver: { start, restore: () => false, async shutdown() {} },
   })(mock.pi);
   const ctx = tuiContext().ctx;
   await emit(mock, "session_start", { reason: "startup" }, ctx);
@@ -792,12 +900,12 @@ test("a disabled widget does not disable lifecycle or metadata reporting", async
   await emit(mock, "session_shutdown", {}, ctx);
 });
 
-test("package resources load one extension and the bundled herdr skill", async () => {
+test("package resources load one extension and the peer skill", async () => {
   const loader = new DefaultResourceLoader({
     cwd: agentDir,
     agentDir,
-    settingsManager: SettingsManager.inMemory({ packages: [packageRoot] }),
-    additionalSkillPaths: [join(packageRoot, "skills", "herdr", "SKILL.md")],
+    settingsManager: SettingsManager.inMemory({}),
+    additionalExtensionPaths: [packageRoot],
     noSkills: true,
     noContextFiles: true,
   });
@@ -809,7 +917,7 @@ test("package resources load one extension and the bundled herdr skill", async (
   const skills = loader.getSkills();
   assert.deepEqual(skills.diagnostics, []);
   assert.deepEqual(
-    skills.skills.map(({ name }) => name),
-    ["herdr"],
+    skills.skills.map((skill) => skill.name),
+    ["pi-herdr"],
   );
 });

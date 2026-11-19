@@ -8,6 +8,7 @@ const ROOT_FULL_TEST_FILES = new Set([
   ".npmrc",
   "package-lock.json",
   "package.json",
+  "prek.toml",
   "tsconfig.json",
   "tsconfig.test.json",
 ]);
@@ -64,7 +65,11 @@ export function selectAffectedTests(root, changedFiles) {
       continue;
     }
 
-    if (ROOT_FULL_TEST_FILES.has(normalized) || normalized.startsWith("scripts/")) {
+    if (
+      ROOT_FULL_TEST_FILES.has(normalized) ||
+      normalized.startsWith("scripts/") ||
+      normalized.startsWith(".github/scripts/")
+    ) {
       fullReason = `shared test input changed: ${normalized}`;
       break;
     }

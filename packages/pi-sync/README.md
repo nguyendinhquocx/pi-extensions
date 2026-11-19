@@ -3,18 +3,20 @@
 [![npm](https://img.shields.io/npm/v/@narumitw/pi-sync)](https://www.npmjs.com/package/@narumitw/pi-sync) [![Pi extension](https://img.shields.io/badge/Pi-extension-blue)](https://pi.dev) [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](./LICENSE)
 
 Pi Sync synchronizes selected Pi settings and content across machines through Git, WebDAV, Cloudflare R2, or another S3-compatible store.
-Reusable storage connections hold credentials, while named sync setups define exactly what to sync, where to store it, and whether to sync automatically.
+Reusable storage connections hold credentials, while named sync setups define exactly what to sync, where to store it, and whether to sync automatically. Pi owns the interface; the separate [@narumitw/pi-sync-daemon service](https://github.com/narumiruna/pi-extensions/tree/main/packages/pi-sync-daemon) owns execution.
+
+> **Experimental daemon migration:** this checkout requires the new, independently published dependency. Close or upgrade older Pi processes and review ownership before real-data use. See [migration and release restrictions](./docs/daemon-migration.md).
 
 ## ✨ Features
 
 - Manages Git, WebDAV, Cloudflare R2, and general S3-compatible storage through `/sync`.
 - Separates reusable storage connections from named setups with exact reviewed remote paths.
-- Uses one ordered list for Pi roots, safe agent-relative paths, and privacy-sensitive sessions.
+- Uses one ordered include list for Pi roots, safe agent-relative paths, and privacy-sensitive sessions, with optional path/glob exclusions.
 - Protects changes with immutable snapshots, secret scanning, locks, conflict checks, pull backups, transactional apply, and recovery journals.
 - Keeps snapshot selection portable and free of credentials.
 - Writes settings atomically, preserves unknown fields, rejects stale edits, and fails closed on unsafe configuration.
 - Offers default-off Autonomous sync for eligible startup and Sync now transfers without another transfer confirmation, with model-assisted conflict resolution and a separate Continuous sync opt-in.
-- Loads a generated split runtime with lazy UI and backend chunks.
+- Shares one detached synchronization service across Pi clients, with a generated split UI client runtime.
 - Bundles a manual-only skill for configuration questions and safe setup guidance.
 
 ## 📦 Install
@@ -32,6 +34,9 @@ pi -e npm:@narumitw/pi-sync
 Build the generated runtime and try a local checkout:
 
 ```bash
+npm install
+npm --workspace @narumitw/pi-tui-kit run build
+npm --workspace @narumitw/pi-sync-daemon run build
 npm --workspace @narumitw/pi-sync run build
 pi -e ./packages/pi-sync
 ```
@@ -39,6 +44,10 @@ pi -e ./packages/pi-sync
 The package declares `dist/index.ts`, so an unbuilt checkout must run the build before Pi loads the package directory.
 
 Extensions run with Pi's permissions, so install only packages from sources you trust.
+
+Revoke retained unattended permission before updating. After updating, use `/reload` in open Pi
+sessions. If the upgrade is blocked or the old owner's exit is uncertain, follow the
+[daemon upgrade guide](./docs/daemon-migration.md#ownership-and-upgrade).
 
 Use a Pi runtime that satisfies this package’s declared peer floor. Installing an extension dependency does not upgrade a separately installed Pi runtime. The declared Kit floor supplies exact scrolling/paginated review and configured-keybinding support.
 
@@ -65,26 +74,25 @@ WebDAV and R2/S3 store `latest.json`, `history.json`, and `snapshots/` directly 
 
 ## 🧭 Manager, conflicts, and recovery
 
-The `/sync` manager shows local state without contacting remote storage:
+The `/sync` manager opens a searchable action palette in TUI mode, with up to five visible choices and help for only the selected action. Its compact summary uses local state without contacting remote storage:
 
 ```text
 Current sync setup: home
 Storage: Cloudflare R2 · r2 · personal-pi
-Included: 5 built-in groups · 0 extra files · Sessions off
-Automatic sync: On (startup check; shutdown pushes selected content if sessions included)
 Remote status: Not checked
+Last applied: Never synced
 ```
 
-Use **Sync now** for bidirectional merging, or **Pull from remote…** and **Push to remote…** for reviewed directional transfers. **Settings**, **History**, and **Diagnostics** are also directly available. Switching appears only when multiple valid setups exist; review and access-recovery actions appear when needed. Pull and Push do not implicitly force overwrites.
+Use **Sync…** (**Sync now** in RPC) for bidirectional merging, or **Pull from remote…** and **Push to remote…** for reviewed directional transfers. Type to filter actions; navigation scrolls the list. **Settings**, **History**, and **Diagnostics** remain directly available. Switching appears only when multiple valid setups exist; review and access-recovery actions appear when needed. Pull and Push do not implicitly force overwrites. The palette does not change transfer authorization: Autonomous sync can still apply eligible transfers without another confirmation.
 
-The main summary separates current state from actions and uses local state and cached check-time observations, not a fresh remote comparison. Setup-specific actions stay bound to the displayed setup; if its configuration changes while the menu is open, review the refreshed setup before continuing. Choose **Check remote status** for a fresh read/check or **View differences** for file differences; `/sync status`, `/sync diff`, and `/sync help` remain available. Last applied shows a compact snapshot ID and states when application time is unavailable; History retains full IDs.
+The summary distinguishes cached observations, recorded background state, and the last successful background transfer; none proves current remote equality. Missing or invalid background evidence is not shown as Waiting. Automatic-transfer permissions and possible AI costs remain visible when enabled; detailed preferences stay in Settings. Setup-specific actions stay bound to the displayed setup; if its configuration changes while the menu is open, review the refreshed setup before continuing. Choose **Check remote status** for a fresh check or **View differences** for file differences; `/sync status`, `/sync diff`, and `/sync help` remain available. Last applied shows a compact snapshot ID and states when application time is unavailable; History retains full IDs.
 
 After Pi Sync detects an included-content mismatch, the manager shows **Sync status: Review needed** and puts **Review synced content (recommended)** first.
 **Sync now** remains unavailable until you review the mismatch.
 Opening the manager does not make another remote request.
-**Settings** opens **Pi Sync Settings** directly: one searchable flat list with all 16 rows in their existing order and no category navigation or headings. **Compare included paths** sits beside **Included paths** and compares path policies, not file contents. **Storage location** edits only the current setup's bucket, branch, or path; it does not change the connection or included content. **Manage sync setups** and **Manage storage connections** open the existing catalogs. Connections hold reusable server addresses and sign-in details, and edits show every affected setup. Make another setup current before changing its preferences. Each description identifies the setup, device-wide, or shared-connection scope. Simple preferences report saving and durable save results; Back does not undo saved changes. Complex editors and risky changes retain their reviews. RPC reports the manual settings path and preserves catalog management without opening the TUI preference editor.
+**Settings** opens **Pi Sync Settings** directly: one searchable flat list with 17 rows and no category navigation or headings. **Included paths**, **Excluded paths**, and **Compare included paths** keep content policy together; comparison covers include/exclude rules, not file contents. **Storage location** edits only the current setup's bucket, branch, or path; it does not change the connection or included content. **Manage sync setups** and **Manage storage connections** open the existing catalogs. Connections hold reusable server addresses and sign-in details, and edits show every affected setup. Make another setup current before changing its preferences. Each description identifies the setup, device-wide, or shared-connection scope. Simple preferences report saving and durable save results; Back does not undo saved changes. Complex editors and risky changes retain their reviews. RPC reports the manual settings path and preserves catalog management without opening the TUI preference editor.
 
-**Diagnostics** (also `/sync doctor`) reports configuration and backend-specific access checks. S3/R2 performs a read-only request: success does not prove write access or snapshot validity, and an ambiguous 404 does not prove a bucket is missing. Check the indicated credentials, address, bucket, or path before retrying. Git checks remote reads and the local cache, not write access. WebDAV uses an isolated write/cleanup probe and repairs the active snapshot's history entry if missing. **History** opens the snapshot list directly for reviewed rollback. Recorded unresolved groups have a separate **Review unresolved conflicts** action.
+With Continuous sync configured, **Diagnostics** first opens a scrollable local report containing scheduler ownership, request limits, accounting, and recovery guidance. Back returns without running backend checks; continuing retains a separate backend-check confirmation. RPC presents bounded report pages. `/sync doctor` remains the direct configuration and backend-check route. S3/R2 performs a read-only request: success does not prove write access or snapshot validity, and an ambiguous 404 does not prove a bucket is missing. Check the indicated credentials, address, bucket, or path before retrying. Git checks remote reads and the local cache, not write access. WebDAV uses an isolated write/cleanup probe and repairs the active snapshot's history entry if missing. **History** opens the snapshot list directly for reviewed rollback. Recorded unresolved groups have a separate **Review unresolved conflicts** action.
 
 On secondary menus, **Back** and Escape return to the previous screen. In setup inputs and save reviews, cancellation (including Ctrl+C) discards the current unsaved draft and returns to its owning menu. Session replacement or shutdown closes the owning flow.
 Specialized operation and masked-credential prompts show the effective cancellation bindings and keep Ctrl+C as a hard-cancel input when Back is remapped.
@@ -127,7 +135,7 @@ Choose **Review all paths (recommended)** first to compare exact remote-only pat
 If membership matches but order differs, the review says that only ordering differs.
 Then choose one action:
 
-- **Use remote content list** revalidates the remote snapshot and reviewed local setup before saving only `sync.include`.
+- **Use remote content list** revalidates the remote snapshot and reviewed local setup before saving `sync.include` and the reviewed exclusion rules together.
   **Remote content list saved** confirms that no files were pulled and offers a separate **Continue Sync/Pull/Push now…** action plus **Done**.
   Continue starts a fresh operation and exact preview for the captured setup rather than resuming stale work.
 - **Keep this device's content list and update remote…** opens the existing `push --force` preparation and exact confirmation without `--yes`.
@@ -147,9 +155,11 @@ Then choose one reviewed direction:
 Cancelling a preparation or confirmation returns to conflict resolution with no side effects.
 Back returns to the sync manager, and Ctrl+C closes the complete flow.
 
-Startup checks never open a dialog. While checking, TUI and RPC status show **sync ...**. With a sync baseline and no content-list mismatch, they use **sync ⇡** for local changes to push and **sync ⇣** for remote changes to pull. Review conditions use **sync ⇕**; in TUI, a persistent widget above the editor also identifies both sides changing, first sync with an existing remote snapshot, a differing content list (including order-only differences), or a missing remote snapshot despite an existing baseline. Both sides changing is a reason to review, not a confirmed file conflict.
+Startup checks never open a dialog. While checking, TUI and RPC status show **sync ...**. With a sync baseline and no content-list mismatch, they use **sync ⇡** for local changes to push and **sync ⇣** for remote changes to pull. Review conditions use **sync ⇕**; in TUI, a compact widget shows **Sync · Needs review** and one line directing you to `/sync` for the named setup. The manager retains the reason: both sides changed, first sync with an existing remote snapshot, a differing content list (including order-only differences), or a missing remote snapshot despite an existing baseline. Both sides changing is a reason to review, not a confirmed file conflict.
 No selected content and first sync with an empty remote stay quiet outside `/sync`, which provides setup or initialization guidance. Legacy remote metadata without an authoritative content list does not independently trigger a widget for observation-only checks. With **Startup transfer** enabled, an established legacy remote instead shows review attention and requires an explicit direction to adopt the content policy; no automatic transfer runs. An included-content mismatch puts **Review synced content (recommended)** in the manager, where a fresh review verifies the remote snapshot before offering changes.
 Check results are advisory observations against the last sync baseline, not proof of a file conflict or current equality. Opening the manager uses local information and shows when the check completed; it does not contact remote storage. Transfer actions recheck current content.
+In fullscreen TUI mode, click anywhere in **Sync** to collapse or expand the widget without moving keyboard focus. Attention updates keep the collapse state. Open and close `/sync` to restore the body with the keyboard; a new session resets the state.
+
 The widget has no expiry timer. Attention stays in memory and is invalidated by relevant settings/state changes or a foreground transfer's commit boundary, and cleared on session replacement or shutdown. A newer observation replaces the presentation, clearing the widget when only status or no reminder is needed. Cancelling a review or a failure before commit preserves a still-valid observation and its appropriate presentation.
 
 Interactive TUI `/sync sync`, `/sync pull`, and `/sync push` routes without `--yes` open the same review flow when they detect the mismatch.
@@ -202,7 +212,7 @@ Ordinary **Sync now** reuses a cached refusal. Use **Retry refused model result�
 
 **Settings → Continuous sync** controls separate per-setup `sync.continuous`, default **Off**. Autonomous sync must also be enabled. A separate review authorizes recurring network access, model costs and automatic transfers while Pi is open. Upgrade all Pi processes sharing the agent directory before enabling it. Monitoring starts after the `/sync` command or manager closes, and replaces the duplicate one-shot startup transfer.
 
-Selected-file hints are coalesced after one quiet second. A 60–66 second remote/local check covers missed events. Temporary failures and proven pre-publication edit races use bounded backoff. Removing flagged secret content or repairing unsupported conflicts permits a fresh inspection; unchanged blocks do not repeatedly call the model. One local session owns monitoring for each shared agent directory; each computer remains a separate replica. Busy sessions and foreground commands release ownership after draining work. Nothing runs after Pi exits, and resources never reload automatically.
+Selected-file hints are coalesced after one quiet second. A 60–66 second remote/local check covers missed events. Temporary failures and proven pre-publication edit races use bounded backoff. Removing flagged secret content or repairing unsupported conflicts permits a fresh inspection; unchanged blocks do not repeatedly call the model. One daemon owns monitoring for each shared canonical agent directory; each computer remains a separate replica. Busy sessions and foreground commands release ownership after draining work. After the last registered live client PID for the canonical agent directory exits, the service starts a fixed 30-second grace period unless a valid active-setup after-exit grant keeps it running, then drains work before safe exit. Live passive, disconnected, publishing, and orderly retired PIDs still count; `/reload`, `/new`, fork, and resume do not end shared ownership while their Pi process is alive. A client arriving before shutdown becomes final cancels automatic exit. A valid explicit after-exit grant for the active setup keeps the service running without expanding existing transfer or model permissions; see [Daemon lifetime and unattended permission](./skills/configure-pi-sync/references/configuration.md#daemon-lifetime-and-unattended-permission). Resources never reload automatically.
 
 **Check remote status** shows rolling-window allowance, exhausted candidates, accounting capacity and safe recovery actions. These are read-only observations, not permission to dispatch. The observing session's model does not identify another scheduler owner's model. Retained private candidates and accounting are not automatically pruned.
 
@@ -222,7 +232,7 @@ Successful transfers show one summary. They do not reload resources, activate ex
 
 **Settings → Machine-local fields** edits explicit `sync.localFields` root field names for global `settings.json` (default none). Excluded values and absence stay local; future portable snapshots omit them. Enabling rules opts into settings version 4 / snapshot version 2, which older clients must refuse. All receiving machines must configure compatible rules. Additions/removals require a separately confirmed force-direction migration, even with `--yes`; old remote history is **not erased**. See [settings merge and local fields](./skills/configure-pi-sync/references/configuration.md#settings-field-merge-and-machine-local-fields) for formats, compatibility and recovery.
 
-**Settings → Content merge / partial progress** controls independent `sync.mergeContent` and `sync.partialSync` opt-ins, both default **Off**. Saving opts into settings version 5; partial publications use snapshot version 3, rejected by older readers. Supported Markdown/plain-text resources merge bounded independent line edits without Git or conflict markers. Diff grids and hunk comparisons share an eight-million-work-unit budget across the operation and its retries; exhausted paths remain conflicts for review. Same-session reconciliation only accepts validated complete byte-prefix extensions; divergent histories and the loaded session require review. A syntactically clean text merge is **not a semantic correctness guarantee**.
+**Settings → Content merge / partial progress** controls independent `sync.mergeContent` and `sync.partialSync` opt-ins, both default **Off**. Saving opts into at least settings version 5; partial publications use snapshot version 3, or version 4 with exclusions, rejected by older readers. Supported Markdown/plain-text resources merge bounded independent line edits without Git or conflict markers. Diff grids and hunk comparisons share an eight-million-work-unit budget across the operation and its retries; exhausted paths remain conflicts for review. Same-session reconciliation only accepts validated complete byte-prefix extensions; divergent histories and the loaded session require review. A syntactically clean text merge is **not a semantic correctness guarantee**.
 
 Partial sync keeps each side's unresolved versions, preserves their previous accepted hashes/ancestors, and advances only independent paths. Resource/collision dependency groups are withheld together, including local-only files, never represented as deletion. The conditional **Review unresolved conflicts** action, or `/sync conflicts`, opens exact private versions on request and resolves one freshly validated whole group. Automatic pushes, non-forced push/pull, and rollback refuse unresolved groups; use group review or an explicit manual push/pull force direction instead. Artifacts remain below the denied state root, with stable conflict identity and at most 32 proven-completed records retained; unresolved or unrecognized evidence is never automatically pruned. Failed attempts release only newly created artifacts whose inode/content ownership and lack of state/journal references are verified. See [content merge and partial recovery](./docs/content-merge-audit.md).
 
@@ -272,7 +282,9 @@ Version 1, version 2, and non-empty unversioned settings require manual recovery
 Adding `sessions` can upload prompts, tool output, paths, images, and secrets; interactive flows require a privacy acknowledgement.
 Startup checks report included-content differences without changing anything. Transfers retain their existing included-content policy checks instead of silently expanding local scope.
 
-Read the [settings reference](./skills/configure-pi-sync/references/configuration.md) for complete S3/R2, Git, and WebDAV examples, backend fields, included-content rules, legacy paths, and recovery steps.
+**Settings → Excluded paths** edits optional per-setup `sync.exclude` rules, for example `["skills/private", "extensions/**/*.test.ts"]`. Rules win over includes and apply to future transfers; excluded local files remain untouched, including on rollback. Saving opts into settings version 6 / snapshot version 4, which older clients must refuse. New publications omit matching remote paths, but old history is **not erased**. Removing rules can expose or replace content. See [Excluded paths](./skills/configure-pi-sync/references/configuration.md#excluded-paths) for syntax, review, and recovery.
+
+Read the [settings reference](./skills/configure-pi-sync/references/configuration.md) for complete S3/R2, Git, and WebDAV examples, backend fields, content policy, legacy paths, and recovery steps.
 
 ## 🧠 Skills
 
@@ -288,6 +300,7 @@ Read the [settings reference](./skills/configure-pi-sync/references/configuratio
 | --- | --- |
 | `/sync` | Set up storage, manage synced content, and review sync operations or recovery. |
 | `/sync help` | Show command usage. |
+| `/sync daemon [status\|handover\|allow-after-exit\|revoke-after-exit]` | Connect to the service or review ownership and unattended permission; no argument connects and shows status. |
 | `/sync use <setup>` | Switch the active local sync setup, following its switch policy. |
 | `/sync init` | Create a local configuration template. |
 | `/sync config` | Show resolved configuration. |
@@ -303,6 +316,8 @@ Read the [settings reference](./skills/configure-pi-sync/references/configuratio
 | `/sync rollback <snapshot-id>` | Back up local content, apply a historical snapshot, and republish it remotely. |
 | `/sync migrate-state` | Migrate the legacy local state directory. |
 | `/sync unlock --stale` | Recover an abandoned local lock after guarded ownership checks. |
+
+Use the installed CLI, `pi-sync-daemon stop --root <agent-directory>` or `pi-sync-daemon restart --root <agent-directory>`, for explicit service lifecycle control; these are not `/sync daemon` actions. Stop drains the service; reload Pi to reattach its session afterward. Explicit CLI start without clients also follows the 30-second grace policy. The next eligible interactive client or explicit command can restart only after the old owner's exit is proven; print/JSON never launch a service. Uncertain consent, failed revocation, or cleanup failure remains paused for the existing repair/revocation path, not silently cleared by automatic restart. No new setting, environment variable, or keep-alive flag is added. See [lifetime and recovery](./docs/daemon-migration.md).
 
 All routes support TUI and RPC; RPC settings and included-content screens are read-only.
 Print and JSON modes reject `/sync`.
@@ -371,7 +386,7 @@ Preserve both roots before manual recovery; with every Pi process closed and no 
 Pi exposes terminal components rather than a semantic or ARIA tree.
 Release checks cover textual state, keyboard operation, Escape and Back behavior, control escaping, and narrow rendering.
 Critical meaning appears in text such as `(current)`, `Review needed`, `No startup transfer`, `Warning`, `Invalid`, `Saved`, `Cancelled`, and `Applied`.
-Color is supplementary, and the attention widget is informational rather than interactive.
+Color is supplementary. The attention widget's mouse control changes only its presentation; `/sync` provides keyboard access to review actions.
 
 ## 🗂️ Package layout
 
@@ -380,12 +395,13 @@ packages/pi-sync/
 ├── src/
 │   ├── index.ts                       # Thin Pi entrypoint
 │   ├── sync-extension.ts              # Registration and session lifecycle ownership
-│   ├── commands/                      # Parsing, execution, and attention dispatch
-│   ├── settings/                      # Schema, validation, resolution, and persistence
-│   ├── sync/                          # Queries, mutations, policy, and lazy loaders
-│   ├── snapshot/                      # Collection, session paths, apply, and recovery
-│   ├── backends/                      # Contract and Git, S3, and WebDAV transports
-│   ├── state/                         # Sync-state persistence, locks, and migration
+│   ├── daemon/                        # Public IPC adapter and live Pi queue integration
+│   ├── commands/                      # Parsing, dispatch, and attention
+│   ├── settings/                      # Settings proposals and public engine contracts
+│   ├── sync/                          # Client lifecycle, dispatch, and public contracts
+│   ├── snapshot/                      # Public snapshot/session contracts
+│   ├── backends/                      # Public backend contract forwarders
+│   ├── state/                         # Public state contract forwarders
 │   └── ui/                            # Manager, settings, reviews, and setup flows
 ├── dist/                              # Generated Jiti runtime
 ├── scripts/build-runtime.mjs          # Runtime builder
@@ -394,9 +410,11 @@ packages/pi-sync/
 └── test/                              # Behavior and lifecycle coverage
 ```
 
+The [exclude policy safety audit](./docs/exclude-policy-audit.md) maps implementation boundaries to regression coverage.
+
 The generated runtime is built from `src/index.ts` and does not import back into `src`.
 Internal modules use direct imports from their owners; `src/sync.ts` and `src/types.ts` retain compatibility exports.
-Backend transports do not depend on UI, and first-use operation and setup implementations remain lazy.
+Engine implementation lives in the non-extension `@narumitw/pi-sync-daemon` dependency; Pi uses its documented exports, without an in-process transfer fallback. First-use UI and setup implementations remain lazy.
 
 ## 🔎 Keywords
 

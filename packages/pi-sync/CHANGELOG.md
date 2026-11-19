@@ -1,5 +1,79 @@
 # @narumitw/pi-sync
 
+## 0.60.4
+
+### Patch Changes
+
+- 1f44df7: On the first active connection after an update, Pi Sync can replace an older daemon only if compatible, authenticated IPC works and no retained unattended grant blocks the upgrade. The replacement waits for the old daemon to release its identity and exit. If any check fails, follow the [manual recovery guide](https://github.com/narumiruna/pi-extensions/blob/main/packages/pi-sync/docs/daemon-migration.md#ownership-and-upgrade). Passive and shutdown paths do not start a replacement. If an interactive session switch cannot upgrade the daemon, keep file protection when the old owner can still accept the session. Use `status` to find the pending or last recorded owner. When `repair-upgrade` successfully repairs a pending upgrade after verifying exit, it revokes all retained unattended grants and keeps the recovery records in one private archive across retries. It does not start a daemon.
+- fdbd6d6: Restore one line per stage in daemon startup timing reports in the TUI and RPC notifications.
+- Updated dependencies [1f44df7]
+- Updated dependencies [df62c83]
+  - @narumitw/pi-sync-daemon@0.5.0
+  - @narumitw/pi-tui-kit@0.70.1
+
+## 0.60.3
+
+### Patch Changes
+
+- b7d9e1c: Fix a hang after accepting a resource reload following a pull or rollback. Finish the sync operation and close its dialogs before reloading Pi.
+- b4d548c: Treat an empty session path as absent instead of invalid, so `pi --no-session` runs stop reporting `Pi session paths must be absolute` on startup while still syncing nothing for that ephemeral session.
+- 223b0ba: Restore a live Pi session after its heartbeat expires without reloading Pi. The
+  daemon distinguishes heartbeat expiry from deliberate disconnection and keeps
+  file-queue and session protection in place. Pi Sync reconnects to the same owner
+  without resubmitting interrupted operations, and checks participation before
+  reporting that it is connected.
+- Updated dependencies [223b0ba]
+  - @narumitw/pi-sync-daemon@0.4.0
+
+## 0.60.2
+
+### Patch Changes
+
+- ea5b9f1: Exit the daemon after a 30-second grace period when no registered client PID remains and no valid active-setup after-exit grant applies. Keep live, passive, disconnected, and retired clients protected; preserve paused authorization barriers and drain committed work before releasing ownership. No new setting or final synchronization is added.
+  
+  Let Pi Sync retry an authenticated idle-closing owner after confirmed process exit, with bounded, cancellable startup and no replay of submitted operations. Add the lightweight `waitForDaemonExit()` client helper. Let a later Pi Sync command reconnect after a cancelled unpublished attach by draining the old connection and using a fresh client ID and generation; keep failed cleanup blocked and never replay the cancelled operation. Publish and verify the daemon dependency before releasing Pi Sync; publication and real-data cutover still require separate approval.
+- 5e251a8: Rename the daemon package to `@narumitw/pi-sync-daemon` and its executable to `pi-sync-daemon`, and update Pi Sync to use the renamed dependency. The new package does not provide the old `sync-daemon` executable alias. Stop an existing daemon before replacing its package, then use the new executable after installation. Preserve IPC identity, settings, state, recovery evidence, and authorization digests. Publish and verify the renamed dependency before releasing Pi Sync; publication and real-data cutover still require separate approval.
+- Updated dependencies [ea5b9f1]
+- Updated dependencies [5e251a8]
+  - @narumitw/pi-sync-daemon@0.3.0
+
+## 0.60.1
+
+### Patch Changes
+
+- 8482c1f: Simplify the sync manager into a searchable action palette with five visible choices, selected-action help, a compact review widget, and on-demand continuous diagnostics. Keep transfer authorization, safety reviews, and existing command routes unchanged.
+
+## 0.60.0
+
+### Minor Changes
+
+- 8bba72d: Extract the existing synchronization engine into the standalone TypeScript `@narumitw/sync-daemon` package and keep Pi Sync as its reviewed local API client. Share a detached root-bound owner across Pi sessions, retain existing formats and recovery safeguards, and separate service lifetime from unattended transfer and resolver permission.
+  
+  Preserve reviewed external-session destinations across all participating Pi queues and setup-scoped explicit Continuous retry without resetting request accounting.
+  
+  The daemon must be available before the dependent Pi client is released. Publication and real-data cutover require separate approval and the migration verification gates.
+
+### Patch Changes
+
+- Updated dependencies [8bba72d]
+  - @narumitw/sync-daemon@0.2.0
+
+## 0.59.0
+
+### Minor Changes
+
+- 58cb3c5: Add per-setup path and glob exclusions with reviewed settings, portable policy comparison, and local-file protection across sync and rollback. Exclusion-enabled setups opt into settings version 6 and snapshot version 4; existing setups keep their previous behavior. Excluded paths are omitted from new publications, not erased from retained history.
+
+## 0.58.1
+
+### Patch Changes
+
+- cf7b63d: Put editor widget names and short current count/state summaries in their divider lines. Remove duplicate body titles while retaining safety text, detail rows, privacy modes, and standalone RPC/tool output. In fullscreen Pi, click anywhere in a widget to collapse it to one named line, then click that line to restore the latest content. Preserve independent, session-local disclosure through updates without taking editor focus, changing domain data, or stopping background work. Existing owner controls provide keyboard restoration; regular-mode mouse input remains terminal-owned.
+  
+  The Kit minor release supplies the named widget state and publisher disclosure APIs. Changesets raises all adopting consumers' Kit dependency floors in the same Version PR. Publish and verify the exact Kit artifact before its consumers.
+- Updated dependencies [cf7b63d]
+  - @narumitw/pi-tui-kit@0.70.0
+
 ## 0.58.0
 
 ### Minor Changes

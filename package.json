@@ -5,7 +5,6 @@
   "description": "Monorepo for @narumitw pi extension packages.",
   "type": "module",
   "workspaces": [
-    "packages/pi-tui-kit",
     "packages/*"
   ],
   "pi": {
@@ -17,15 +16,18 @@
       "./packages/pi-cache-hit-monitor/src/index.ts",
       "./packages/pi-caffeinate/src/index.ts",
       "./packages/pi-chat/src/index.ts",
+      "./packages/pi-chrome-devtools/src/index.ts",
       "./packages/pi-codex-compact/src/index.ts",
       "./packages/pi-codex-imagegen/src/index.ts",
       "./packages/pi-context-management/src/index.ts",
       "./packages/pi-dotenv/src/index.ts",
       "./packages/pi-files/src/index.ts",
+      "./packages/pi-firecrawl/src/index.ts",
       "./packages/pi-fleet/src/index.ts",
       "./packages/pi-github-pr/src/index.ts",
       "./packages/pi-goal/src/index.ts",
       "./packages/pi-herdr/src/index.ts",
+      "./packages/pi-illustrate/src/index.ts",
       "./packages/pi-inspect/src/index.ts",
       "./packages/pi-langfuse/src/index.ts",
       "./packages/pi-lsp/src/index.ts",
@@ -33,6 +35,7 @@
       "./packages/pi-notify/src/index.ts",
       "./packages/pi-plan-mode/src/index.ts",
       "./packages/pi-recall/src/index.ts",
+      "./packages/pi-rex/src/index.ts",
       "./packages/pi-stamp/src/index.ts",
       "./packages/pi-starship/src/index.ts",
       "./packages/pi-statusline/src/index.ts",
@@ -52,7 +55,7 @@
   },
   "scripts": {
     "dev": "npm install && npm run build && PI_TIMING=1 PI_CODING_AGENT_DIR=.pi/agent pi",
-    "build": "npm --workspaces --if-present run build",
+    "build": "node ./scripts/run-builds.mjs",
     "format": "biome format --write .",
     "lint": "biome lint .",
     "typecheck": "node ./scripts/run-typechecks.mjs",
@@ -60,6 +63,7 @@
     "check": "npm run build && node ./scripts/run-checks.mjs",
     "check:biome": "biome check . --error-on-warnings",
     "check:boundaries": "node ./scripts/check-extension-boundaries.mjs",
+    "check:dependencies": "node ./scripts/check-dependencies.mjs",
     "prepare": "node scripts/prepare.mjs",
     "benchmark:codex-compact": "node ./packages/pi-codex-compact/benchmark/run.mjs",
     "benchmark:extension-startup": "node ./scripts/benchmark-extension-startup.mjs",
@@ -79,14 +83,14 @@
     "changeset": "changeset",
     "changeset:status": "changeset status --verbose",
     "version-packages": "changeset version && npm install --package-lock-only --ignore-scripts",
-    "publish-packages": "node ./scripts/publish-packed-packages.mjs",
-    "publish-packages:sequential": "node ./scripts/publish-packages-sequentially.mjs"
+    "publish-packages": "node ./.github/scripts/publish-packed-packages.mjs",
+    "publish-packages:sequential": "node ./.github/scripts/publish-packages-sequentially.mjs"
   },
   "dependencies": {
     "esbuild": "0.28.2"
   },
   "devDependencies": {
-    "@biomejs/biome": "2.6.5",
+    "@biomejs/biome": "2.6.6",
     "@changesets/cli": "3.0.3",
     "@earendil-works/chord": "1.5.0",
     "@earendil-works/pi-agent-core": "1.5.0",
@@ -97,10 +101,10 @@
     "@types/node": "^26.6.6",
     "@types/semver": "^7.8.0",
     "concurrently": "^10.0.6",
-    "husky": "9.1.7",
     "npm-check-updates": "23.1.1",
     "semver": "7.8.6",
-    "typebox": "^1.4.4",
+    "tsc-rs": "0.8.0",
+    "typebox": "^1.4.5",
     "typescript": "^7.0.2",
     "vitest": "^5.1.0"
   },
@@ -121,6 +125,7 @@
   },
   "allowScripts": {
     "esbuild@0.28.2": true,
+    "tsc-rs@0.8.0": true,
     "@google/genai": false,
     "protobufjs": false,
     "fsevents": false,

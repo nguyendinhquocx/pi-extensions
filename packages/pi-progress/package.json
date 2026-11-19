@@ -1,6 +1,6 @@
 {
   "name": "@narumitw/pi-progress",
-  "version": "0.7.2",
+  "version": "0.8.0",
   "description": "Pi extension for branch-aware multi-step session progress.",
   "type": "module",
   "license": "MIT",
@@ -33,7 +33,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@narumitw/pi-tui-kit": "^0.69.0"
+    "@narumitw/pi-tui-kit": "^0.70.0"
   },
   "peerDependencies": {
     "@earendil-works/pi-ai": "*",
@@ -47,7 +47,7 @@
     "@earendil-works/pi-tui": "1.5.0",
     "@types/node": "26.6.6",
     "esbuild": "0.28.2",
-    "typebox": "1.4.4",
+    "typebox": "1.4.5",
     "typescript": "7.0.2"
   },
   "repository": {

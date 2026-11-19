@@ -9,12 +9,13 @@ import {
   parseHerdrPaneEvent,
   parsePaneCurrentResult,
   parsePaneListResult,
-  parseWorkspaceGetResult,
+  parseWorkspaceListResult,
 } from "../src/herdr-protocol.js";
 import {
   createHerdrWidget,
   HerdrWidgetModel,
   herdrWidgetFingerprint,
+  herdrWidgetSummary,
   MAX_HERDR_WIDGET_AGENTS,
 } from "../src/herdr-widget.js";
 
@@ -71,11 +72,11 @@ test("validates current panes, pane lists, and supported subscription events", (
     "reviewer",
   );
   assert.deepEqual(
-    parseWorkspaceGetResult({
-      type: "workspace_info",
-      workspace: { workspace_id: "w1", label: "space" },
+    parseWorkspaceListResult({
+      type: "workspace_list",
+      workspaces: [{ workspace_id: "w1", label: "space" }],
     }),
-    { workspaceId: "w1", label: "space" },
+    [{ workspaceId: "w1", label: "space" }],
   );
 
   assert.deepEqual(
@@ -158,16 +159,47 @@ test("filters siblings, orders every state, distinguishes panes, and caps rows",
   ]);
   const snapshot = model.snapshot();
   assert.ok(snapshot);
-  assert.equal(snapshot.totalAgents, 7);
+  assert.equal(snapshot.totalAgents, 8);
   assert.equal(snapshot.rows.length, MAX_HERDR_WIDGET_AGENTS);
-  assert.equal(snapshot.hiddenAgents, 2);
+  assert.equal(snapshot.hiddenAgents, 3);
   assert.deepEqual(
     snapshot.rows.map(({ state }) => state),
-    ["blocked", "done", "working", "idle", "idle"],
+    ["blocked", "blocked", "done", "working", "idle"],
   );
-  assert.ok(snapshot.rows.some(({ pane }) => pane === "same/p2"));
+  assert.ok(snapshot.rows.some(({ paneId, space }) => paneId === "w2:p1" && space === "w2"));
   assert.equal(Object.isFrozen(snapshot), true);
   assert.equal(Object.isFrozen(snapshot.rows), true);
+});
+
+test("keeps each workspace label, excludes only the calling pane, and falls back to missing workspace IDs", () => {
+  const model = new HerdrWidgetModel();
+  const current = pane("w1:p1");
+  const panes = [
+    current,
+    pane("w2:p1", "blocked", { workspaceId: "w2" }),
+    pane("w3:p1", "working", { workspaceId: "w3" }),
+    pane("w4:p1", "idle", { workspaceId: "w4" }),
+  ];
+  const workspaces = [
+    { workspaceId: "w1", label: "local" },
+    { workspaceId: "w2", label: "remote\u001b[31m-space" },
+    { workspaceId: "w3", label: "another" },
+  ];
+  model.reset(current, panes, workspaces);
+  const remoteWorkspace = workspaces[1];
+  assert.ok(remoteWorkspace);
+  remoteWorkspace.label = "mutated-after-read";
+  assert.deepEqual(
+    model.snapshot()?.rows.map(({ paneId, space }) => ({ paneId, space })),
+    [
+      { paneId: "w2:p1", space: "remote-space/w2" },
+      { paneId: "w3:p1", space: "another/w3" },
+      { paneId: "w4:p1", space: "w4" },
+    ],
+  );
+  assert.equal(panes[1]?.workspaceId, "w2", "display sanitization must not mutate source identity");
+  model.reset(current, panes, [{ workspaceId: "w2" }]);
+  assert.equal(model.snapshot()?.rows[0]?.space, "w2", "missing labels clear previous presentation");
 });
 
 test("replaces state for moved panes, agent detection, release, and exit", () => {
@@ -202,7 +234,7 @@ for (const cleared of [null, undefined]) {
           stateLabels: { blocked: "old-state" },
         }),
       ],
-      { workspaceId: "w1", label: "old-space" },
+      [{ workspaceId: "w1", label: "old-space" }],
     );
     const replacement = parsePaneCurrentResult({
       type: "pane_current",
@@ -216,7 +248,7 @@ for (const cleared of [null, undefined]) {
         state_labels: cleared,
       }),
     });
-    model.reset(current, [current, replacement], { workspaceId: "w1" });
+    model.reset(current, [current, replacement], [{ workspaceId: "w1" }]);
     assert.deepEqual(model.snapshot()?.rows[0], {
       agent: "pi",
       pane: "p2",
@@ -235,6 +267,32 @@ for (const cleared of [null, undefined]) {
   });
 }
 
+test("validates workspace lists without retaining unrelated response fields", () => {
+  assert.deepEqual(parseWorkspaceListResult({ type: "workspace_list", workspaces: [] }), []);
+  assert.deepEqual(
+    parseWorkspaceListResult({
+      type: "workspace_list",
+      workspaces: [
+        { workspace_id: "w2", label: null, future: true },
+        { workspace_id: "w3", label: "third" },
+      ],
+    }),
+    [
+      { workspaceId: "w2", label: undefined },
+      { workspaceId: "w3", label: "third" },
+    ],
+  );
+  for (const response of [
+    null,
+    { type: "workspace_info", workspaces: [] },
+    { type: "workspace_list", workspaces: null },
+    { type: "workspace_list", workspaces: [null] },
+    { type: "workspace_list", workspaces: [{ workspace_id: "" }] },
+  ]) {
+    assert.throws(() => parseWorkspaceListResult(response), /invalid workspace/);
+  }
+});
+
 test("parses pane and workspace update invalidations without retaining presentation payloads", () => {
   const updated = parseHerdrPaneEvent({ event: "pane_updated", data: { pane: wirePane() } });
   assert.equal(updated?.type, "updated");
@@ -252,6 +310,23 @@ test("parses pane and workspace update invalidations without retaining presentat
   const types = herdrWidgetSubscriptions([]).map((entry) => entry.type);
   assert.ok(types.includes("pane.updated"));
   assert.ok(types.includes("workspace.renamed"));
+  assert.ok(types.includes("workspace.created"));
+  assert.ok(types.includes("workspace.closed"));
+  assert.deepEqual(parseHerdrPaneEvent({ event: "workspace_created", data: { workspace: { workspace_id: "w2" } } }), {
+    type: "workspace_created",
+    workspaceId: "w2",
+  });
+  assert.deepEqual(parseHerdrPaneEvent({ event: "workspace_closed", data: { workspace_id: "w2" } }), {
+    type: "workspace_closed",
+    workspaceId: "w2",
+  });
+  for (const frame of [
+    { event: "workspace_created", data: { workspace: null } },
+    { event: "workspace_created", data: { workspace: { workspace_id: "" } } },
+    { event: "workspace_closed", data: { workspace_id: null } },
+  ]) {
+    assert.equal(parseHerdrPaneEvent(frame), undefined);
+  }
 });
 
 test("renders Herdr's distinct static symbol and semantic theme role for every agent state", () => {
@@ -312,6 +387,57 @@ test("renders Herdr's distinct static symbol and semantic theme role for every a
   });
 });
 
+test.each([
+  { state: "blocked", symbol: "×", role: "error" },
+  { state: "done", symbol: "✓", role: "accent" },
+  { state: "working", symbol: "◐", role: "warning" },
+  { state: "idle", symbol: "○", role: "success" },
+  { state: "unknown", symbol: "·", role: "dim" },
+] as const)(
+  "named body starts with the $state row and retains overflow within narrow bounds",
+  ({ state, symbol, role }) => {
+    const roles = new Map<string, string>();
+    const theme = {
+      bold: (text: string) => text,
+      fg: (name: string, text: string) => {
+        roles.set(text, name);
+        return text;
+      },
+    } as Theme;
+    const snapshot = {
+      totalAgents: 7,
+      hiddenAgents: 2,
+      rows: Array.from({ length: MAX_HERDR_WIDGET_AGENTS }, (_, index) => ({
+        agent: `agent_${index}`,
+        pane: `p${index}`,
+        paneId: `w1:p${index}`,
+        space: "w1",
+        state,
+        stateLabel: state,
+      })),
+    };
+    const original = structuredClone(snapshot);
+    const named = createHerdrWidget(snapshot, theme, false);
+    const unnamed = createHerdrWidget(snapshot, theme);
+    assert.equal(herdrWidgetSummary(snapshot), "7 sibling agents");
+    assert.equal(herdrWidgetSummary({ ...snapshot, totalAgents: 1 }), "1 sibling agent");
+    assert.equal(unnamed.render(200)[1], "Herdr · 7 sibling agents", "default standalone heading stays unchanged");
+    for (const width of [0, 1, 2, 12, 32, 80, 200]) {
+      const lines = named.render(width);
+      assert.equal(lines.length, MAX_HERDR_WIDGET_AGENTS + 2);
+      assert.equal(lines[0], "─".repeat(width));
+      assert.ok(lines.every((line) => visibleWidth(line) <= width));
+    }
+    const lines = named.render(200);
+    assert.equal(lines[1], `${symbol} ${state}  agent_0 · p0 · w1`);
+    assert.equal(lines.at(-1), "+2 more");
+    assert.doesNotMatch(lines.slice(1).join("\n"), /Herdr|sibling agents/u);
+    assert.equal(roles.get(`${symbol} ${state}`), role);
+    assert.equal(roles.get("+2 more"), "dim");
+    assert.deepEqual(snapshot, original);
+  },
+);
+
 test("sanitizes before sorting and renders terminal-width-safe themed rows", () => {
   const model = new HerdrWidgetModel();
   model.reset(
@@ -324,7 +450,7 @@ test("sanitizes before sorting and renders terminal-width-safe themed rows", () 
         stateLabels: { blocked: "wait\rnow" },
       }),
     ],
-    { workspaceId: "w1", label: "space\u001b]8;;spoof" },
+    [{ workspaceId: "w1", label: "space\u001b]8;;spoof" }],
   );
   const snapshot = model.snapshot();
   assert.ok(snapshot);

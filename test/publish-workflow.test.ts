@@ -9,6 +9,20 @@ import { test } from "vitest";
 const repositoryRoot = process.cwd();
 const workflow = readFileSync(path.join(repositoryRoot, ".github/workflows/publish.yml"), "utf8");
 
+test("publish workflow starts mode selection only on main without rerunning CI", () => {
+  const selectMode = workflow.slice(workflow.indexOf("  select-mode:\n"), workflow.indexOf("  version:\n"));
+  assert.match(selectMode, /^ {4}if: github\.ref == 'refs\/heads\/main'$/mu);
+  assert.doesNotMatch(selectMode, /^ {4}needs:/mu);
+  assert.doesNotMatch(workflow, /^ {2}checks:|ci\.yml|npm (?:run check|test)\b/mu);
+});
+
+test("pull request CI retains both checks and tests", () => {
+  const ci = readFileSync(path.join(repositoryRoot, ".github/workflows/ci.yml"), "utf8");
+  assert.match(ci, /^ {2}pull_request:\n {4}branches:\n {6}- main$/mu);
+  assert.match(ci, /^ {8}run: npm run check$/mu);
+  assert.match(ci, /^ {8}run: npm test$/mu);
+});
+
 test("version workflow checks the effective release plan before creating or updating a PR", () => {
   const version = workflow.slice(workflow.indexOf("  version:\n"), workflow.indexOf("  pack:\n"));
   const installIndex = version.indexOf("      - name: Install dependencies\n");
@@ -17,7 +31,7 @@ test("version workflow checks the effective release plan before creating or upda
   assert.ok(installIndex >= 0 && guardIndex > installIndex && actionIndex > guardIndex);
   assert.match(
     version.slice(guardIndex, actionIndex),
-    /id: release-plan\n {8}run: node \.\/scripts\/check-version-plan\.mjs/u,
+    /id: release-plan\n {8}run: node \.\/\.github\/scripts\/check-version-plan\.mjs/u,
   );
   assert.match(
     version.slice(actionIndex),
@@ -35,7 +49,11 @@ test("publish workflow uses native Changesets artifact publishing without duplic
     /script: npm run publish-packages -- --from-pack-dir \$\{\{ runner\.temp \}\}\/changeset-pack/u,
   );
   const manifest = JSON.parse(readFileSync(path.join(process.cwd(), "package.json"), "utf8"));
-  assert.equal(manifest.scripts["publish-packages"], "node ./scripts/publish-packed-packages.mjs");
+  assert.equal(manifest.scripts["publish-packages"], "node ./.github/scripts/publish-packed-packages.mjs");
+  assert.equal(
+    manifest.scripts["publish-packages:sequential"],
+    "node ./.github/scripts/publish-packages-sequentially.mjs",
+  );
   assert.match(publish, /create-github-releases: true/u);
   assert.match(publish, /push-git-tags: true/u);
   assert.match(publish, /NPM_CONFIG_PROVENANCE: "true"/u);

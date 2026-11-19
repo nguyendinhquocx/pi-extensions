@@ -1,14 +1,12 @@
 # Publish workflow
 
-[`.github/workflows/publish.yml`](../.github/workflows/publish.yml) versions or publishes packages after CI passes. It starts on a push to `main` or a manual dispatch. Jobs run only for `main`. Runs are serialized for each Git ref without cancelling an active release run.
+[`.github/workflows/publish.yml`](../.github/workflows/publish.yml) versions or publishes packages without rerunning CI checks or tests. It relies on successful PR checks before merge and starts on a push to `main` or a manual dispatch. Jobs run only for `main`. Direct pushes and manual release runs do not have a CI gate in this workflow. Runs are serialized for each Git ref without cancelling an active release run.
 
 ```mermaid
 flowchart TD
     Trigger["Push to main or manual dispatch"] --> Main{"Git ref is main?"}
     Main -->|No| Skip["Skip release jobs"]
-    Main -->|Yes| CI["CI: npm ci, npm run check, npm test"]
-    CI -->|Success| Select["Select Changesets mode"]
-    CI -->|Failure| Stop["Stop release jobs"]
+    Main -->|Yes| Select["Select Changesets mode"]
     Select --> Mode{"Selected mode"}
     Mode -->|version| VersionPlan{"CLI release plan changes a package version?"}
     VersionPlan -->|Yes| Version["Run npm run version-packages"]
@@ -30,15 +28,14 @@ flowchart TD
 
 | Job | Purpose |
 | --- | --- |
-| `checks` | Call `ci.yml` to build, check, and run affected tests; test selection can fall back to the full suite. |
 | `select-mode` | Select version, publish, or neither with the Changesets Action. |
 | `version` | Check the effective release plan; if a package version would change, update versions and the lockfile, then create or update the version pull request. |
 | `pack` | Build packages and pack the selected publish plan into an artifact. |
 | `publish` | Download the artifact and invoke native Changesets artifact publication with npm provenance enabled. |
 
-Each non-CI job checks out the repository, sets up Node.js, and runs `npm ci`. The publish job does not repeat CI checks or tests.
+Each job checks out the repository, sets up Node.js, and runs `npm ci`. No job calls `ci.yml` or runs `npm run check` or `npm test`.
 
-Before the version action, `scripts/check-version-plan.mjs` reads the CLI's `changeset status --output` plan. The action runs only when at least one planned `newVersion` differs from its `oldVersion`. This prevents empty release PRs when pending changesets target only private or ignored packages that Changesets will not version. Plan errors fail the job. A skipped plan leaves changesets pending and does not enable publishing.
+Before the version action, `.github/scripts/check-version-plan.mjs` reads the CLI's `changeset status --output` plan. The action runs only when at least one planned `newVersion` differs from its `oldVersion`. This prevents empty release PRs when pending changesets target only private or ignored packages that Changesets will not version. Plan errors fail the job. A skipped plan leaves changesets pending and does not enable publishing.
 
 The pack job completes `npm run build` before packing. Only the **Pack packages** step sets `NPM_CONFIG_IGNORE_SCRIPTS=true`, so native Changesets packs the existing output without running `prepack`, `prepare`, or `postpack` hooks. Changesets can pack dependencies and consumers concurrently; a second Kit build can delete `dist` while a consumer compiles against it. Dependency installation and the explicit build keep their normal script behavior. Package-level hooks remain available for direct `npm pack` commands.
 

@@ -19,16 +19,16 @@ The shared build tool does not change runtime source, settings, commands, UI, mo
 
 ## Production Git preparation
 
-`scripts/prepare.mjs` runs `scripts/prepare-kit-runtime.mjs` before Inspector assets and development hooks. Pi Git installs omit development dependencies and link the Kit workspace, so preparation emits its source modules as ESM JavaScript without TypeScript tooling. It does not bundle package imports or collapse lazy boundaries. Exact relative targets and source maps are validated before staged output replaces `dist`; failed publication restores the previous directory, and failed restoration retains a named backup. Concurrent preparers and crash recovery are not supported.
+`scripts/prepare.mjs` prepares Kit, then pi-sync-daemon, before Inspector assets; Git hook installation is a separate, explicit `prek install` step. Their thin `prepare-kit-runtime.mjs` and `prepare-daemon-runtime.mjs` wrappers use `scripts/prepare-workspace-runtime.mjs`. Pi Git installs omit development dependencies and link both workspaces, so preparation emits their source modules as ESM JavaScript without TypeScript tooling; the daemon also requires and marks its CLI entry executable. It does not bundle package imports or collapse lazy boundaries. Exact relative targets and source maps are validated before staged output replaces `dist`; failed publication restores the previous directory, and failed restoration retains a named backup. Concurrent preparers and crash recovery are not supported.
 
-This runtime-only preparation does not replace Kit's package build or prepack: those still generate declarations for library consumers. Root checks rebuild the complete library before typechecks and tests. `test/prepare-kit-runtime.test.ts` verifies output, failure recovery, and a clean production layout through Pi's Jiti loader, including Edit Scope's lazy menu and Kit's lazy questionnaire.
+This runtime-only preparation does not replace either library’s package build or prepack: those still generate declarations for library consumers. Root checks rebuild both complete libraries before typechecks and tests. `test/prepare-kit-runtime.test.ts` verifies output, failure recovery, and a clean production layout without development tools through Pi’s Jiti loader, including Edit Scope’s lazy menu, Kit’s lazy questionnaire, Pi Sync’s source/lazy Help route, and standalone daemon start/API/stop.
 
 ## Variation audit
 
 All 29 original builders were compared with `pi-analytics` after normalizing only the package-specific temporary names. Shared behavior includes the esbuild options, staging, dependency exclusion, static eager traversal, banners/maps, owned output paths, cleanup, and backup/rename recovery.
 
 `Kit` below means `@narumitw/pi-tui-kit`. The wrappers retain the complete literal input lists. All migrated wrappers keep their original banner, staging prefix and test-output prefix.
-This historical audit includes `pi-firecrawl`, `pi-chrome-devtools`, and `pi-typesafe-search`, now archived under `deprecated/` and excluded from active build and test gates.
+This historical audit includes `pi-typesafe-search`, now archived under `deprecated/` and excluded from active build and test gates.
 
 | Package(s) | Package-owned differences | Classification / disposition |
 | --- | --- | --- |

@@ -3,7 +3,7 @@ import { test } from "vitest";
 import { PLAN_MODE_MAX_CHARS } from "../src/completion-tool.js";
 import planModeExtension from "../src/plan-mode.js";
 import { type ActiveImplementationPlan, restorePlanModeState } from "../src/state.js";
-import { createCustomSelectorHarness, createMockContext, createMockPi } from "./support.js";
+import { createCustomSelectorHarness, createMockContext, createMockPi, restoreMockPlanModeState } from "./support.js";
 import { renderMockWidget } from "./widget-support.js";
 
 const PLAN = `# Compaction-safe implementation
@@ -267,7 +267,9 @@ test("implementation transition rejects a busy run before committing and succeed
   idle = true;
   await mock.commands.get("plan")?.handler("implement", context.ctx);
   assert.equal(context.statuses.get("plan-mode"), "plan implementing");
-  assert.match(renderMockWidget(context.widgets.get("plan-mode-plan")).join("\n"), /implementation plan active/i);
+  const widget = renderMockWidget(context.widgets.get("plan-mode-plan"));
+  assert.match(widget[0] ?? "", /▾ Plan mode · Implementation active/u);
+  assert.deepEqual(widget.slice(1), ["Use /plan to show, replace, or clear it."]);
   assert.deepEqual(mock.rawPi.getActiveTools(), ["read", "edit", "plan_mode_question", "plan_mode_complete"]);
   assert.equal(mock.sentUserMessages.at(-1)?.options, undefined);
   const activeState = latestState(mock.entries);
@@ -772,5 +774,6 @@ test("resume and shutdown retain branch-local implementation state while clearin
   await mock.events.get("session_shutdown")?.[0]?.({}, context.ctx);
   assert.equal(context.statuses.get("plan-mode"), undefined);
   assert.equal(context.widgets.get("plan-mode-plan"), undefined);
-  assert.equal(latestState(mock.entries)?.activeImplementation?.plan, PLAN);
+  assert.deepEqual(mock.entries, []);
+  assert.equal(restoreMockPlanModeState(mock, [resumedEntry]).activeImplementation?.plan, PLAN);
 });

@@ -1,9 +1,11 @@
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { truncateToWidth } from "@earendil-works/pi-tui";
+import type { EditorStatusWidgetState } from "@narumitw/pi-tui-kit/editor-status-widget";
 import { syncCheckConfigFingerprint, syncConfigReviewFingerprint } from "../settings/config.js";
 import type { AnySyncConfig } from "../settings/settings-types.js";
+import { sameSyncExclude } from "../sync/exclude-policy.js";
 import type { StartupObservation } from "../sync/sync-inspection.js";
-import { compareSyncInclude, type RemoteSelectionDecision, sameSyncInclude } from "../sync/sync-policy.js";
+import { type RemoteSelectionDecision, sameSyncInclude } from "../sync/sync-policy.js";
 import { setSyncStatus } from "./sync-status.js";
 import { safeTerminalText } from "./terminal-text.js";
 
@@ -21,7 +23,8 @@ export function syncAttentionMatchesConfig(attention: SyncAttentionState, config
   return (
     attention.decision.setupName === config.setupName &&
     attention.decision.configIdentity === syncConfigReviewFingerprint(config) &&
-    sameSyncInclude(attention.decision.localInclude, config.include)
+    sameSyncInclude(attention.decision.localInclude, config.include) &&
+    sameSyncExclude(attention.decision.localExclude, config.exclude)
   );
 }
 
@@ -35,6 +38,7 @@ export interface SyncAttentionController {
   markOffered(): boolean;
   clear(ctx: ExtensionContext): void;
   reset(ctx: ExtensionContext): void;
+  expand(): void;
   publish(ctx: ExtensionContext, signal?: AbortSignal): Promise<void>;
 }
 
@@ -42,6 +46,7 @@ export function createSyncAttentionController(): SyncAttentionController {
   let state: SyncAttentionState | undefined;
   let observation: StartupObservation | undefined;
   let generation = 0;
+  let widgetState: EditorStatusWidgetState = { collapsed: false };
 
   return {
     observe(value) {
@@ -81,7 +86,11 @@ export function createSyncAttentionController(): SyncAttentionController {
       generation++;
       state = undefined;
       observation = undefined;
+      widgetState = { collapsed: false };
       clearAttentionPresentation(ctx);
+    },
+    expand() {
+      widgetState.collapsed = false;
     },
     async publish(ctx, signal) {
       const currentGeneration = ++generation;
@@ -98,15 +107,10 @@ export function createSyncAttentionController(): SyncAttentionController {
         });
         return;
       }
-      const presentation = state
-        ? attentionPresentation(state.decision)
-        : {
-            status: "sync ⇕",
-            lines: observationLines(observation as StartupObservation),
-          };
+      const setupName = safeTerminalText(state?.decision.setupName ?? observation?.setupName ?? "");
       if (ctx.mode !== "tui") {
         ctx.ui.setWidget(WIDGET_KEY, undefined);
-        setSyncStatus(ctx, presentation.status, { activity: "review" });
+        setSyncStatus(ctx, "sync ⇕", { activity: "review" });
         return;
       }
       // Keep Kit outside the eager startup graph; module loading owns no cancellable resources.
@@ -115,32 +119,22 @@ export function createSyncAttentionController(): SyncAttentionController {
         throw error;
       });
       if (generation !== currentGeneration || signal?.aborted) return;
-      setSyncStatus(ctx, presentation.status, { activity: "review" });
+      setSyncStatus(ctx, "sync ⇕", { activity: "review" });
+      const presentationState = widgetState;
       ctx.ui.setWidget(
         WIDGET_KEY,
         (_tui, theme) =>
           new EditorStatusWidget({
             theme,
-            renderBody: (width) =>
-              presentation.lines.map((line, index) =>
-                width === 0 ? "" : truncateToWidth(theme.fg(index === 0 ? "warning" : "muted", line), width, "…"),
-              ),
+            name: "Sync",
+            summary: "Needs review",
+            state: presentationState,
+            renderBody: (width) => [
+              width === 0 ? "" : truncateToWidth(theme.fg("muted", `Open /sync to review · ${setupName}`), width, "…"),
+            ],
           }),
       );
     },
-  };
-}
-
-function attentionPresentation(decision: RemoteSelectionDecision) {
-  const setupName = safeTerminalText(decision.setupName);
-  const comparison = compareSyncInclude(decision.localInclude, decision.remoteInclude);
-  const difference =
-    comparison.remoteOnly.length === 0 && comparison.localOnly.length === 0
-      ? "Only list order differs"
-      : `Remote ${comparison.remoteOnly.length} · Device ${comparison.localOnly.length}`;
-  return {
-    status: "sync ⇕",
-    lines: [`Pi Sync needs review · ${setupName}`, difference, "No changes · Run /sync to review"],
   };
 }
 

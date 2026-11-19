@@ -1,5 +1,23 @@
 # @narumitw/pi-tui-kit
 
+## 0.70.1
+
+### Patch Changes
+
+- df62c83: Fix duplicate option numbers in Plan mode questionnaires in TUI and RPC.
+  Recognize complete sequences that use `1.` or `1)`, even with leading spaces.
+  Keep the prefixes if removing them would leave a label with no visible text.
+  Show predefined option numbers apart from the answer text on the TUI review
+  page. Leave selected answers unchanged.
+
+## 0.70.0
+
+### Minor Changes
+
+- cf7b63d: Put editor widget names and short current count/state summaries in their divider lines. Remove duplicate body titles while retaining safety text, detail rows, privacy modes, and standalone RPC/tool output. In fullscreen Pi, click anywhere in a widget to collapse it to one named line, then click that line to restore the latest content. Preserve independent, session-local disclosure through updates without taking editor focus, changing domain data, or stopping background work. Existing owner controls provide keyboard restoration; regular-mode mouse input remains terminal-owned.
+  
+  The Kit minor release supplies the named widget state and publisher disclosure APIs. Changesets raises all adopting consumers' Kit dependency floors in the same Version PR. Publish and verify the exact Kit artifact before its consumers.
+
 ## 0.69.1
 
 ### Patch Changes

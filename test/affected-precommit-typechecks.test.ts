@@ -118,7 +118,7 @@ test("shared root inputs and removed workspaces fall back to all workspaces", ()
     ["package-lock.json"],
     ["tsconfig.json"],
     ["biome.json"],
-    ["scripts/pre-commit.sh"],
+    ["prek.toml"],
     ["scripts/run-typechecks.mjs"],
     ["packages/removed/src/index.ts"],
     ["../outside.ts"],
@@ -132,6 +132,7 @@ test("shared root inputs and removed workspaces fall back to all workspaces", ()
       "@fixture/registry-consumer",
       "@fixture/unrelated",
     ]);
+    assert.equal(testSelector.selectAffectedTests(fixtureRoot, changedFiles).mode, "full", changedFiles.join(", "));
   }
 });
 
@@ -141,6 +142,33 @@ test("the existing affected-test selector retains reverse-dependent behavior", (
   assert.equal(selection.mode, "affected");
   assert.equal(selection.includeRootTests, true);
   assert.deepEqual(selection.workspaceDirectories, ["app", "feature"]);
+});
+
+test("GitHub Actions scripts retain full test selection", () => {
+  for (const name of [
+    "check-version-plan.mjs",
+    "publish-command.mjs",
+    "publish-packages-sequentially.mjs",
+    "publish-packed-packages.mjs",
+  ]) {
+    const script = `.github/scripts/${name}`;
+    for (const changedFiles of [[script], ["packages/feature/src/index.ts", script]]) {
+      const selection = testSelector.selectAffectedTests(fixtureRoot, changedFiles);
+      assert.equal(selection.mode, "full", changedFiles.join(", "));
+      assert.equal(selection.includeRootTests, true);
+      assert.deepEqual(selection.workspaceDirectories, ["app", "feature", "library", "registry-consumer", "unrelated"]);
+    }
+  }
+});
+
+test("workflow-only changes retain skipped test selection", () => {
+  const selection = testSelector.selectAffectedTests(fixtureRoot, [
+    ".github/workflows/ci.yml",
+    ".github/workflows/publish.yml",
+  ]);
+  assert.equal(selection.mode, "skip");
+  assert.equal(selection.includeRootTests, false);
+  assert.deepEqual(selection.workspaceDirectories, []);
 });
 
 test("shared root test support selects all workspaces regardless of change order", () => {
@@ -231,20 +259,71 @@ test("staged file discovery tracks both rename paths and rejects unstaged manife
   }
 });
 
-test("the pre-commit hook delegates checks without narrowing the repository gate", () => {
+test("file-scoped Biome checks preserve ordered repository gates", () => {
   const manifest = JSON.parse(readFileSync(path.join(repositoryRoot, "package.json"), "utf8")) as {
     scripts: Record<string, string>;
+    devDependencies: Record<string, string>;
+    allowScripts: Record<string, boolean>;
   };
-  const hook = readFileSync(path.join(repositoryRoot, ".husky", "pre-commit"), "utf8");
-  const preCommitScript = readFileSync(path.join(repositoryRoot, "scripts", "pre-commit.sh"), "utf8");
+  const config = readFileSync(path.join(repositoryRoot, "prek.toml"), "utf8");
+  const [settings, ...hooks] = config.split("[[repos.hooks]]");
+  const commands = [
+    ["biome-migrate", "npx @biomejs/biome migrate --write"],
+    ["biome-check", "npx @biomejs/biome check --write --files-ignore-unknown=true --no-errors-on-unmatched"],
+    ["check-readmes", "uv run scripts/check_readmes.py"],
+    ["zizmor", "uvx zizmor --pedantic .github"],
+    ["typecheck-staged", "npm run typecheck -- --staged"],
+  ] as const;
 
-  assert.equal(hook, "./scripts/pre-commit.sh\n");
+  assert.match(settings ?? "", /^fail_fast = true$/mu);
+  assert.match(settings ?? "", /^repo = "local"$/mu);
+  assert.equal(hooks.length, commands.length);
+  assert.doesNotMatch(config, /\.\/scripts\//u);
+  for (const [priority, [id, entry]] of commands.entries()) {
+    const lines = hooks[priority]?.split("\n") ?? [];
+    for (const setting of [
+      `id = "${id}"`,
+      `entry = "${entry}"`,
+      'language = "system"',
+      `pass_filenames = ${id === "biome-check"}`,
+      `priority = ${priority}`,
+    ]) {
+      assert.ok(lines.includes(setting), `${id}: ${setting}`);
+    }
+    if (id !== "biome-check") assert.ok(lines.includes("always_run = true"), id);
+  }
+  const biomeHook = hooks[1] ?? "";
+  assert.match(biomeHook, /^types = \["text"\]$/mu);
+  assert.doesNotMatch(biomeHook, /^always_run = true$/mu);
+  const filter = /^files = '(.+)'$/mu.exec(biomeHook)?.[1];
+  assert.ok(filter);
+  const pattern = new RegExp(filter);
+  for (const extension of [
+    "js",
+    "jsx",
+    "ts",
+    "tsx",
+    "cjs",
+    "cts",
+    "mjs",
+    "mts",
+    "d.ts",
+    "d.cts",
+    "d.mts",
+    "json",
+    "jsonc",
+    "css",
+  ]) {
+    assert.match(`src/file.${extension}`, pattern);
+  }
+  for (const file of ["README.md", "prek.toml", ".github/workflows/check.yml", "logo.png", "file.ts.md"]) {
+    assert.doesNotMatch(file, pattern);
+  }
+  assert.equal(manifest.devDependencies.husky, undefined);
+  assert.equal(manifest.allowScripts[`tsc-rs@${manifest.devDependencies["tsc-rs"]}`], true);
   assert.equal(manifest.scripts.precommit, undefined);
-  assert.match(preCommitScript, /biome check --staged --no-errors-on-unmatched --error-on-warnings/u);
   assert.equal(manifest.scripts["check:biome"], "biome check . --error-on-warnings");
-  assert.doesNotMatch(preCommitScript, /--write/u);
-  assert.match(preCommitScript, /run-typechecks\.mjs --staged/u);
-  assert.doesNotMatch(manifest.scripts.typecheck, /--staged/u);
+  assert.doesNotMatch(manifest.scripts.typecheck, /--staged|--tsc-rs/u);
 });
 
 function writeWorkspace(directoryName: string, manifest: Record<string, unknown>) {
