@@ -1,5 +1,20 @@
 # @narumitw/pi-sync-daemon
 
+## 0.6.1
+
+### Patch Changes
+
+- 25eef0a: Update the runtime libraries for AgentFS shell execution, Langfuse trace export, Starship pattern matching, subagent ignore rules, and sync daemon XML parsing and glob matching.
+
+## 0.6.0
+
+### Minor Changes
+
+- d96f85d: Retry lost file-queue release acknowledgements on the same daemon without
+  replaying transfers. Keep brief retries quiet and show a recovery status for
+  longer waits. The daemon client exposes an optional queue-release delivery
+  observer without changing the IPC protocol.
+
 ## 0.5.1
 
 ### Patch Changes

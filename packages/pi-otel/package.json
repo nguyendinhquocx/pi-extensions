@@ -1,0 +1,89 @@
+{
+  "name": "@narumitw/pi-otel",
+  "version": "0.55.0",
+  "description": "Pi extension that exports agent, model, and tool traces to OpenTelemetry collectors or Langfuse.",
+  "type": "module",
+  "license": "MIT",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./durable": {
+      "types": "./dist/durable.d.ts",
+      "import": "./dist/durable.js"
+    }
+  },
+  "private": false,
+  "keywords": [
+    "pi-package",
+    "pi-extension",
+    "pi",
+    "opentelemetry",
+    "otlp",
+    "langfuse",
+    "observability",
+    "tracing"
+  ],
+  "files": [
+    "src",
+    "dist",
+    "docs",
+    "README.md",
+    "CHANGELOG.md",
+    "LICENSE"
+  ],
+  "pi": {
+    "extensions": [
+      "./dist/index.ts"
+    ]
+  },
+  "scripts": {
+    "build": "node scripts/build-runtime.mjs",
+    "prepack": "npm run build",
+    "check": "npm run build && biome check .",
+    "format": "biome check --write .",
+    "typecheck": "tsc --noEmit"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-durable": "^1.5.0",
+    "@earendil-works/chord": "^1.5.0"
+  },
+  "peerDependenciesMeta": {
+    "@earendil-works/pi-coding-agent": {
+      "optional": true
+    },
+    "@earendil-works/pi-durable": {
+      "optional": true
+    },
+    "@earendil-works/chord": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@earendil-works/pi-coding-agent": "1.5.0",
+    "@earendil-works/pi-durable": "1.5.0",
+    "@earendil-works/chord": "1.5.0",
+    "@types/node": "26.6.6",
+    "protobufjs": "7.6.5",
+    "typescript": "7.0.2",
+    "esbuild": "0.28.2"
+  },
+  "dependencies": {
+    "@narumitw/pi-tui-kit": "^0.70.0",
+    "@opentelemetry/api": "^1.10.0",
+    "@opentelemetry/exporter-trace-otlp-http": "^0.301.2",
+    "@opentelemetry/otlp-exporter-base": "^0.301.2",
+    "@opentelemetry/otlp-transformer": "^0.301.2",
+    "@opentelemetry/resources": "^3.1.1",
+    "@opentelemetry/sdk-trace": "^3.1.1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/narumiruna/pi-extensions",
+    "directory": "packages/pi-otel"
+  }
+}
