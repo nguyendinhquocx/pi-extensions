@@ -1,9 +1,8 @@
 import { truncateToWidth } from "@earendil-works/pi-tui";
-import { loadConfig, syncCheckConfigFingerprint } from "../settings/config.js";
-import { activeLocalConfigPath } from "../settings/config-file.js";
-import { readLocalConfigObject } from "../settings/settings-store.js";
-import type { AnySyncConfig } from "../settings/settings-types.js";
-import { isCloudflareR2Endpoint, ownRecord } from "../settings/settings-validation.js";
+import { configFromSettings, loadConfig, syncCheckConfigFingerprint } from "../settings/config.js";
+import { activeLocalConfigPath, readActiveLocalConfigDocumentForRepair } from "../settings/config-file.js";
+import type { AnySyncConfig, PiSyncSettingsV3 } from "../settings/settings-types.js";
+import { isCloudflareR2Endpoint, validateSettingsDocument } from "../settings/settings-validation.js";
 import {
   inspectOperationAvailability,
   type OperationAvailability,
@@ -14,7 +13,7 @@ import { readStateForConfig, syncStateFingerprint } from "../state/sync-state-st
 import { sameSyncExclude } from "../sync/exclude-policy.js";
 import { errorMessage } from "../sync/sync-errors.js";
 import type { StartupObservation } from "../sync/sync-inspection.js";
-import { compareSyncInclude, syncSessionsSelected } from "../sync/sync-policy.js";
+import { compareSyncInclude, syncSelectionHasContent, syncSessionsSelected } from "../sync/sync-policy.js";
 import {
   observationMatchesConfig,
   observationSummary,
@@ -39,6 +38,7 @@ export interface ManagerDescription {
   title: string;
   actions: string[];
   configReview?: { setupName: string; fingerprint: string };
+  settingsReview?: { setupName: string; fingerprint: string };
   operation?: OperationAvailability;
   attention?: SyncAttentionState;
   observation?: StartupObservation;
@@ -52,10 +52,13 @@ export async function describeManagerState(
   inspectOperation: () => Promise<OperationAvailability> = inspectOperationAvailability,
   observation?: StartupObservation,
 ): Promise<ManagerDescription> {
-  let raw: Record<string, unknown> | undefined;
+  let raw: PiSyncSettingsV3 | undefined;
   try {
-    raw = await readLocalConfigObject();
+    const document = await readActiveLocalConfigDocumentForRepair();
+    signal?.throwIfAborted();
+    if (document) raw = validateSettingsDocument(document.parsed);
   } catch (error) {
+    if (signal?.aborted) throw error;
     return {
       title: [
         "Manage sync",
@@ -75,12 +78,8 @@ export async function describeManagerState(
       actions: ["Set up sync", "Help"],
     };
   }
-  const configuredTargets = ownRecord(raw.syncSetups);
-  if (
-    (raw.version === 3 || raw.version === 4 || raw.version === 5 || raw.version === 6) &&
-    configuredTargets &&
-    Object.keys(configuredTargets).length === 0
-  ) {
+  const configuredTargets = raw.syncSetups;
+  if (Object.keys(configuredTargets).length === 0) {
     return {
       title: [
         "Manage sync",
@@ -94,6 +93,21 @@ export async function describeManagerState(
     };
   }
   try {
+    const settingsConfig = configFromSettings(raw);
+    if (settingsConfig.reservedIgnoreNames !== undefined) {
+      return {
+        title: [
+          "Manage sync",
+          `Current sync setup: ${safeTerminalText(settingsConfig.setupName)}`,
+          "Transfers are unavailable while ignore-file setups are configured.",
+        ].join("\n"),
+        actions: ["Settings", "Sync setups…", "Storage connections…", "Help"],
+        settingsReview: {
+          setupName: settingsConfig.setupName,
+          fingerprint: syncCheckConfigFingerprint(settingsConfig),
+        },
+      };
+    }
     const config = await loadConfig();
     const operation = await inspectOperation();
     const changesBlocked = operationBlocksChanges(operation);
@@ -114,7 +128,9 @@ export async function describeManagerState(
     const attentionExclusionsDiffer = currentAttention
       ? !sameSyncExclude(currentAttention.decision.localExclude, currentAttention.decision.remoteExclude)
       : false;
-    const noSyncedContent = config.include.length === 0;
+    const attentionDirectoryPolicy =
+      currentAttention?.decision.localDirectory || currentAttention?.decision.remoteDirectory;
+    const noSyncedContent = !syncSelectionHasContent(config);
     const syncState = changesBlocked ? undefined : await readStateForConfig(config).catch(() => undefined);
     const currentObservation =
       observation &&
@@ -141,6 +157,7 @@ export async function describeManagerState(
       "Manage sync",
       `Current sync setup: ${safeTerminalText(config.setupName)}`,
       `Storage: ${backendStorageDescription(config)}`,
+      ...(config.scope ? ["Sync scope: Pi agent directory, with exclusions"] : []),
       ...(syncState?.unresolved?.length
         ? [`Unresolved: ${syncState.unresolved.length} dependency groups · review needed`]
         : []),
@@ -149,11 +166,13 @@ export async function describeManagerState(
             currentAttention.decision.setupName === config.setupName
               ? "Sync status: Review needed"
               : `Sync status: Review needed for setup ${safeTerminalText(currentAttention.decision.setupName)}`,
-            attentionComparison?.remoteOnly.length === 0 && attentionComparison.localOnly.length === 0
-              ? attentionExclusionsDiffer
-                ? "Synced-content exclusion rules differ."
-                : "Only the synced-content order differs."
-              : `Remote-only paths: ${attentionComparison?.remoteOnly.length ?? 0} · Device-only paths: ${attentionComparison?.localOnly.length ?? 0}${attentionExclusionsDiffer ? " · Exclusion rules differ." : ""}`,
+            attentionDirectoryPolicy
+              ? "Sync scopes or directory rules differ."
+              : attentionComparison?.remoteOnly.length === 0 && attentionComparison.localOnly.length === 0
+                ? attentionExclusionsDiffer
+                  ? "Synced-content exclusion rules differ."
+                  : "Only the synced-content order differs."
+                : `Remote-only paths: ${attentionComparison?.remoteOnly.length ?? 0} · Device-only paths: ${attentionComparison?.localOnly.length ?? 0}${attentionExclusionsDiffer ? " · Exclusion rules differ." : ""}`,
           ]
         : currentObservation
           ? [`Observed ${safeTerminalText(currentObservation.checkedAt)}: ${observationSummary(currentObservation)}`]

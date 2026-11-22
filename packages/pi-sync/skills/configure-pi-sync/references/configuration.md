@@ -29,10 +29,10 @@ An explicit setup creates the file atomically.
 On POSIX, pi-sync creates and replaces it with mode `0600`.
 Pi-sync processes coordinate settings access through `pi-sync.json.mutation-lock`; lock-unaware editors are outside that serialization boundary and should not save the file while a pi-sync settings operation is running.
 Within one process, settings reads wait for earlier writes, including writes that have not acquired the lock yet.
-Replacement writes and flushes a private temporary file before renaming it over the canonical file; the active file is not moved away first.
+Under that lock, a save validates the existing document before editing it. A malformed, invalid, or unsupported source cannot be replaced by relabeling it as a supported version. The writer validates the proposed document before flushing a private temporary file and renaming it over the canonical file; the active file is not moved away first.
 Credentials stay in this canonical private file and are never shown in menus, reviews, status, notifications, errors, logs, or completion metadata.
 
-A private `pi-sync.local.json` containing a valid version 3 document is copied byte-for-byte to `pi-sync.json`.
+A private `pi-sync.local.json` containing a valid supported document is copied byte-for-byte to `pi-sync.json`.
 The old file remains as a recovery copy.
 If both paths exist, `pi-sync.json` wins and the legacy file remains untouched.
 If an older interrupted replacement left `pi-sync.json` missing and a hidden `.pi-sync.json.*.schema-migration-source` or `.pi-sync.json.*.migration-retired` file remains, settings access stops instead of loading the legacy copy.
@@ -48,16 +48,17 @@ Global settings apply to all setups on this device; they are not remote policy.
 
 | Scope | Fields | Required values and defaults |
 | --- | --- | --- |
-| Document | `version`, `onSwitch`, `storageConnections`, `syncSetups` | All are required in a manually written document; supported versions are 3, 4, 5, and 6. |
+| Document | `version`, `onSwitch`, `storageConnections`, `syncSetups` | All are required in a manually written document; versions 3 through 7 are supported. |
 | Current setup | `activeSyncSetup` | Required when setups exist; absent when the setup catalog is empty. |
 | Global preferences | `skipSecretScan`, `showStatus`, `debug` | Optional booleans; defaults are false, true, and false. |
-| Setup selection | `sync.include`, `sync.automatic` | Both are required; the manager starts with automatic sync Off. |
+| Setup selection | `sync.scope`, `sync.include`, `sync.automatic` | Directory scope requires version 7 and omits `include`; selected-path setups require `include`. Both require explicit `automatic`. |
 | Setup behavior | `sync.automaticTransfer`, `sync.agentMode`, `sync.continuous`, `sync.mergeSettings`, `sync.mergeContent`, `sync.partialSync` | Optional booleans; all default to false. |
-| Portable policy | `sync.localFields` | Optional array; any explicit array, including `[]`, requires version 4, 5, or 6. |
-| Content/partial policy | `sync.mergeContent`, `sync.partialSync` | Enabling either requires version 5 or 6. |
-| Path exclusions | `sync.exclude` | Optional array; an explicit array, including `[]`, requires version 6. |
+| Portable policy | `sync.localFields` | Optional array; any explicit array, including `[]`, requires version 4 or later. |
+| Content/partial policy | `sync.mergeContent`, `sync.partialSync` | Enabling either requires version 5 or later. |
+| Path exclusions | `sync.exclude` | Optional array; an explicit array, including `[]`, requires version 6 or later. |
+| Directory exceptions | `sync.reinclude`, `sync.sessions` | Optional with directory scope. `reinclude` wins over `exclude`; sessions require `true`. |
 
-Do not downgrade version 4, 5, or 6 merely because an option is turned off.
+Do not downgrade the settings version when an option is turned off.
 The four automatic controls have separate effects:
 
 - **Automatic sync** (`sync.automatic`) enables startup observation and selected-content shutdown pushes when sessions are included.
@@ -70,8 +71,7 @@ None of these controls is enabled by invoking the configuration skill.
 ### Editing in the manager
 
 Open `/sync` → **Settings** to go directly to **Pi Sync Settings**.
-The screen has one searchable flat list with 17 rows and no category navigation or headings.
-**Included paths**, **Excluded paths**, and **Compare included paths** keep content policy together; comparison covers both rule lists, not file contents.
+The screen uses a searchable flat list without category navigation. Compare content rules separately from file contents; directory scope also exposes its re-inclusion and session settings.
 **Storage location** edits the current setup's coordinates, while **Manage sync setups** and **Manage storage connections** retain the catalog and affected-setup reviews.
 Returning from catalog management refreshes the rows; switching or removing the owning setup closes its old Settings screen.
 
@@ -185,8 +185,8 @@ When adding a setup, locally configured destinations are checked before content 
 An occupied destination requires an explicit different path; Git requires a different branch because directories do not isolate publications on one branch.
 This check does not contact the server or discover setups configured only on other machines.
 
-Every setup requires `sync.include` and explicit `sync.automatic`.
-Setup asks for automatic sync with Off first; existing values are not rewritten.
+Every setup requires explicit `sync.automatic`. Set `sync.scope` for directory scope, or set `sync.include` for selected paths.
+Setup offers automatic sync with Off first. **Join an existing remote** instead saves with automatic sync and sessions off, then reviews the remote policy without transferring files. Existing values are not rewritten.
 When enabled, the current setup receives one background startup check in TUI/RPC, including reload/new/resume/fork.
 Automatic sync alone does not perform startup transfers or open dialogs; review changes through `/sync`.
 Print/JSON skip startup checks.
@@ -200,8 +200,8 @@ The check deadline is 30 seconds plus bounded cleanup, with manual retry through
 Continuous sync is a separate opt-in.
 See [Background startup checks](https://github.com/narumiruna/pi-extensions/blob/main/packages/pi-sync/README.md#background-startup-checks) for recovery and Git cache exceptions.
 
-Recommended includes the nine non-session Pi roots listed below; Minimal includes `settings.json` and `AGENTS.md`.
-The save review lists every selected path and the full backend destination.
+New setups default to directory scope. For selected paths, Recommended includes the nine non-session Pi roots listed below and Minimal includes `settings.json` and `AGENTS.md`.
+The save review shows the scope, path rules or selected paths, and the full backend destination.
 R2/S3 requires an explicitly entered existing bucket and never creates one.
 Saving setup or connection settings does not contact remote storage.
 
@@ -291,9 +291,36 @@ Authentication and transport failures give credentials/permissions or address/ne
 Git reads remote snapshots and checks its local cache; write access is not tested.
 WebDAV retains its isolated conditional-write/cleanup probe and repair of a missing active-snapshot history entry.
 
+### Agent-directory scope
+
+In a version 7 document, a new sync setup can use:
+
+```json
+{
+  "scope": "agent-directory",
+  "exclude": ["sessions", "bin", "npm", "skills/private"],
+  "reinclude": ["skills/private/shared.md"],
+  "automatic": false
+}
+```
+
+The agent directory is Pi's active agent root, normally `~/.pi/agent/`. Every eligible file is selected unless excluded. A re-inclusion restores an excluded path and only the descendants its rule matches. Literal directories match their subtrees. Rules are relative to the agent root; `sessions/` and `sessions` are equivalent in this scope. The `*`, `?`, and `**` syntax below applies to both lists. List order does not affect matching. If both lists are omitted, all eligible files are selected; the setup wizard saves its starter exclusions explicitly instead of adding them on every read.
+
+Pi's `auth.json`, `trust.json`, their locks, and Pi Sync's settings and service state cannot be re-included. Pi's settings lock, dynamic model catalog cache and its lock, `crashes.json`, and `pi-debug.log` also stay local. Session paths remain local until explicitly enabled with `sync.sessions: true` (and not still excluded by a rule). The interactive flow requires a privacy acknowledgement. Symlinks are not followed. Agent-directory transfers do not move Pi's session storage root. Before moving a custom session store yourself, remove its old copy from the agent directory or exclude its old path explicitly. Pi Sync protects the current and default session locations, not unidentified old copies. Review what will transfer; the secret scan cannot identify every sensitive file.
+
+The agent-directory scan and projected transfer result are limited to 64 MiB of file content, 16,384 files, and 65,536 visited entries. The projected result counts retained protected sessions and entries such as empty directories that are not stored in a snapshot. Directional apply and merged apply rescan before planned deletions and again before writes. The projection uses current sizes for retained files, but it does not lock out unrelated writers. `settings.json` has a separate 1 MiB limit for session routing. If local files change after review, reopen the transfer preview. A directory replacement is refused if it would remove an unreviewed or excluded descendant.
+
+For new directory-scope transactions, the recovery journal records which image was being removed, which staging files it owns, and when the destination can remain empty. Recovery can resume if the remaining files match that evidence. If a staging attempt stops before ownership is saved, recovery can use a fresh staging path without adopting or deleting the unrecorded files. These files remain local and are excluded from sync. If Node cannot verify a stable filesystem creation time, an operation that needs a durable identity, such as resumed staging or removing a nonempty directory, stops and preserves the evidence. Recovery also stops for unrecognized data at a recorded path. Preserve the journal, backups, and remaining files for manual review. Older journals do not gain ownership evidence when you upgrade; do not downgrade with a pending journal.
+
+Enabling sessions in the unedited recommended setup removes its starter `sessions` exclusion. If you choose to edit the starter rules or change session opt-in later in **Settings → Agent directory scope**, the toggle leaves both rule lists unchanged. For example, keep `exclude: ["sessions"]` and set `reinclude: ["sessions/work.jsonl"]` with `sessions: true` to select only that session.
+
+**Compare sync policies** reviews the remote scope and rules without comparing file contents.
+
+Settings version 7 and snapshot version 5 carry the new policy; older clients must refuse it. A local and remote scope mismatch stops transfer, even when forcing it. Use a matching setup or choose a new location. Adopting same-scope rules does not enable sessions on a device that has not opted in. Existing selected-path setups keep their behavior and stored settings. Changing rules does not transfer data, and excluding a path does not erase its old snapshots.
+
 ### Included content
 
-`sync.include` is ordered and duplicate-free.
+Selected-path setups use ordered, duplicate-free `sync.include`.
 Supported Pi roots are:
 
 ```text
@@ -339,8 +366,7 @@ Pull protects the currently open session file; restart Pi or resume a pulled ses
 ### Excluded paths
 
 `sync.exclude` is an optional per-setup array of relative paths or basic glob patterns; absence means no rules.
-An explicit array requires settings version 6 and publishes snapshot version 4 with selection policy version 2.
-Other setups without an explicit array keep their existing snapshot format.
+For selected-path setups, an explicit array requires settings version 6 or later and publishes snapshot version 4 with selection policy version 2. Selected-path setups without an explicit array keep their existing snapshot format. Directory scope uses snapshot version 5.
 New clients still read old settings and snapshots; older clients must refuse the opted-in formats.
 
 For an existing setup in a version-6 document, the `sync` object can contain:
@@ -353,7 +379,7 @@ For an existing setup in a version-6 document, the `sync` object can contain:
 }
 ```
 
-Rules win over includes and are anchored to the logical snapshot root, with `/` separators on every platform.
+Rules win over `include` in selected-path setups and are anchored to the logical snapshot root, with `/` separators on every platform. In directory scope, a matching `reinclude` rule can restore an excluded path.
 Literal paths match themselves and their descendants; `skills/private` does not match `skills/private-copy`.
 `*` and `?` match within one segment; whole-segment `**` matches zero or more segments.
 A matching directory excludes its whole subtree, including hidden files.
@@ -362,14 +388,14 @@ Use `**/*.log` for a filename pattern at any depth; `*.log` matches only at the 
 Sessions use virtual `sessions/...` paths even when stored in a custom physical directory.
 A trailing `/**` also excludes its root; excluding `sessions` or `sessions/**` disables the legacy sessions-enabled shutdown push before state/backend work.
 
-Negation/re-inclusion, comments, braces, character classes, extglobs, absolute/drive/UNC paths, traversal, backslashes, controls, empty rules, and case-equivalent duplicates are rejected.
+Inline `!` negation, comments, braces, character classes, extglobs, absolute/drive/UNC paths, traversal, backslashes, controls, empty rules, and case-equivalent duplicates are rejected.
 The limits are 1,024 rules, 4,096 UTF-8 bytes per rule, and 256 KiB total.
 Overlapping rules and rules for currently absent or unselected paths are allowed.
 This syntax is not Git ignore compatibility and does not load an ignore file.
 
 **Settings → Excluded paths** uses a JSON-array draft and an exact **Save changes**, **Discard changes**, or **Continue editing** review.
 Empty input keeps the current draft; `[]` clears rules.
-Only Save writes settings and upgrades to version 6; cancelling or a stale/failed save leaves the previous valid settings intact.
+Only Save writes settings; it upgrades a selected-path setup's settings to at least version 6. Cancelling or a stale/failed save leaves the previous valid settings intact.
 Changes apply to subsequent operations and do not start a transfer.
 The canonical user file is the only scope; no project override or environment-variable mirror is added.
 RPC remains read-only and shows the manual settings path.
@@ -424,8 +450,8 @@ Unknown fields remain preserved and malformed/invalid files block saves, just as
 
 ### Autonomous sync
 
-Autonomous sync uses the unchanged `sync.agentMode` key, an optional per-setup boolean, default `false`, in settings versions 3, 4, 5, and 6.
-Open **Settings → Autonomous sync** and review the setup, destination, selected paths, transfer authorization, model disclosure, costs, and autonomous writes before enabling.
+Autonomous sync uses the unchanged `sync.agentMode` key, an optional per-setup boolean, default `false`, in settings versions 3 through 7.
+Open **Settings → Autonomous sync** and review the setup, destination, content policy, transfer authorization, model disclosure, costs, and autonomous writes before enabling. For directory scope, the review shows session opt-in separately from path rules.
 RPC users can explicitly set the same field in the private settings file.
 Setting it to `true` is authorization, not just a display preference.
 
@@ -446,8 +472,10 @@ First-source selection, policy migrations, explicit push/pull, and rollback keep
 `--yes` does not enable Autonomous sync or authorize model disclosure.
 Completed transfers never reload resources automatically.
 
-The resolver uses the initiating session's selected model through Pi's public provider/authentication registry.
-It has an independent in-memory SDK conversation, no tools, no parent conversation, and no discovered extensions, skills, project instructions, or MCP servers.
+The daemon uses the initiating session's selected model only if both agree on its full definition and authentication source.
+If the daemon refuses the model, align the Pi host and the daemon's bundled Pi catalog or verify a model that matches on both sides. Selecting an older ID does not help if its definition still differs.
+The daemon does not choose a fallback; ordinary sync without model resolution is unaffected.
+The resolver has an independent in-memory SDK conversation, no tools, no parent conversation, and no discovered extensions, skills, project instructions, or MCP servers.
 Only conflict units are disclosed.
 Settings units contain only the conflicting root fields, with coupled fields kept together; the model selects a complete local or remote unit.
 Other fields are assembled by deterministic code.
@@ -525,7 +553,7 @@ No Pi core changes or other extension are required.
 
 ### Daemon lifetime and unattended permission
 
-Pi starts or connects to the `pi-sync-daemon` service from `@narumitw/pi-sync-daemon` only for configured interactive work or an explicit setup/command. The service is a normal dependency, not another Pi extension. Unconfigured reads create no service or settings. The daemon owns the shared lifetime decision; no OS service is installed.
+For configured interactive work or an explicit setup or command, Pi starts the daemon bundled with the Pi Sync npm package or connects to an existing compatible owner. The daemon runs in a separate Node.js process, not as another Pi extension or an OS service. Unconfigured reads create no service or settings. The daemon owns the shared lifetime decision. For standalone and bundled CLI commands, see the [daemon CLI guide](https://github.com/narumiruna/pi-extensions/blob/main/packages/pi-sync/docs/daemon-migration.md#daemon-cli).
 
 When no registered live client PID remains for that canonical agent directory and no valid explicit after-exit grant covers the active setup, a fixed 30-second grace period starts. Explicit CLI start without clients follows the same rule. Live passive, disconnected, publishing, and orderly retired PIDs keep the service alive. Detach, heartbeat loss, and an empty active-participant list are not proof of exit. `/reload`, `/new`, fork, and resume preserve shared ownership while their Pi process remains alive. A client arriving before shutdown becomes final cancels automatic exit. There is no new setting, environment variable, or keep-alive flag.
 
@@ -541,8 +569,8 @@ A failed consent write blocks automatic work in that service instance. Uncertain
 
 ### Continuous sync
 
-`sync.continuous` is an optional per-setup boolean, default `false`, in settings versions 3, 4, 5 and 6.
-Open **Settings → Continuous sync** after enabling Autonomous sync.
+`sync.continuous` is an optional per-setup boolean, default `false`, in settings versions 3 through 7.
+Open **Settings → Continuous sync** after enabling Autonomous sync. For directory scope, the review shows session opt-in separately from path rules.
 RPC users can set the field explicitly in the private settings file.
 Existing Autonomous sync consent does not enable recurring requests.
 
@@ -674,11 +702,10 @@ Field merging and nonempty portable projections also refuse unsafe integers, non
 `sync.localFields` is an explicit sorted string array of whole global `settings.json` root field names, not a heuristic or project override.
 Example: `"localFields": ["shellPath"]`.
 Coupled fields must be excluded together.
-Nonempty rules require `settings.json` in `sync.include`; absent or explicitly empty rules remain valid for other selections.
-Saving nonempty rules in Settings confirms an upgrade to at least settings version 4; manual edits must declare version 4 or newer.
-Existing version-5/6 settings are never downgraded by a field-policy edit.
+Selected-path setups with nonempty rules must include `settings.json` in `sync.include`. Directory-scope setups must omit `sync.include` and can configure local fields without it. Path rules still govern whether `settings.json` syncs, and nonempty field rules require that exact file spelling if it is synced. Absent or explicitly empty rules remain valid for either scope.
+Settings asks for confirmation before saving changes to these rules. An explicit array requires settings version 4 or later, and editing the rules does not downgrade an existing settings version.
 Absent rules keep a setup nonportable, including unrelated setups in a version-4 document.
-An explicit array opts that setup into at least snapshot version 2; exclude-enabled setups retain version 4.
+An explicit array opts that setup into at least snapshot version 2; exclusion-enabled selected-path setups retain version 4, and directory scope retains version 5.
 `[]` after rule removal retains this reviewed opt-in and differs from absence.
 Older clients must refuse portable data rather than replace local-only values.
 
@@ -708,7 +735,7 @@ Capture occurs after accepted directions or journaled merge; cache staging prece
 Missing/corrupt cache never invents a baseline from current data or assumes remote retention.
 Preserve unknown/corrupted or nonprivate records and pending journals for manual review; pruning applies the same storage/schema/byte validation as reading.
 Journal identity distinguishes absent and explicit empty policies.
-Integrity validation uses the journal's recorded rules, so intact old-policy journals remain readable after a settings change; ordinary replay still rejects mismatched current rules, while reviewed force push/pull may archive that evidence.
+Integrity validation uses the journal's recorded rules, so intact old-policy journals remain readable after a settings change; ordinary replay still rejects mismatched current rules, while a reviewed force push or pull may archive a legacy path-policy journal.
 Older absence-conflating journal identities fail closed and remain available for an explicitly reviewed force direction; do not downgrade portable setups.
 To return to an older client, first use this version to review rule removal and publish a complete nonportable copy to a separate version-3 setup, with Pi closed during the change.
 Never reinterpret portable snapshots with an old binary.
@@ -717,8 +744,8 @@ Never reinterpret portable snapshots with an old binary.
 
 `sync.mergeContent` and `sync.partialSync` are independent opt-in booleans, both default `false`.
 The owning **Settings → Content merge / partial progress** setting offers Off, Merge only, Merge + partial, and Partial only and confirms an explicit upgrade to at least settings version 5.
-Manual configuration must also declare version 5 or 6.
-Exclude-enabled partial publications retain snapshot version 4 instead of downgrading to version 3.
+Manual configuration must use a supported settings version of at least 5 (version 7 for directory scope).
+Partial publications retain snapshot version 4 for exclusion-enabled selected paths and version 5 for directory scope.
 Settings version 5 retains the portable-policy behavior of version 4; moving from a legacy setup can require the existing separately confirmed directional policy migration.
 Disabling options retains the schema and recovery evidence.
 

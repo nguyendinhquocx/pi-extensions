@@ -5,7 +5,7 @@
 Pi Sync synchronizes selected Pi settings and content across machines through Git, WebDAV, Cloudflare R2, or another S3-compatible store.
 Reusable storage connections hold credentials, while named sync setups define exactly what to sync, where to store it, and whether to sync automatically. Pi owns the interface; the separate [@narumitw/pi-sync-daemon service](https://github.com/narumiruna/pi-extensions/tree/main/packages/pi-sync-daemon) owns execution.
 
-> **Experimental daemon migration:** this checkout requires the new, independently published dependency. Close or upgrade older Pi processes and review ownership before real-data use. See [migration and release restrictions](./docs/daemon-migration.md).
+> **Experimental daemon migration:** close or upgrade older Pi processes and review ownership before real-data use. See [migration and release restrictions](./docs/daemon-migration.md).
 
 ## ✨ Features
 
@@ -17,9 +17,11 @@ Reusable storage connections hold credentials, while named sync setups define ex
 - Writes settings atomically, preserves unknown fields, rejects stale edits, and fails closed on unsafe configuration.
 - Offers default-off Autonomous sync for eligible startup and Sync now transfers without another transfer confirmation, with model-assisted conflict resolution and a separate Continuous sync opt-in.
 - Shares one detached synchronization service across Pi clients, with a generated split UI client runtime.
-- Bundles a manual-only skill for configuration questions and safe setup guidance.
+- Bundles an on-demand skill for agent-assisted settings edits and configuration questions.
 
 ## 📦 Install
+
+Use Node.js 22.19.0 or later for the daemon, the same minimum as the standalone package. The Pi Sync npm package includes the daemon code; no separate daemon installation is needed. The daemon still runs as a separate process.
 
 ```bash
 pi install npm:@narumitw/pi-sync
@@ -31,7 +33,7 @@ Try without installing permanently:
 pi -e npm:@narumitw/pi-sync
 ```
 
-Build the generated runtime and try a local checkout:
+Build and try a local checkout from the repository root:
 
 ```bash
 npm install
@@ -41,13 +43,11 @@ npm --workspace @narumitw/pi-sync run build
 pi -e ./packages/pi-sync
 ```
 
-The package declares `dist/index.ts`, so an unbuilt checkout must run the build before Pi loads the package directory.
+Pi loads `dist/index.ts` from the package directory, so build Kit and complete the local daemon build before building Pi Sync. The runtime-only daemon output from Git installation preparation is not enough for this build.
 
 Extensions run with Pi's permissions, so install only packages from sources you trust.
 
-Revoke retained unattended permission before updating. After updating, use `/reload` in open Pi
-sessions. If the upgrade is blocked or the old owner's exit is uncertain, follow the
-[daemon upgrade guide](./docs/daemon-migration.md#ownership-and-upgrade).
+Update Pi Sync to get a newer bundled daemon. Updating the standalone package does not change the copy in Pi Sync. Revoke retained unattended permission before updating, then use `/reload` in open Pi sessions. If the upgrade is blocked or the old owner's exit is uncertain, follow the [daemon upgrade guide](./docs/daemon-migration.md#ownership-and-upgrade).
 
 Use a Pi runtime that satisfies this package’s declared peer floor. Installing an extension dependency does not upgrade a separately installed Pi runtime. The declared Kit floor supplies exact scrolling/paginated review and configured-keybinding support.
 
@@ -61,8 +61,8 @@ All new setups default to storage path `./`: the Git repository root, the WebDAV
 Git also suggests branch `main`.
 Use different folders or prefixes for independent setups sharing a WebDAV collection or bucket; existing settings and paths are unchanged.
 If another configured setup already uses the chosen location, setup asks for a different path before the content selection and review; Git requires a different branch, even when the directory differs.
-Every new setup asks for included content and automatic sync; automatic sync is off unless you enable it. Recommended includes nine Pi roots; Minimal includes `settings.json` and `AGENTS.md`. Sessions stay off unless explicitly included with a privacy acknowledgement.
-Before saving, scroll through the exact destination, every included path, automatic-sync choice, and hidden-credential summary. R2/S3 always asks for an existing bucket; an example bucket name is not a default.
+New setups default to the Pi agent directory. All eligible files are selected except `sessions/`, `bin/`, and `npm/`; you can review and change these rules before starting a transfer. Sessions require explicit opt-in. Automatic sync is off unless you enable it. Choose **Join an existing remote** to save with both options off and then review its policy, without transferring files. Selected-path setups remain available for compatibility.
+Before saving, review the exact destination, scope and rules, automatic-sync choice, and hidden-credential summary. R2/S3 always asks for an existing bucket; an example bucket name is not a default.
 
 Invalid fields ask for a correction without restarting setup. A temporary local save failure keeps the review for another Save; changed settings require reopening and reviewing the current values. Saving only changes local settings, not remote data. A connection saved through **Add a new storage connection…** remains saved if you later cancel the setup.
 
@@ -172,7 +172,11 @@ Print and JSON modes do not support `/sync` because UI output is not observable 
 
 Run `/sync` → **Set up sync** to create the canonical private user file at `<getAgentDir()>/pi-sync.json` (normally `~/.pi/agent/pi-sync.json`).
 Use **Settings** to manage an existing setup.
-Missing settings stay unconfigured without creating files or locks.
+Missing settings stay unconfigured without creating files or locks. Ignore-file transfers and daemon rule-file saves are not enabled. If a setup already references an ignore file, **Settings** shows the rule-file path for manual editing. In RPC mode, it also shows the active settings file, including `pi-sync.local.json` if it supplied the settings, without renaming it.
+
+If any setup references an ignore file, transfers and policy comparison are unavailable for all setups in that document. You can still inspect the setup catalog, but switching or removal can be unavailable. To return to legacy transfers, close Pi and back up the active settings file and any pending recovery journal and backup. Remove the unsupported setup entries or restore a known-good legacy-only settings document. If you remove the current setup, update `activeSyncSetup` to a remaining setup, or omit it if none remain. Do not delete pending recovery files.
+
+Directory scope selects all eligible files, applies `exclude`, then restores matches from `reinclude`. Pi login credentials, project trust, and Pi Sync's own state stay local regardless of those rules. Folder-wide sync may include private files that the secret scan cannot identify. Review the content before transferring to a trusted destination. Existing setups keep their selected paths and are not migrated automatically. See [Agent-directory scope](./skills/configure-pi-sync/references/configuration.md#agent-directory-scope) for formats, precedence, and recovery.
 
 ### Debug startup timings
 
@@ -230,9 +234,9 @@ Successful transfers show one summary. They do not reload resources, activate ex
 
 **Settings → Merge settings fields** controls the per-setup `sync.mergeSettings` opt-in, default **Off**. It combines independent global `settings.json` fields, not arbitrary JSON or keybindings. Missing/corrupt ancestors, unsupported syntax, and incompatible fields retain whole-transfer review. Sensitive accepted content is cached privately under the denied state root; disabling does not delete evidence.
 
-**Settings → Machine-local fields** edits explicit `sync.localFields` root field names for global `settings.json` (default none). Excluded values and absence stay local; future portable snapshots omit them. Enabling rules opts into settings version 4 / snapshot version 2, which older clients must refuse. All receiving machines must configure compatible rules. Additions/removals require a separately confirmed force-direction migration, even with `--yes`; old remote history is **not erased**. See [settings merge and local fields](./skills/configure-pi-sync/references/configuration.md#settings-field-merge-and-machine-local-fields) for formats, compatibility and recovery.
+**Settings → Machine-local fields** edits explicit `sync.localFields` root field names for global `settings.json` (default none). Excluded values and absence stay local; future portable snapshots omit them. An explicit array requires at least settings version 4 and snapshot version 2; directory scope keeps settings version 7 and snapshot version 5. Nonempty rules require `settings.json` in `sync.include` only for selected-path setups. All receiving machines must configure compatible rules. Additions/removals require a separately confirmed force-direction migration, even with `--yes`; old remote history is **not erased**. See [settings merge and local fields](./skills/configure-pi-sync/references/configuration.md#settings-field-merge-and-machine-local-fields) for formats, compatibility and recovery.
 
-**Settings → Content merge / partial progress** controls independent `sync.mergeContent` and `sync.partialSync` opt-ins, both default **Off**. Saving opts into at least settings version 5; partial publications use snapshot version 3, or version 4 with exclusions, rejected by older readers. Supported Markdown/plain-text resources merge bounded independent line edits without Git or conflict markers. Diff grids and hunk comparisons share an eight-million-work-unit budget across the operation and its retries; exhausted paths remain conflicts for review. Same-session reconciliation only accepts validated complete byte-prefix extensions; divergent histories and the loaded session require review. A syntactically clean text merge is **not a semantic correctness guarantee**.
+**Settings → Content merge / partial progress** controls independent `sync.mergeContent` and `sync.partialSync` opt-ins, both default **Off**. Saving opts into at least settings version 5; partial publications use snapshot version 3 for selected paths, version 4 with selected-path exclusions, or version 5 for directory scope. Older readers must refuse unsupported formats. Supported Markdown/plain-text resources merge bounded independent line edits without Git or conflict markers. Diff grids and hunk comparisons share an eight-million-work-unit budget across the operation and its retries; exhausted paths remain conflicts for review. Same-session reconciliation only accepts validated complete byte-prefix extensions; divergent histories and the loaded session require review. A syntactically clean text merge is **not a semantic correctness guarantee**.
 
 Partial sync keeps each side's unresolved versions, preserves their previous accepted hashes/ancestors, and advances only independent paths. Resource/collision dependency groups are withheld together, including local-only files, never represented as deletion. The conditional **Review unresolved conflicts** action, or `/sync conflicts`, opens exact private versions on request and resolves one freshly validated whole group. Automatic pushes, non-forced push/pull, and rollback refuse unresolved groups; use group review or an explicit manual push/pull force direction instead. Artifacts remain below the denied state root, with stable conflict identity and at most 32 proven-completed records retained; unresolved or unrecognized evidence is never automatically pruned. Failed attempts release only newly created artifacts whose inode/content ownership and lack of state/journal references are verified. See [content merge and partial recovery](./docs/content-merge-audit.md).
 
@@ -282,15 +286,14 @@ Version 1, version 2, and non-empty unversioned settings require manual recovery
 Adding `sessions` can upload prompts, tool output, paths, images, and secrets; interactive flows require a privacy acknowledgement.
 Startup checks report included-content differences without changing anything. Transfers retain their existing included-content policy checks instead of silently expanding local scope.
 
-**Settings → Excluded paths** edits optional per-setup `sync.exclude` rules, for example `["skills/private", "extensions/**/*.test.ts"]`. Rules win over includes and apply to future transfers; excluded local files remain untouched, including on rollback. Saving opts into settings version 6 / snapshot version 4, which older clients must refuse. New publications omit matching remote paths, but old history is **not erased**. Removing rules can expose or replace content. See [Excluded paths](./skills/configure-pi-sync/references/configuration.md#excluded-paths) for syntax, review, and recovery.
+For selected-path setups, **Settings → Excluded paths** edits `sync.exclude` rules that win over `include`; saving opts into at least settings version 6 and snapshot version 4. For directory scope, **Settings → Agent directory scope** also edits `reinclude` and session opt-in. Excluded local files remain untouched, including on rollback. New publications omit matching remote paths, but old history is **not erased**. Removing rules can expose or replace content. See [Excluded paths](./skills/configure-pi-sync/references/configuration.md#excluded-paths) for syntax, review, and recovery.
 
 Read the [settings reference](./skills/configure-pi-sync/references/configuration.md) for complete S3/R2, Git, and WebDAV examples, backend fields, content policy, legacy paths, and recovery steps.
 
 ## 🧠 Skills
 
-Run `/skill:configure-pi-sync` before asking Pi about storage choices, included content, automatic controls, or settings recovery.
-The [configuration skill](./skills/configure-pi-sync/SKILL.md) is manual-only and provides guidance only: it does not inspect private settings, collect credentials, edit files, execute diagnostics, or sync content.
-Enter credentials in the existing masked TUI and perform settings changes and reviewed transfers through `/sync` yourself.
+Run `/skill:configure-pi-sync Exclude npm/` to have the agent add an exclusion to the active setup and verify the saved change. The [configuration skill](./skills/configure-pi-sync/SKILL.md) is loaded only on request and uses the running local daemon for authorized settings edits. It can also answer configuration questions.
+Use `/sync` for initial setup, masked credential entry, and changes or transfers that require a separate review. The skill does not run diagnostics, check remote connectivity, or start a transfer.
 The skill's instructions are not a permission sandbox for the agent's other tools.
 Read the [settings reference](./skills/configure-pi-sync/references/configuration.md) directly when no agent assistance is needed.
 
@@ -323,7 +326,13 @@ show `sync recovering`. If cleanup remains uncertain, review
 [daemon recovery](./docs/daemon-migration.md#write-coordination-and-disconnection)
 before retrying.
 
-Use the installed CLI, `pi-sync-daemon stop --root <agent-directory>` or `pi-sync-daemon restart --root <agent-directory>`, for explicit service lifecycle control; these are not `/sync daemon` actions. Stop drains the service; reload Pi to reattach its session afterward. Explicit CLI start without clients also follows the 30-second grace policy. The next eligible interactive client or explicit command can restart only after the old owner's exit is proven; print/JSON never launch a service. Uncertain consent, failed revocation, or cleanup failure remains paused for the existing repair/revocation path, not silently cleared by automatic restart. No new setting, environment variable, or keep-alive flag is added. See [lifetime and recovery](./docs/daemon-migration.md).
+Use the [daemon CLI](./docs/daemon-migration.md#daemon-cli) for explicit `stop` or `restart`; these are not `/sync daemon` actions. For example, with only Pi Sync installed:
+
+```bash
+node "/path/to/installed/pi-sync/dist/daemon/dist/cli.js" status --root "/path/to/agent-directory"
+```
+
+Use the directory containing the installed Pi Sync `package.json` and the agent directory of the owner you want to inspect. `status` does not start a service. `stop` drains the service; reload Pi to reattach afterward. CLI `start` without clients follows the same 30-second grace policy. If ownership, consent, or cleanup is uncertain, follow the [recovery guide](./docs/daemon-migration.md#diagnostics-and-rollback) instead of forcing a restart. Print/JSON never launch a service.
 
 All routes support TUI and RPC; RPC settings and included-content screens are read-only.
 Print and JSON modes reject `/sync`.
@@ -331,7 +340,7 @@ Unknown commands or flags, trailing values, and missing setup/snapshot values ar
 
 - `--setup <name>` targets a setup without switching it on `config`, `files`, `status`, `diff`, `conflicts`, `doctor`, `push`, `pull`, `sync`, `history`, and `rollback`.
 - `--yes` (alias: `-y`) skips confirmation on `push`, `pull`, `sync`, `rollback`, and `migrate-state`; use only after reviewing the affected content.
-- `--force` lets `push` or `pull` accept content conflicts without disabling backend concurrency protection. It is also accepted by `sync`, which still requires a direction choice for divergent content, and by `rollback` for compatibility. Explicit forced directions can also resolve an interrupted merge after a fresh review, archiving its old journal instead of restoring old bytes.
+- `--force` lets `push` or `pull` accept content conflicts without disabling backend concurrency protection. It is also accepted by `sync`, which still requires a direction choice for divergent content, and by `rollback` for compatibility. For legacy path policies, explicit forced directions can also resolve an interrupted merge after a fresh review, archiving its old journal instead of restoring old bytes.
 - `--stale` is accepted only by `unlock` and is required to remove a stale lock.
 
 Push and rollback publish data externally; pull and rollback can replace or delete local managed files.
@@ -361,10 +370,10 @@ S3/R2 publishes `latest.json` and history using ETag `If-Match`, or `If-None-Mat
 Snapshot recovery is guarded: new journals record before/after images, older journals are retired only when their unchanged preimages are provable, and unrecognized bytes remain untouched for manual review. Current-session targets are never restored during startup. Preserve a blocked transaction and its backup, close Pi, and review the private evidence before restoring selected paths; malformed/unsupported journals are not disposable. Pi may have loaded resources before lifecycle recovery, so reload or restart explicitly after recovery if loaded resources need to match the restored files.
 
 Before pull or rollback, pi-sync writes a backup under `<agent-dir>/pi-sync/backups/`.
-Snapshot apply and recovery require canonical agent and session paths. Symlinked or otherwise aliased parent paths are refused before changing managed local files because Pi's file queue uses different keys for existing and missing aliases. Use canonical paths for local mutations and preserve any pending recovery evidence; an unresolved startup recovery barrier still blocks transfers. Old journals recorded under an alias require manual review because their exact root and target paths remain pinned. Changing the agent path alone does not authorize recovery or rewriting those journals.
+Snapshot apply and recovery require canonical agent and session paths. Preflight refuses parent aliases it detects because Pi's file queue uses different keys for existing and missing aliases. Node's path-based writes and deletes cannot prevent another process from replacing a parent directory after a check. Use directories you control, and pause tools that move or replace their directories during sync. Preserve any pending recovery evidence; an unresolved startup recovery barrier still blocks transfers. Old journals recorded under an alias require manual review because their exact root and target paths remain pinned. Changing the agent path alone does not authorize recovery or rewriting those journals.
 Apply preflights paths and checksums, journals mutations, and restores prior state only when current bytes match verified preimages or planned postimages. Unknown intermediate directory states and newer edits require review rather than a blind rollback. An interruption after replacement is armed can require manual recovery even if installation never ran; a later deletion of installed content is not treated as an unfinished remove.
 The file queue coordinates one Pi runtime, not separate processes or lock-unaware editors. Hash-based journals cannot distinguish a later write of identical recorded bytes; they do not provide a cross-process compare-and-swap.
-Merged transfers instead retain a private publication/apply/baseline journal and roll forward only when the active remote candidate and every changed local preimage/postimage can be verified. A crash or uncertain publication is reconciled through `/sync sync` without blind republishing. If newer local or remote changes prevent reconciliation, preserve the evidence, review `/sync diff`, and explicitly choose `push --force` or `pull --force`; the chosen direction archives the old journal. Disabling automatic transfer does not undo completed transfers. Do not downgrade while a merge or snapshot recovery journal is pending.
+Merged transfers instead retain a private publication/apply/baseline journal and roll forward only when the active remote candidate and every changed local preimage/postimage can be verified. A crash or uncertain publication is reconciled through `/sync sync` without blind republishing. If newer local or remote changes prevent reconciliation, preserve the evidence, review `/sync diff`, and explicitly choose `push --force` or `pull --force`; the chosen direction archives the old journal. These commands require a settings document with no ignore-file setups, even if the affected setup uses a legacy policy. If mixed settings block recovery, preserve the journal and its backup before changing settings. Disabling automatic transfer does not undo completed transfers. Do not downgrade while a merge or snapshot recovery journal is pending.
 
 Removing a local setup or connection never deletes remote data.
 
@@ -409,10 +418,10 @@ packages/pi-sync/
 │   ├── backends/                      # Public backend contract forwarders
 │   ├── state/                         # Public state contract forwarders
 │   └── ui/                            # Manager, settings, reviews, and setup flows
-├── dist/                              # Generated Jiti runtime
+├── dist/                              # Published Jiti runtime and separate daemon files
 ├── scripts/build-runtime.mjs          # Runtime builder
 ├── docs/                              # Operational audits and settings link compatibility
-├── skills/configure-pi-sync/           # Manual-only guidance and authoritative settings reference
+├── skills/configure-pi-sync/           # Agent settings edits and authoritative settings reference
 └── test/                              # Behavior and lifecycle coverage
 ```
 
@@ -420,7 +429,7 @@ The [exclude policy safety audit](./docs/exclude-policy-audit.md) maps implement
 
 The generated runtime is built from `src/index.ts` and does not import back into `src`.
 Internal modules use direct imports from their owners; `src/sync.ts` and `src/types.ts` retain compatibility exports.
-Engine implementation lives in the non-extension `@narumitw/pi-sync-daemon` dependency; Pi uses its documented exports, without an in-process transfer fallback. First-use UI and setup implementations remain lazy.
+Repository and Git source installs use the daemon workspace's documented exports; the npm runtime maps the same exports to `dist/daemon/`. Transfers still run in the daemon, with no in-process fallback. First-use UI and setup implementations remain lazy.
 
 ## 🔎 Keywords
 

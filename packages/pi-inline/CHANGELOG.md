@@ -1,5 +1,17 @@
 # @narumitw/pi-inline
 
+## 0.6.0
+
+### Minor Changes
+
+- 502e95d: Preview local text files outside the workspace by hovering over Markdown links in fullscreen mode. The `externalPreviewRoots` setting is now ignored, including empty lists that previously disabled external previews. External images, symbolic links, and `node_modules` are still excluded. Hover previews stay on screen and are not sent to the model or stored in the session.
+
+## 0.5.0
+
+### Minor Changes
+
+- 41c08ba: Open the settings menu with `/inline`. `/inline-markup` remains a compatibility alias. Turn the system prompt hint on or off, or edit its text. After saving a change, choose whether to reload now or apply it in a later session. The default hint and session-only Wikilinks behavior are unchanged.
+
 ## 0.4.0
 
 ### Minor Changes

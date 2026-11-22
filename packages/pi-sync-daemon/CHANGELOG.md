@@ -1,5 +1,31 @@
 # @narumitw/pi-sync-daemon
 
+## 0.8.0
+
+### Minor Changes
+
+- d27317a: Prepare Pi Sync's local ignore-file policy, including recoverable default-file creation, settings review, and versioned snapshot compatibility checks. Existing setups are not migrated automatically. The new setup flow and first-open migration prompt remain disabled. Settings can show an existing rule file for manual editing; the daemon does not replace it. Settings shows the active settings path in RPC and explains which setup actions are unavailable while ignore-file transfers are disabled.
+
+### Patch Changes
+
+- 59ea738: Fix snapshot recovery on macOS when restoring files with older modification times. Recovery still verifies the staging file's identity and contents before restoring the backup.
+- 4073de5: Fix Windows recovery when NTFS changes a restored file's creation time during rename. Keep exact content, file ID, spelling, and pre-rename ownership checks, and preserve existing recovery journal formats. Make the daemon build use the Node compiler entrypoint instead of spawning a Windows command script.
+
+## 0.7.0
+
+### Minor Changes
+
+- 4d02a81: Default new Pi Sync setups to the Pi agent directory, with editable exclusions for sessions, managed binaries, and npm installations. Directory scope can restore selected exceptions to exclusions, but Pi credentials and project trust stay local. Existing selected-path setups keep their rules.
+  
+  Recheck the directory scan limits before deletions and writes. If a recovery staging attempt stops before ownership is saved, retry in a fresh path and preserve the unverified files.
+
+## 0.6.2
+
+### Patch Changes
+
+- bb79479: Align the Sync daemon's model SDK with Pi 1.6. Keep pi-otel's Durable tracing compatible with Pi 1.6 and its parked tool states without exporting additional trace data.
+- 77c45c6: Explain how to recover when the Sync daemon refuses a model whose definition or authentication source differs from the Pi host. Exact matching and no-fallback behavior are unchanged.
+
 ## 0.6.1
 
 ### Patch Changes

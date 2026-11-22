@@ -127,7 +127,7 @@ Choose either `pi-starship` or `pi-statusline`; do not enable both footer extens
 
 | Package | Use it for | Install |
 | --- | --- | --- |
-| [`@narumitw/pi-sync-daemon`](./packages/pi-sync-daemon) | Detached synchronization owner used by Pi Sync; not a Pi extension. | Installed with Pi Sync; first publication requires approval |
+| [`@narumitw/pi-sync-daemon`](./packages/pi-sync-daemon) | Detached synchronization owner used by Pi Sync; not a Pi extension. | Bundled in Pi Sync; [standalone CLI available separately](./packages/pi-sync-daemon#-install) |
 | [`pi-tui-kit`](./packages/pi-tui-kit) | Extend `@earendil-works/pi-tui` with reusable navigation helpers and declarative action, detail, settings, and multi-select flows. | `npm install @narumitw/pi-tui-kit` |
 
 Libraries are runtime dependencies for extension authors, not standalone Pi extensions. New standard
@@ -202,8 +202,10 @@ before `prek install` if the local hook path is still `.husky/_`.
 Hook installation is explicit; `npm install` does not install Git hooks.
 
 [`prek.toml`](./prek.toml) runs Biome configuration migration, Biome checks,
-the package README linter, `uvx zizmor --pedantic .github`, and staged
-typechecks, in that order. The migration hook runs
+the [package source comment ratchet](./docs/source-comments.md), the package
+README linter, `uvx zizmor --pedantic .github`, and staged typechecks, in that
+order. Use `/delete-comment` in a trusted Pi checkout to review a cleanup batch
+and shrink the baseline. The migration hook runs
 `npx @biomejs/biome migrate --write` on every commit before file checks.
 The Biome check hook uses the installed `@biomejs/biome` dependency and receives
 matching staged text files: JavaScript, TypeScript, JSON/JSONC, and CSS.

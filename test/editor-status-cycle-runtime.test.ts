@@ -298,7 +298,7 @@ async function createRuntime(consumer: Consumer, observerFirst = false) {
       assert.ok(rpc.dialogs.some((dialog) => dialog.options?.includes("Next eligible future user cycle settled")));
     } else {
       await tui.waitForOpen();
-      for (const label of ["Widget view", "Automatic compaction", "Next eligible settled cycle"]) {
+      for (const label of ["Settings", "Switch to counts", "After next reply"]) {
         let found = false;
         for (let index = 0; index < 20; index++) {
           if (tui.render().some((line) => stripVTControlCharacters(line).includes(`→ ${label}`))) {
@@ -313,7 +313,7 @@ async function createRuntime(consumer: Consumer, observerFirst = false) {
       }
       tui.press("ctrl+c");
       await command;
-      assert.ok(menuFrames.some((frame) => frame.includes("Automatic compaction")));
+      assert.ok(menuFrames.some((frame) => frame.includes("Preview · sample jobs")));
     }
     assertExpanded();
     assert.deepEqual(notifications, []);
@@ -384,7 +384,7 @@ async function successfulCycle(runtime: Runtime) {
 for (const consumer of ["progress", "subagents"] as const) {
   for (const summarize of [false, true]) {
     for (const armWhileNavigating of [false, true]) {
-      test(`${consumer}: navigation ${summarize ? "with extension summary" : "without summary"}, armed ${armWhileNavigating ? "while busy" : "after idle"}, does not exclude the first user cycle`, async () => {
+      test(`${consumer}: navigation ${summarize ? "with extension summary" : "without summary"}, armed ${armWhileNavigating ? "in the completed-navigation hook" : "after navigation returns"}, does not exclude the first user cycle`, async () => {
         const runtime = await createRuntime(consumer);
         const target = await seed(runtime);
         const settled = runtime.state.settled;
@@ -392,8 +392,10 @@ for (const consumer of ["progress", "subagents"] as const) {
         runtime.state.treeHold = gate;
         const navigating = runtime.track(runtime.session.navigateTree(target, { summarize }));
         await gate.entered.promise;
-        assert.deepEqual(runtime.state.trees, [{ idle: false, signal: undefined }]);
-        assert.equal(runtime.session.isIdle, false);
+        assert.deepEqual(runtime.state.treePreparations, [{ idle: false, signal: undefined }]);
+        // Branch state is installed and Pi is idle before session_tree handlers run.
+        assert.deepEqual(runtime.state.trees, [{ idle: true, signal: undefined }]);
+        assert.equal(runtime.session.isIdle, true);
         if (armWhileNavigating) await runtime.arm();
         gate.release.resolve();
         const result = await navigating;

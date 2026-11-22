@@ -183,7 +183,7 @@ export async function executeCommand(
         const operations = await loaders.operations();
         throwIfAborted(options.signal);
         const outcome = await operations.syncBoth(ctx, options);
-        return { kind: "completed", ...(retryRefusal && outcome ? { outcome } : {}) };
+        return { kind: "completed", ...(retryRefusal && outcome && outcome !== "archived" ? { outcome } : {}) };
       }
       case "history": {
         const operations = await loaders.operations();
@@ -275,7 +275,13 @@ async function showConfig(ctx: ExtensionCommandContext, options: CommandOptions)
       `startup transfer: ${startupTransferSummary(config)}`,
       `autonomous sync: ${config.agentMode ? "On" : "Off"}`,
       `continuous sync: ${config.continuous ? (config.agentMode ? "On" : "paused; Autonomous sync is Off") : "Off"}`,
-      `included content: ${config.include.join(", ") || "none"}`,
+      config.scope ? "sync scope: Pi agent directory" : `included content: ${config.include.join(", ") || "none"}`,
+      ...(config.scope
+        ? [
+            `excluded paths: ${config.exclude?.map(safeTerminalText).join(", ") || "none"}`,
+            `re-included paths: ${config.reinclude?.map(safeTerminalText).join(", ") || "none"}`,
+          ]
+        : []),
       `sessions: ${syncSessionsSelected(config) ? "included" : "not included"}`,
       `settings file: ${localConfigPath()}`,
       ...warnings,

@@ -8,7 +8,7 @@ Pi Subagents runs Pi jobs in separate child processes and supports authenticated
 
 - Runs each job in an isolated Pi child process and returns its job ID immediately.
 - Uses the task to define the child's specialization and explicit tools, skills, and extensions to define its capabilities.
-- Defaults work tools to `read`, `grep`, `find`, and `ls`.
+- Gives each job only the work tools you select; the child Pi validates selected core tool names.
 - Can attach validated local skills and trusted local extensions to one job without enabling automatic discovery.
 - Verifies requested extension tools before sending the task to the child model.
 - Supports exact per-job provider and model selection, with independent inheritance and no fallback.
@@ -107,20 +107,18 @@ Task text is visible in this local widget, but `subagent_inspect` continues to o
 The widget omits attachment paths and resource totals, disappears when no jobs remain active, and clears when the session ends.
 
 The separator shows **Subagents** and current running and queued counts, including while collapsed. In fullscreen TUI mode, click anywhere in the widget, including blank columns, to collapse it to that separator. Click the separator to restore the latest jobs without moving keyboard focus.
-Disclosure survives job updates, temporary absence, and host remounts. Select a visible view in `/subagents` to restore disclosure with the keyboard. Session start and tree navigation reset it.
+Disclosure survives job updates, temporary absence, and host remounts. Choose **Job rows** or **Counts only** in `/subagents settings` to reopen the widget with the keyboard. Session start and tree navigation reset it.
 Collapse does not change jobs, settings, item views, pins, or automatic rules.
 
 Ordinary updates refresh the mounted widget without changing its position among other widgets. Hiding and showing it again can change that position.
 The widget uses at most ten rows, including one separator, and reserves eight terminal rows for the editor and footer. This is a local height limit, not a calculation of space left by other widgets.
 With no available rows it renders nothing. One available row shows only the separator with current counts and omitted-row information. Summary view also uses only the separator, but does not count its intentionally absent job rows as omitted. Narrow layouts clip each line to the terminal width.
 
-In `/subagents`, **Widget view** provides details, summary, hide/show, pin/unpin, automatic compaction, and item-view reset controls.
-These controls are session-local and do not write settings. Manual hide remains in effect across job changes until you show the widget again.
-A pin prevents automatic compaction, but does not override `showWidget: false`, width limits, or row limits. Unpinning does not immediately compact the view.
-An explicit details, summary, or hide/show choice cancels the pending automatic rule.
+In `/subagents settings`, **Status view** selects **Job rows**, **Counts only**, or **Hidden** for the current session without writing settings. **Hidden** stays in effect across job changes. Selecting any view cancels a pending automatic switch.
+**Pin status view** prevents automatic switching, but does not override `showWidget: false` or terminal size limits. Unpinning does not immediately switch the view.
 
-Automatic compaction is off by default. Choose **Next consumed user message** to compact when Pi emits `message_start` for a user message, including extension-generated user messages and queued messages when consumed. Input submission, rejected input, and unconsumed queues do not count.
-Choose **Next eligible settled cycle** to wait for `agent_settled` after later consumed user activity in that same cycle. The cycle already active when the rule is armed is excluded, including run preparation before `agent_start` and a cycle that started during settings loading.
+**Switch to counts** is off by default. Choose **On next message** to switch when Pi starts processing a user message, including extension-generated and queued user messages. Submission alone, rejected input, and unconsumed queues do not count.
+Choose **After next reply** to wait until Pi finishes a later response cycle that processed a user message after the rule was set. The cycle already active when the rule is armed is excluded, including run preparation before `agent_start` and a cycle that started during settings loading.
 Retries, tool turns, continuations, automatic context compaction, and batched queued messages can share one cycle. Tree navigation and manual context compaction are not response cycles.
 Eligibility requires a non-aborted settlement and a latest observed turn outcome other than error or abort; a non-aborted settlement alone is insufficient.
 A pending rule rearms on meaningful active-job changes, but not elapsed-time refreshes, repaint, or resize. A rule that compacts is consumed once; otherwise it stays pending. Pins, disabled settings, and manual hide prevent automatic compaction.
@@ -128,7 +126,7 @@ A pending rule rearms on meaningful active-job changes, but not elapsed-time ref
 If maintenance ends and an extension starts a custom run without an observed idle gap, the rule can wait one extra cycle. Pi exposes no exact run-activity query to extensions.
 
 An active job's manager detail screen can compact or remove only that job's widget row. Removal does not cancel the job or suppress completion messages.
-Removal remains in effect across active-job snapshots until **Reset item views**, or until the job ID leaves the active snapshot. Reset restores the current active rows and their item details, not the overall view, pin, or trigger.
+Removal remains in effect across active-job snapshots until **Restore job rows**, or until the job ID leaves the active snapshot. Reset restores the current active rows and their item details, not the overall view, pin, or trigger.
 If all items are removed, the widget and separator disappear. The summary counts include removed and otherwise omitted rows; the manager still lists the jobs.
 Widget presentation choices reset on `session_start` (including reload and session replacement), `session_tree` navigation, and shutdown. Tree navigation resets presentation without cancelling active jobs.
 Jobs, saved preferences, tool definitions, model context, and completion delivery are not changed by widget controls.
@@ -175,8 +173,8 @@ See [`docs/tools.md`](./docs/tools.md) for the concise schema reference, [`docs/
 
 ## ⚙️ Settings
 
-Use `/subagents settings` or the manager's Settings action to edit user display preferences.
-All four fields accept JSON booleans:
+Use `/subagents settings` or the manager's **Settings** action to change display preferences and the current session's status view. **Preview · sample jobs** shows what the status looks like without starting any jobs. Below the divider, **Saved preferences** apply across sessions and **This session** controls the current view only. Highlight a **Status view** choice to preview it, then confirm to apply it or back out to keep the current view. On short terminals, the focused setting takes priority over the preview and group headings.
+The four saved preferences accept JSON booleans:
 
 | Field | Default | Effect |
 | --- | --- | --- |
@@ -186,8 +184,8 @@ All four fields accept JSON booleans:
 | `showTiming` | `true` | Show running elapsed time and configured timeouts. |
 
 Successful UI saves apply immediately. Hiding the widget does not stop jobs, change model tools, or suppress completion messages.
-Showing it again displays currently active jobs with the other saved preferences. Job state and the task preview remain visible when the widget is enabled.
-Escape returns or closes without undoing completed saves; Ctrl+C closes the entire flow.
+Showing it again uses the current status view and the other saved preferences.
+Escape backs out of a choice or Settings without undoing applied changes; Ctrl+C closes the entire flow.
 Settings uses Pi's configured selection keys. Its footer shows only the hard-cancel key to avoid displaying fixed keys that do not match your bindings.
 
 Preferences are saved in `<getAgentDir()>/pi-subagents.json`, normally `~/.pi/agent/pi-subagents.json`.
@@ -211,7 +209,7 @@ The package intentionally registers and publishes no skill; the repository-only 
   task: string;
   provider?: string;
   model?: string;
-  tools?: Array<"read" | "bash" | "powershell" | "edit" | "write" | "grep" | "find" | "ls" | "codemode">;
+  tools?: string[];
   skills?: string[];
   extensions?: Array<{ path: string; tools: string[] }>;
   thinkingLevel?: "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
@@ -223,7 +221,7 @@ The package intentionally registers and publishes no skill; the repository-only 
 A provider-only override retains the parent's model ID and fails if that pair is unavailable. To select another pair explicitly:
 
 ```ts
-{ task: "Review the parser without changing files.", provider: "openai", model: "gpt-5.5" }
+{ task: "Review the parser without changing files.", tools: ["read", "grep"], provider: "openai", model: "gpt-5.5" }
 ```
 
 Only the child checks exact model registration and current availability. Every job requires a registered chat model and child-visible credentials, including jobs that inherit both fields.
@@ -231,10 +229,11 @@ A missing or unavailable model fails the job after `subagent_spawn` returns its 
 Unlisted custom IDs previously accepted by Pi's CLI now fail; register the exact model in Pi's `models.json` or attach a trusted extension that registers it in the child.
 See [Model selection](./docs/tools.md#model-selection) for exact matching, error timing, and virtual-model behavior.
 
-The optional `tools` list selects Pi core work tools and the built-in `codemode` tool.
-Omitting it selects `read`, `grep`, `find`, and `ls`, while an empty list gives the child no core work tools.
-The runtime always adds `subagent_send` and child `subagent_wait` and removes duplicate names.
-Adding `edit` or `write` lets the child modify files, while `bash` or `powershell` grants unrestricted command execution.
+The optional `tools` list selects Pi core work tools by exact name, plus the built-in `codemode` tool.
+The child Pi checks the selected names before it receives the task; the parent does not share its tool list.
+Omitting `tools` or passing `[]` selects no core work tools. The runtime always adds `subagent_send` and child `subagent_wait`.
+If older calls relied on the read-only default, pass `tools: ["read", "grep", "find", "ls"]` explicitly.
+See [Tools](./docs/tools.md#subagent_spawn) for argument validation, failure timing, and upgrade guidance.
 
 Add `"codemode"` explicitly to let the child run JavaScript that calls its selected tools and communication tools, including parallel calls and output filtering.
 For example, `tools: ["read", "grep", "codemode"]` enables scripted read and search operations without shell or file-mutation tools.
@@ -293,8 +292,7 @@ Describe the child's specialization in `task` and grant only the required work t
 ## 🔒 Security and privacy
 
 The selected work tools run in the current working directory.
-The default list contains no shell or file-mutation tool.
-It is not a filesystem sandbox because its read tools can inspect files available to the user account.
+Selecting tools limits the initial loadout, not filesystem access: read tools can inspect files available to the user account.
 Selecting `bash`, `powershell`, `edit`, or `write` permits workspace mutation with the Pi process environment and user permissions.
 
 Every child disables session persistence and automatic discovery of extensions, skills, and prompt templates.

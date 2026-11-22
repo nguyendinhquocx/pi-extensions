@@ -1,7 +1,8 @@
 import type { EngineContext as ExtensionContext } from "../host.js";
 import { loadConfigForCheck, syncCheckConfigFingerprint } from "../settings/config.js";
 import type { AnySyncConfig } from "../settings/settings-types.js";
-import { snapshotOptionsForContext } from "../snapshot/session-paths.js";
+import { resolvedSnapshotOptionsForContext } from "../snapshot/session-paths.js";
+import { ignorePolicyValidator } from "../snapshot/snapshot-transaction-policy.js";
 import { withLock } from "../state/lock.js";
 import { withStateDirectoryAccess } from "../state/state-directory.js";
 import { readStateForConfig } from "../state/sync-state-store.js";
@@ -17,7 +18,7 @@ import {
 } from "./continuous-record.js";
 import { continuousBinding, hashContinuous } from "./continuous-storage.js";
 import { watchContinuous } from "./continuous-watch.js";
-import { readMergeJournal } from "./merge-journal.js";
+import { assertMergeJournalPolicy, readMergeJournal } from "./merge-journal.js";
 import { createStartupTimings, type StartupTimingPublisher, type StartupTimings } from "./startup-timings.js";
 import type { SyncLoaders } from "./sync-loaders.js";
 import { captureMutationOwner } from "./sync-local.js";
@@ -227,6 +228,16 @@ export function createContinuousSync(
       lease.assert();
       if (!ctx.isIdle()) throw new DOMException("Owning session became busy", "AbortError");
     };
+    const openWatch = async () => {
+      try {
+        const { sessionDir } = await resolvedSnapshotOptionsForContext(ctx, config, signal);
+        validate();
+        return await watchContinuous(config, changed, { sessionDir, signal });
+      } catch {
+        validate();
+        return () => {};
+      }
+    };
     const stopWatch = () => {
       closeWatch();
       wake();
@@ -234,7 +245,7 @@ export function createContinuousSync(
     signal.addEventListener("abort", stopWatch, { once: true });
     let pollDue = 0;
     try {
-      closeWatch = await watchContinuous(config, changed);
+      closeWatch = await openWatch();
       validate();
       while (!signal.aborted && ctx.isIdle()) {
         validate();
@@ -250,7 +261,7 @@ export function createContinuousSync(
         if (syncCheckConfigFingerprint(latest) !== syncCheckConfigFingerprint(config)) {
           closeWatch();
           config = latest;
-          closeWatch = await watchContinuous(config, changed);
+          closeWatch = await openWatch();
           validate();
           pollDue = 0;
         }
@@ -263,7 +274,12 @@ export function createContinuousSync(
           await updateContinuousRecord(binding, lease, (current) => normalizeContinuousClock(current, now));
           validate();
         }
-        const configuration = hashContinuous([{ ...config, showStatus: undefined, debug: undefined }, ctx.model]);
+        const configuration = hashContinuous([
+          config.ignorePolicy
+            ? syncCheckConfigFingerprint(config)
+            : { ...config, showStatus: undefined, debug: undefined },
+          ctx.model,
+        ]);
         const controlChanged = record.configuration !== configuration;
         if (controlChanged || explicitRetry) {
           record.next = 0;
@@ -293,7 +309,9 @@ export function createContinuousSync(
           const validateCycle = (latest?: AnySyncConfig) => {
             validate();
             if (
-              (latest && syncCheckConfigFingerprint(latest) !== expectedConfig) ||
+              (latest &&
+                (syncCheckConfigFingerprint(latest) !== expectedConfig ||
+                  (ctx.backgroundAuthorized && !ctx.backgroundAuthorized(latest)))) ||
               hashContinuous(ctx.model) !== expectedModel
             )
               activeCycle.abort(new DOMException("Continuous authorization changed", "AbortError"));
@@ -366,7 +384,7 @@ export function createContinuousSync(
           pollDue = clock.now() + POLL_MS + Math.floor(clock.random() * 6_000);
           closeWatch();
           closeWatch = () => {};
-          closeWatch = await watchContinuous(config, changed);
+          closeWatch = await openWatch();
           validate();
         }
         validate();
@@ -420,6 +438,7 @@ export function createContinuousSync(
     // A newly pending journal may prove an uncertain commit. It is never authority to republish.
     const pending = await guardedLock("continuous-journal", () => readMergeJournal(config));
     validate();
+    if (pending) assertMergeJournalPolicy(pending, config);
     if (
       !force &&
       !pending &&
@@ -433,27 +452,23 @@ export function createContinuousSync(
     const observed = await timings.measure("inspection and guards", () =>
       guardedLock("continuous-check", async () => {
         validate();
-        const inspection = await inspectionModule.inspectSync(
-          config,
-          snapshotOptionsForContext(ctx, config),
-          signal,
-          undefined,
-          timings,
-        );
+        const snapshotOptions = await resolvedSnapshotOptionsForContext(ctx, config, signal);
+        validate();
+        const validateIgnore = ignorePolicyValidator({ ...snapshotOptions, validateMutation: validate });
+        if (validateIgnore) await validateIgnore();
+        const inspection = await inspectionModule.inspectSync(config, snapshotOptions, signal, undefined, timings);
         validate();
         let localIdentity = inspection.localIdentity;
         if (!localIdentity) {
           const snapshotModule = await loaders.snapshot();
           validate();
-          const local = await snapshotModule.createSnapshot(config.snapshotIdentity, {
-            ...snapshotOptionsForContext(ctx, config),
-            signal,
-          });
+          const local = await snapshotModule.createSnapshot(config.snapshotIdentity, snapshotOptions);
           validate();
           localIdentity = hashContinuous(fileHashMap(local));
         }
         const journal = await readMergeJournal(config);
         validate();
+        if (journal) assertMergeJournalPolicy(journal, config);
         return { inspection, journal, localIdentity };
       }),
     );

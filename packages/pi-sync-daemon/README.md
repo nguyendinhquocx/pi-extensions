@@ -16,7 +16,19 @@
 
 ## 📦 Install
 
-The Pi client declares this service as a normal dependency; do not add it to `pi.extensions` or load it with `pi -e`. The npm package is `@narumitw/pi-sync-daemon`; the executable is `pi-sync-daemon`. For the previous package and executable names, see the [rename instructions](https://github.com/narumiruna/pi-extensions/blob/main/packages/pi-sync/docs/daemon-migration.md#ownership-and-upgrade).
+Use Node.js 22.19.0 or later. The [Pi Sync npm package](https://www.npmjs.com/package/@narumitw/pi-sync) includes its own daemon build, so you do not need to install this standalone package to use Pi Sync. To install the standalone CLI:
+
+```sh
+npm install --global @narumitw/pi-sync-daemon
+```
+
+To try the standalone CLI without installing it globally:
+
+```sh
+npm exec --package=@narumitw/pi-sync-daemon -- pi-sync-daemon --help
+```
+
+This package is not an extension; do not add it to `pi.extensions` or load it with `pi -e`. See the [daemon CLI guide](https://github.com/narumiruna/pi-extensions/blob/main/packages/pi-sync/docs/daemon-migration.md#daemon-cli) for the previous executable name and for running the copy bundled with Pi Sync.
 
 For a local checkout, run from the repository root:
 
@@ -25,7 +37,7 @@ npm install
 npm --workspace @narumitw/pi-sync-daemon run build
 ```
 
-The build emits JavaScript, declarations, and an executable under `dist/`. A global npm installation is not required for the Pi client to locate its dependency. Registry installation remains blocked until publication rights and the dependency-first release are approved.
+The build emits JavaScript, declarations, and the executable `dist/cli.js`.
 
 ## 🚀 Quick start
 
@@ -50,7 +62,7 @@ Pi starts the service only after configured interactive synchronization is neede
 
 ## ⚙️ Settings
 
-Existing `pi-sync.json`, canonical `pi-sync/`, and legacy `.pisync/` remain in the selected agent directory. There is no second backend or credential configuration format. The daemon is the authoritative Pi Sync settings writer; stale reviews must reopen rather than overwrite a newer document.
+Existing `pi-sync.json`, canonical `pi-sync/`, and legacy `.pisync/` remain in the selected agent directory. There is no second backend or credential configuration format. The daemon is the authoritative Pi Sync settings writer; stale reviews must reopen rather than overwrite a newer document. Settings version 7 and snapshot version 5 support [agent-directory scope](https://github.com/narumiruna/pi-extensions/blob/main/packages/pi-sync/skills/configure-pi-sync/references/configuration.md#agent-directory-scope). Older clients must refuse these formats, and existing selected-path setups do not change scope automatically.
 
 Automatic, Autonomous, and Continuous defaults remain unchanged. Old permission for work while Pi is open does not permit work after the last client exits. `/sync daemon allow-after-exit` reviews that extra permission for the current setup and selected independently reproducible provider/model; `/sync daemon revoke-after-exit` revokes it. Setup changes invalidate the saved digest. Changes to an interactive client’s model, working directory, or session-directory binding revoke older unattended grants, including across restart. Print/JSON never launch a service; passive attachment to an existing service protects their sessions and pauses automatic work. Registered live PIDs keep the service alive, including passive, disconnected, publishing, and orderly retired clients. A valid explicit after-exit grant for the active setup keeps service lifetime under the existing fingerprint and binding rules; it does not expand transfer or model permission. Temporary provider or backend unavailability does not itself revoke that grant. Lifetime checks do not call a model, contact a provider or storage, or execute credential commands. There is no new setting, environment variable, or keep-alive flag.
 
@@ -62,6 +74,8 @@ Sync content, session conversations, storage credentials, and conflict evidence 
 
 ## 🚧 Limitations
 
+Autonomous conflict resolution requires the host and daemon to agree on the full model definition and independent authentication source. If the daemon rejects a model, align the Pi host and daemon’s bundled catalogs or verify a model with the same definition and auth source on both. Matching IDs alone are not enough. This check does not affect ordinary sync without model resolution.
+
 A daemon does not lock every editor or shell command. Cooperating Pi clients reserve their actual public mutation queues; unregistered writers still require freshness checks and can cause safe refusal. Active sessions remain protected when contact is lost but their process is still alive. A heartbeat timeout is not proof of process exit.
 
 Pi core's missing-`settings.json` write branch cannot be made safe with the existing file lock alone. The daemon refuses to create that file while a participating Pi is alive; create it through Pi first. Existing-file writes use the actual Pi settings-file lock.
@@ -71,6 +85,8 @@ Close or upgrade every old Pi process before reviewed handover. An absent operat
 ## Recovery and development
 
 Automatic exit first stops new automatic work, cancels cancellable work, and drains writes, queue-release acknowledgements, persistence, and owned callbacks before releasing ownership. It adds no final sync or model request. Uncertain consent publication, failed revocation, or cleanup failure keeps the owner paused with evidence retained; automatic restart must not restore an older grant. Repair persistence and use the existing revocation/repair path before explicit restart. The next eligible interactive client or explicit command can restart through singleton startup only after the old owner's exit is proven; print/JSON never launch a replacement.
+
+The standalone package is versioned and released independently. Updating it does not change the daemon bundled in an installed Pi Sync package. Update Pi Sync to get a newer bundled build.
 
 Stop the service and verify owner exit before an in-place rebuild or rollback. Preserve pending
 journals and backups. Rebuilding without changing the package version does not replace the running
