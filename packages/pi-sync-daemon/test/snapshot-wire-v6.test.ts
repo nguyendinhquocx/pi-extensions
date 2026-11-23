@@ -4,7 +4,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { gunzipSync, gzipSync } from "node:zlib";
-import { test } from "vitest";
+import { test, vi } from "vitest";
 import { GitSyncBackend } from "../src/engine/backends/git/git-backend.js";
 import { runGit } from "../src/engine/backends/git/git-runner.js";
 import {
@@ -14,10 +14,12 @@ import {
   requireGitManifest,
   validateGitSnapshot,
 } from "../src/engine/backends/git/git-storage.js";
+import { expectedRemoteHead } from "../src/engine/backends/sync-backend.js";
 import { applySnapshot } from "../src/engine/snapshot/snapshot-apply.js";
 import { MAX_AGENT_DIRECTORY_BYTES } from "../src/engine/snapshot/snapshot-bounds.js";
 import { decodeSnapshot, encodeSnapshot } from "../src/engine/snapshot/snapshot-codec.js";
 import type { IgnoreSnapshotSelection, Snapshot, SnapshotFile } from "../src/engine/snapshot/snapshot-types.js";
+import { validatePortableSnapshot } from "../src/engine/sync/local-fields.js";
 import { readSnapshotForHead } from "../src/engine/sync/remote-snapshot.js";
 import { MAX_AGENT_DIRECTORY_FILES } from "../src/engine/sync/sync-policy.js";
 
@@ -257,11 +259,38 @@ test("local bare Git round-trips v6 while legacy read and apply refuse the same 
       { cacheRoot: path.join(root, "cache"), allowLocalRemotes: true },
     );
     const image = snapshot([file("notes.md")]);
-    const { head } = await backend.publishSnapshot(image, { kind: "missing" });
+    const legacy = { ...image, id: "legacy-before-activation", version: 1, selection: undefined };
+    const first = await backend.publishSnapshot(legacy, { kind: "missing" });
+    await assert.rejects(
+      backend.publishSnapshot(image, expectedRemoteHead(first.head), {
+        validateIgnorePolicy: async () => {
+          throw new Error("reviewed rules changed");
+        },
+      }),
+      /reviewed rules changed/u,
+    );
+    assert.deepEqual(await backend.readHead(), first.head);
+    const { head } = await backend.publishSnapshot(image, expectedRemoteHead(first.head));
+    assert.equal((await backend.readSnapshot(first.head.snapshotRef)).id, legacy.id);
     const { stdout } = await runGit(["show", `refs/heads/${branch}:pi-sync/manifest.json`], { gitDir: remote });
     assert.deepEqual(JSON.parse(stdout.toString("utf8")), manifest(image));
     assert.deepEqual(head.selection, image.selection);
-    assert.deepEqual(await backend.readSnapshot(head.snapshotRef), image);
+    const update = vi.spyOn(Object.getPrototypeOf(createHash("sha256")), "update");
+    try {
+      const decoded = await backend.readSnapshot(head.snapshotRef);
+      validatePortableSnapshot(decoded);
+      assert.deepEqual(decoded, image);
+      assert.equal(
+        update.mock.calls.filter(([value]) => Buffer.isBuffer(value) && value.equals(Buffer.from("x"))).length,
+        1,
+      );
+      const verified = decoded.files[0];
+      assert.ok(verified);
+      verified.sha256 = "a".repeat(64);
+      assert.throws(() => validatePortableSnapshot(decoded), /checksum or encoding mismatch/);
+    } finally {
+      update.mockRestore();
+    }
     await assert.rejects(readSnapshotForHead(backend, head), /cannot transfer an ignore-file snapshot/i);
     await assert.rejects(applySnapshot(image, new Set()), /cannot transfer an ignore-file snapshot/i);
     assert.deepEqual(await backend.readHead(), head);

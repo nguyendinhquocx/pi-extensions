@@ -1,8 +1,8 @@
 import { truncateToWidth } from "@earendil-works/pi-tui";
-import { configFromSettings, loadConfig, syncCheckConfigFingerprint } from "../settings/config.js";
-import { activeLocalConfigPath, readActiveLocalConfigDocumentForRepair } from "../settings/config-file.js";
-import type { AnySyncConfig, PiSyncSettingsV3 } from "../settings/settings-types.js";
-import { isCloudflareR2Endpoint, validateSettingsDocument } from "../settings/settings-validation.js";
+import { createSettingsConfigView, syncCheckConfigFingerprint } from "../settings/config.js";
+import { type LocalConfigDocument, readActiveLocalConfigDocumentForRepair } from "../settings/config-file.js";
+import type { AnySyncConfig } from "../settings/settings-types.js";
+import { isCloudflareR2Endpoint } from "../settings/settings-validation.js";
 import {
   inspectOperationAvailability,
   type OperationAvailability,
@@ -20,7 +20,7 @@ import {
   type SyncAttentionState,
   syncAttentionMatchesConfig,
 } from "./sync-attention.js";
-import { countValidSyncSetups } from "./sync-setups-ui.js";
+import { hasAnotherSwitchableSetup } from "./sync-setups-ui.js";
 import { safeTerminalText } from "./terminal-text.js";
 
 export const MAIN_MENU_ACTIONS = [
@@ -51,35 +51,37 @@ export async function describeManagerState(
   attention?: SyncAttentionState,
   inspectOperation: () => Promise<OperationAvailability> = inspectOperationAvailability,
   observation?: StartupObservation,
+  canUseIgnoreSettings?: () => Promise<boolean>,
 ): Promise<ManagerDescription> {
-  let raw: PiSyncSettingsV3 | undefined;
+  signal?.throwIfAborted();
+  let document: LocalConfigDocument | undefined;
+  let view: ReturnType<typeof createSettingsConfigView> | undefined;
   try {
-    const document = await readActiveLocalConfigDocumentForRepair();
+    document = await readActiveLocalConfigDocumentForRepair();
     signal?.throwIfAborted();
-    if (document) raw = validateSettingsDocument(document.parsed);
+    if (document) view = createSettingsConfigView(document);
   } catch (error) {
-    if (signal?.aborted) throw error;
+    signal?.throwIfAborted();
     return {
       title: [
         "Manage sync",
         "",
         "Settings file needs repair. Automatic sync and settings writes are paused.",
         `Error: ${safeTerminalText(errorMessage(error))}`,
-        `File: ${safeTerminalText(await activeLocalConfigPath())}`,
+        ...(document ? [`File: ${safeTerminalText(document.path)}`] : []),
         "",
         "Repair the JSON file, then reopen /sync.",
       ].join("\n"),
       actions: ["Help"],
     };
   }
-  if (!raw) {
+  if (!view || !document) {
     return {
       title: ["Manage sync", "", "Not set up.", "", "What do you want to do?"].join("\n"),
       actions: ["Set up sync", "Help"],
     };
   }
-  const configuredTargets = raw.syncSetups;
-  if (Object.keys(configuredTargets).length === 0) {
+  if (view.setupNames.length === 0) {
     return {
       title: [
         "Manage sync",
@@ -92,35 +94,32 @@ export async function describeManagerState(
       actions: ["Sync setups…", "Storage connections…", "Help"],
     };
   }
+  let settingsConfig: AnySyncConfig | undefined;
   try {
-    const settingsConfig = configFromSettings(raw);
-    if (settingsConfig.reservedIgnoreNames !== undefined) {
-      return {
-        title: [
-          "Manage sync",
-          `Current sync setup: ${safeTerminalText(settingsConfig.setupName)}`,
-          "Transfers are unavailable while ignore-file setups are configured.",
-        ].join("\n"),
-        actions: ["Settings", "Sync setups…", "Storage connections…", "Help"],
-        settingsReview: {
-          setupName: settingsConfig.setupName,
-          fingerprint: syncCheckConfigFingerprint(settingsConfig),
-        },
-      };
+    settingsConfig = view.metadata();
+    if (settingsConfig.reservedIgnoreNames && canUseIgnoreSettings && !(await canUseIgnoreSettings())) {
+      throw new Error("the connected daemon does not support ignore-file setups");
     }
-    const config = await loadConfig();
+    signal?.throwIfAborted();
+    const config = await view.observe(undefined, signal);
+    signal?.throwIfAborted();
     const operation = await inspectOperation();
+    signal?.throwIfAborted();
     const changesBlocked = operationBlocksChanges(operation);
     let currentAttention: SyncAttentionState | undefined;
+    let alternateUsable = false;
     if (attention) {
       try {
         const attentionConfig =
-          attention.decision.setupName === config.setupName ? config : await loadConfig(attention.decision.setupName);
+          attention.decision.setupName === config.setupName
+            ? config
+            : await view.observe(attention.decision.setupName, signal);
+        alternateUsable = attentionConfig.setupName !== config.setupName;
         if (syncAttentionMatchesConfig(attention, attentionConfig)) currentAttention = attention;
       } catch {
         currentAttention = undefined;
       }
-      if (signal?.aborted) throw signal.reason;
+      signal?.throwIfAborted();
     }
     const attentionComparison = currentAttention
       ? compareSyncInclude(currentAttention.decision.localInclude, currentAttention.decision.remoteInclude)
@@ -132,6 +131,7 @@ export async function describeManagerState(
       currentAttention?.decision.localDirectory || currentAttention?.decision.remoteDirectory;
     const noSyncedContent = !syncSelectionHasContent(config);
     const syncState = changesBlocked ? undefined : await readStateForConfig(config).catch(() => undefined);
+    signal?.throwIfAborted();
     const currentObservation =
       observation &&
       observationMatchesConfig(observation, config) &&
@@ -146,7 +146,8 @@ export async function describeManagerState(
         : syncState
           ? "Never synced"
           : "Unavailable";
-    const canSwitch = (await countValidSyncSetups(configuredTargets, signal)) > 1;
+    const canSwitch = !changesBlocked && (alternateUsable || (await hasAnotherSwitchableSetup(view, signal)));
+    signal?.throwIfAborted();
     const mainActions: string[] = [...MAIN_MENU_ACTIONS];
     if (config.agentMode && !noSyncedContent) mainActions.splice(1, 0, "Retry refused model result…");
     if (canSwitch) mainActions.push("Switch sync setup");
@@ -157,7 +158,11 @@ export async function describeManagerState(
       "Manage sync",
       `Current sync setup: ${safeTerminalText(config.setupName)}`,
       `Storage: ${backendStorageDescription(config)}`,
-      ...(config.scope ? ["Sync scope: Pi agent directory, with exclusions"] : []),
+      ...(config.pathPolicy === "ignore-file"
+        ? [`Sync scope: Pi agent directory · ignore file: ${safeTerminalText(config.ignoreFile ?? ".syncignore")}`]
+        : config.scope
+          ? ["Sync scope: Pi agent directory, with exclusions"]
+          : []),
       ...(syncState?.unresolved?.length
         ? [`Unresolved: ${syncState.unresolved.length} dependency groups · review needed`]
         : []),
@@ -192,6 +197,7 @@ export async function describeManagerState(
       title: (changesBlocked ? ["Manage sync", ...operationStatusLines(operation)] : ordinaryTitle).join("\n"),
       actions: operationActions(operation, noSyncedContent, canSwitch, mainActions),
       configReview: { setupName: config.setupName, fingerprint: syncCheckConfigFingerprint(config) },
+      settingsReview: { setupName: settingsConfig.setupName, fingerprint: syncCheckConfigFingerprint(settingsConfig) },
       operation,
       ...(currentObservation ? { observation: currentObservation } : {}),
       ...(currentAttention
@@ -203,15 +209,29 @@ export async function describeManagerState(
         : {}),
     };
   } catch (error) {
-    if (signal?.aborted) throw error;
+    signal?.throwIfAborted();
+    if (settingsConfig?.reservedIgnoreNames !== undefined) {
+      return {
+        title: [
+          "Manage sync",
+          `Current sync setup: ${safeTerminalText(settingsConfig.setupName)}`,
+          `Transfers are unavailable: ${safeTerminalText(errorMessage(error))}`,
+        ].join("\n"),
+        actions: ["Settings", "Sync setups…", "Storage connections…", "Help"],
+        settingsReview: {
+          setupName: settingsConfig.setupName,
+          fingerprint: syncCheckConfigFingerprint(settingsConfig),
+        },
+      };
+    }
     return {
       title: [
         "Manage sync",
         "",
         "Settings need attention. Automatic sync is paused.",
-        `Current sync setup: ${safeTerminalText(typeof raw.activeSyncSetup === "string" ? raw.activeSyncSetup : "none")}`,
+        `Current sync setup: ${safeTerminalText(view.activeSetupName ?? "none")}`,
         `Error: ${safeTerminalText(errorMessage(error))}`,
-        `File: ${safeTerminalText(await activeLocalConfigPath())}`,
+        `File: ${safeTerminalText(document.path)}`,
         "",
         "What do you want to do?",
       ].join("\n"),
@@ -301,11 +321,14 @@ export function backendStorageDescription(config: AnySyncConfig) {
         config.backend.profile.kind === "r2" || isCloudflareR2Endpoint(config.backend.profile.endpoint)
           ? "Cloudflare R2"
           : "S3-compatible";
-      return `${type} · ${connection} · ${safeTerminalText(config.backend.destination.bucket)}`;
+      const { bucket, prefix } = config.backend.destination;
+      return `${type} · ${connection} · ${safeTerminalText(bucket)} · ${safeTerminalText(prefix)}`;
     }
     case "webdav":
       return `WebDAV · ${connection} · ${safeTerminalText(config.backend.destination.path)}`;
-    case "git":
-      return `Git · ${connection} · ${safeTerminalText(config.backend.destination.branch)}`;
+    case "git": {
+      const { branch, directory } = config.backend.destination;
+      return `Git · ${connection} · ${safeTerminalText(branch)} · ${safeTerminalText(directory)}`;
+    }
   }
 }

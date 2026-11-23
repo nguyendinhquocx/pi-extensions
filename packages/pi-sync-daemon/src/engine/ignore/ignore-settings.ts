@@ -1,9 +1,10 @@
 import { createHash, randomUUID } from "node:crypto";
+import { lstatSync } from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { requireHandover } from "../../consent.js";
 import { documentFingerprint } from "../../document.js";
-import { type Execution, MAX_REVIEW_BYTES } from "../../protocol.js";
+import { type Execution, MAX_REVIEW_BYTES, record } from "../../protocol.js";
 import { createServiceContext } from "../../service-host.js";
 import { createSyncBackend } from "../backends/backend-factory.js";
 import type { RemoteHead } from "../backends/sync-backend.js";
@@ -15,7 +16,7 @@ import {
   updateLocalConfigDocument,
 } from "../settings/config-file.js";
 import type { AnySyncConfig, PiSyncSettingsV3, SyncSetupSettings } from "../settings/settings-types.js";
-import { validateSettingsDocument } from "../settings/settings-validation.js";
+import { validateConfigName, validateSettingsDocument } from "../settings/settings-validation.js";
 import { resolvedSnapshotOptionsForContext } from "../snapshot/session-paths.js";
 import { createSnapshot } from "../snapshot/snapshot.js";
 import { pendingTransactionEntries } from "../snapshot/snapshot-transaction-directory.js";
@@ -24,9 +25,14 @@ import { withLock } from "../state/lock.js";
 import { stateDir, withStateDirectoryAccess } from "../state/state-directory.js";
 import { requireNoMergeJournal } from "../sync/merge-journal.js";
 import { configuredSnapshotPathMatcher } from "../sync/sync-policy.js";
-import { safeTerminalText } from "../ui/terminal-text.js";
+import { safeTerminalText, snapshotPathLabel } from "../ui/terminal-text.js";
 import { compileEffectiveIgnorePolicy } from "./effective-ignore-policy.js";
-import { prepareDefaultIgnoreSource } from "./ignore-initialization.js";
+import {
+  AutomaticIgnoreCreationUnavailable,
+  checkAutomaticIgnoreCreation,
+  prepareDefaultIgnoreSource,
+  readPendingIgnoreCreation,
+} from "./ignore-initialization.js";
 import { assertCurrentIgnoreMigrationOffer } from "./ignore-migration-prompt.js";
 import {
   compileIgnoreRules,
@@ -39,6 +45,35 @@ import {
   readIgnoreSource,
   validateIgnoreFilename,
 } from "./ignore-source.js";
+
+export function runIgnorePolicyChange(
+  operation: "ignore.migrate" | "ignore.switch",
+  payload: unknown,
+  execution: Execution,
+) {
+  if (!record(payload) || typeof payload.setup !== "string") throw new Error("Invalid ignore-file policy request.");
+  const { setup } = payload;
+  validateConfigName(setup, "sync setup");
+  if (operation === "ignore.migrate") {
+    const { offerToken } = payload;
+    if (
+      Object.keys(payload).some((key) => key !== "setup" && key !== "offerToken") ||
+      (offerToken !== undefined && (typeof offerToken !== "string" || !/^[a-f0-9]{64}$/u.test(offerToken)))
+    )
+      throw new Error("Invalid ignore-file migration request.");
+    if (offerToken !== undefined && execution.facts()?.mode !== "tui")
+      throw new Error("Ignore migration offers require an attached TUI client.");
+    return migrateIgnoreSetup(execution, setup, offerToken);
+  }
+  const { filename, expectedFilename } = payload;
+  if (
+    typeof filename !== "string" ||
+    typeof expectedFilename !== "string" ||
+    Object.keys(payload).some((key) => key !== "setup" && key !== "filename" && key !== "expectedFilename")
+  )
+    throw new Error("Invalid ignore-file switch request.");
+  return switchIgnoreFile(execution, setup, filename, expectedFilename);
+}
 
 function sourceToken(document: LocalConfigDocument | undefined) {
   return documentFingerprint(
@@ -96,24 +131,66 @@ async function readSetupSource(root: string, filename: string, signal: AbortSign
       !(error.cause instanceof IgnoreCreationPendingError)
     )
       throw error;
-    if ((await fs.realpath(root)) !== root) throw error;
-    const marker = await fs.lstat(path.join(root, DEFAULT_IGNORE_CREATION_RECORD), { bigint: true });
+    const { text, token } = await readPendingIgnoreCreation(root, signal);
     signal.throwIfAborted();
-    if (!marker.isFile() || marker.nlink !== 1n) throw error;
     return {
       filename,
       present: false,
-      text: DEFAULT_IGNORE_RULES,
-      sourceDigest: ignoreSourceDigest(filename, false, Buffer.from(DEFAULT_IGNORE_RULES)),
-      pendingCreation: `${marker.dev}:${marker.ino}:${marker.size}:${marker.ctimeNs}:${marker.mtimeNs}`,
+      text,
+      sourceDigest: ignoreSourceDigest(filename, false, Buffer.from(text)),
+      pendingCreation: token,
     };
   }
 }
 
+async function readPolicyReviewSource(root: string, filename: string, execution: Execution, allowCreation: boolean) {
+  const { signal } = execution;
+  execution.validate();
+  signal.throwIfAborted();
+  filename = validateIgnoreFilename(filename);
+  if (
+    filename !== DEFAULT_IGNORE_FILENAME &&
+    lstatSync(path.resolve(root), { throwIfNoEntry: false })?.isDirectory() &&
+    !lstatSync(path.resolve(root, filename), { throwIfNoEntry: false })
+  ) {
+    throw manualCreationRequired(root, filename);
+  }
+  const source = await (allowCreation
+    ? readSetupSource(root, filename, signal)
+    : readIgnoreSource(root, filename, signal));
+  execution.validate();
+  if (source.present) return source;
+  if (!allowCreation) throw manualCreationRequired(root, filename);
+  await checkAutomaticIgnoreCreation(root, signal).catch((error: unknown) => {
+    execution.validate();
+    throw creationFailure(root, source, error);
+  });
+  execution.validate();
+  return source;
+}
+
+function manualCreationRequired(root: string, filename: string, cause?: Error) {
+  return new Error(
+    `Ignore file does not exist: ${snapshotPathLabel(path.resolve(root, filename))}\n` +
+      `${cause ? `${cause.message}. ` : ""}Create a regular UTF-8 text file there manually with these starter rules, then retry the Pi Sync policy change:\n${DEFAULT_IGNORE_RULES}`,
+    { cause },
+  );
+}
+
+function creationFailure(root: string, source: ReviewedIgnoreSource, error: unknown) {
+  if (!(error instanceof AutomaticIgnoreCreationUnavailable)) return error;
+  if (!source.pendingCreation) return manualCreationRequired(root, source.filename, error);
+  return new Error(
+    `Interrupted creation of ${snapshotPathLabel(path.resolve(root, source.filename))}. ${error.message}. ` +
+      `Preserve the rule file and creation record ${snapshotPathLabel(path.resolve(root, DEFAULT_IGNORE_CREATION_RECORD))}. ` +
+      "Retry the reviewed Pi Sync policy change where safe automatic recovery is available.",
+    { cause: error },
+  );
+}
+
 export async function reviewNewIgnoreSource(root: string, filename: string, execution: Execution) {
   const ctx = requireInteractive(execution);
-  const source = await readSetupSource(root, filename, execution.signal);
-  execution.validate();
+  const source = await readPolicyReviewSource(root, filename, execution, true);
   compileIgnoreRules(source.text);
   const description = describeSource(source);
   if (
@@ -144,7 +221,12 @@ export async function prepareReviewedIgnoreSource(root: string, reviewed: Review
   )
     stale();
   if (current.present) return { source: current, created: false };
-  const prepared = await prepareDefaultIgnoreSource(root, execution.signal);
+  const prepared = await prepareDefaultIgnoreSource(root, execution.signal, current.pendingCreation ?? null).catch(
+    (error: unknown) => {
+      execution.validate();
+      throw creationFailure(root, current, error);
+    },
+  );
   execution.validate();
   if (
     !prepared.source.present ||
@@ -164,6 +246,10 @@ export async function switchIgnoreFile(
   const ctx = requireInteractive(execution);
   filename = validateIgnoreFilename(filename);
   expectedFilename = validateIgnoreFilename(expectedFilename);
+  if (expectedFilename !== filename) {
+    await readPolicyReviewSource(execution.root, filename, execution, false);
+    execution.validate();
+  }
   await requireHandover(execution);
   execution.validate();
   return withStateDirectoryAccess(() =>
@@ -178,10 +264,8 @@ export async function switchIgnoreFile(
       if ((await pendingTransactionEntries()).some((entry) => entry.isDirectory()))
         throw new Error("Resolve pending local recovery before changing the content policy.");
       await requireNoMergeJournal(configFromSettings(settings, setupName));
-      const source = await readIgnoreSource(execution.root, filename, execution.signal);
+      const source = await readPolicyReviewSource(execution.root, filename, execution, false);
       execution.validate();
-      if (!source.present)
-        throw new Error(`Ignore file does not exist: ${safeTerminalText(path.join(execution.root, filename))}`);
       compileIgnoreRules(source.text);
       if (
         !(await confirm(
@@ -217,6 +301,8 @@ export async function switchIgnoreFile(
 
 export async function migrateIgnoreSetup(execution: Execution, setupName: string, offerToken?: string) {
   const ctx = requireInteractive(execution);
+  await readPolicyReviewSource(execution.root, DEFAULT_IGNORE_FILENAME, execution, true);
+  execution.validate();
   await requireHandover(execution);
   execution.validate();
   return withStateDirectoryAccess(() =>
@@ -224,7 +310,13 @@ export async function migrateIgnoreSetup(execution: Execution, setupName: string
       const document = await peekLocalConfigDocument();
       execution.validate();
       if (!document) throw new Error("No Pi Sync settings to migrate.");
-      if (offerToken !== undefined) assertCurrentIgnoreMigrationOffer(document, execution.root, setupName, offerToken);
+      const guardSettings = settingsReviewGuard(document, execution);
+      const validateReview = (candidate: LocalConfigDocument | undefined) => {
+        guardSettings(candidate);
+        if (offerToken !== undefined)
+          assertCurrentIgnoreMigrationOffer(candidate, execution.root, setupName, offerToken);
+      };
+      validateReview(document);
       const before = validateSettingsDocument(document.parsed);
       const setup = Object.hasOwn(before.syncSetups, setupName) ? before.syncSetups[setupName] : undefined;
       if (!setup || ignoreFilename(setup)) throw new Error("Choose a legacy Pi Sync setup to migrate.");
@@ -242,7 +334,7 @@ export async function migrateIgnoreSetup(execution: Execution, setupName: string
       next.syncSetups[setupName].sync = { ...common, scope: "agent-directory", sessions, pathPolicy: "ignore-file" };
       next.version = 8;
       validateSettingsDocument(next);
-      const source = await readSetupSource(execution.root, DEFAULT_IGNORE_FILENAME, execution.signal);
+      const source = await readPolicyReviewSource(execution.root, DEFAULT_IGNORE_FILENAME, execution, true);
       execution.validate();
       const current = {
         ...configFromSettings(next, setupName),
@@ -305,7 +397,7 @@ export async function migrateIgnoreSetup(execution: Execution, setupName: string
         () => next,
         validateSettingsDocument,
         execution.signal,
-        settingsReviewGuard(document, execution),
+        validateReview,
         async () => {
           verifyHead(await backend.readHead(execution.signal));
           execution.validate();
@@ -338,11 +430,11 @@ export async function migrateIgnoreSetup(execution: Execution, setupName: string
 }
 
 function describeSource(source: ReviewedIgnoreSource) {
-  if (source.pendingCreation)
-    return "Verify or complete the interrupted creation of the starter rules. Incomplete content will not be used.";
-  return source.present
-    ? "Keep the existing rule file unchanged."
+  if (source.present) return "Keep the existing rule file unchanged.";
+  const action = source.pendingCreation
+    ? "Verify or complete the interrupted creation of the starter rules. Incomplete content will not be used."
     : "Create the default rule file with the starter rules.";
+  return `${action}\n${source.text.trimEnd()}`;
 }
 
 function describeChanges(label: string, before: string[], after: string[]) {

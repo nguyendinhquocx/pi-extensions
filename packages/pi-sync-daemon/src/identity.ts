@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { lstatSync, realpathSync } from "node:fs";
+import { closeSync, constants, fstatSync, lstatSync, openSync, readSync, realpathSync } from "node:fs";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -78,7 +78,7 @@ export async function privateDirectory(directory: string) {
 type OwnerRecord = Pick<Identity, "version" | "root" | "instance" | "pid">;
 type ProcessIdentity = { pid: number; birth?: string };
 /** The exit barrier records an authenticated owner without keeping its IPC token. */
-export type UpgradeOwner = OwnerRecord & ProcessIdentity;
+export type UpgradeOwner = OwnerRecord & ProcessIdentity & { purpose?: "cleanup" };
 const birthPattern =
   /^[a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12}:([1-9][0-9]{0,9})\.([1-9][0-9]{0,9}):(0|[1-9][0-9]{0,19})$/u;
 export function upgradeFile(paths: RuntimePaths) {
@@ -101,13 +101,20 @@ export async function upgradeRepairStarted(paths: RuntimePaths, owner: Pick<Upgr
 export async function readUpgradeOwner(paths: RuntimePaths): Promise<UpgradeOwner | undefined> {
   const value = await readPrivateRecord(upgradeFile(paths));
   if (value === undefined) return;
-  if (!validOwner(value, paths.root) || (value.birth !== undefined && !validBirth(value.birth)))
+  if (
+    !validOwner(value, paths.root) ||
+    (value.birth !== undefined && !validBirth(value.birth)) ||
+    (value.purpose !== undefined && value.purpose !== "cleanup")
+  )
     throw new Error("Invalid daemon upgrade record; state retained.");
-  const { version, root, instance, pid, birth } = value;
-  return birth === undefined ? { version, root, instance, pid } : { version, root, instance, pid, birth };
+  const { version, root, instance, pid, birth, purpose } = value;
+  return { version, root, instance, pid, ...(birth && { birth }), ...(purpose && { purpose }) };
 }
-export function recordUpgradeOwner(paths: RuntimePaths, { version, root, instance, pid, birth }: UpgradeOwner) {
-  return publishPrivateRecord(paths, upgradeFile(paths), { version, root, instance, pid, birth });
+export function recordUpgradeOwner(
+  paths: RuntimePaths,
+  { version, root, instance, pid, birth, purpose }: UpgradeOwner,
+) {
+  return publishPrivateRecord(paths, upgradeFile(paths), { version, root, instance, pid, birth, purpose });
 }
 export function clearUpgradeOwner(paths: RuntimePaths) {
   return fs.rm(upgradeFile(paths), { force: true });
@@ -118,6 +125,36 @@ export async function readIdentity(paths: RuntimePaths): Promise<Identity | unde
   if (!validOwner(value, paths.root) || typeof value.token !== "string" || !/^[a-f0-9]{64}$/u.test(value.token))
     throw new Error("Invalid or incompatible daemon identity; state retained.");
   return { ...value, token: value.token };
+}
+export function matchesPublishedIdentity(paths: RuntimePaths, identity: Identity) {
+  const expected = Buffer.from(JSON.stringify(identity));
+  if (expected.length > 8192) return false;
+  const before = lstatSync(paths.identity, { bigint: true, throwIfNoEntry: false });
+  if (
+    !before?.isFile() ||
+    before.size !== BigInt(expected.length) ||
+    (process.getuid && before.uid !== BigInt(process.getuid())) ||
+    (process.platform !== "win32" && (before.mode & 0o077n) !== 0n)
+  )
+    return false;
+  const sameFile = (info: typeof before | undefined) =>
+    info?.dev === before.dev &&
+    info.ino === before.ino &&
+    info.size === before.size &&
+    info.ctimeNs === before.ctimeNs &&
+    info.mtimeNs === before.mtimeNs;
+  const fd = openSync(paths.identity, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0));
+  try {
+    if (!sameFile(fstatSync(fd, { bigint: true }))) return false;
+    const observed = Buffer.alloc(expected.length + 1);
+    return (
+      readSync(fd, observed) === expected.length &&
+      observed.subarray(0, expected.length).equals(expected) &&
+      sameFile(lstatSync(paths.identity, { bigint: true, throwIfNoEntry: false }))
+    );
+  } finally {
+    closeSync(fd);
+  }
 }
 function validBirth(value: unknown): value is string {
   const fields = typeof value === "string" && birthPattern.exec(value);

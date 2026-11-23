@@ -1,6 +1,6 @@
 import type { ExtensionCommandContext, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { piDaemonClient, remoteOperation } from "../daemon/pi-client.js";
-import { loadConfig, sessionTokenWarnings, syncSessionsWarnings } from "../settings/config.js";
+import { loadSettingsConfig, sessionTokenWarnings, syncSessionsWarnings } from "../settings/config.js";
 import { activeLocalConfigPath, createLocalConfigDocument, localConfigPath } from "../settings/config-file.js";
 import { localConfigTemplate, readLocalConfigObject } from "../settings/settings-store.js";
 import type { AnySyncConfig } from "../settings/settings-types.js";
@@ -11,6 +11,7 @@ import type { SyncLoaders } from "../sync/sync-loaders.js";
 import { RemoteSelectionMismatchError, syncSessionsSelected } from "../sync/sync-policy.js";
 import { automaticSyncSummary } from "../ui/automatic-sync-summary.js";
 import type { RunRouteResult } from "../ui/cancellable-operation.js";
+import { manualIgnoreFileGuidance } from "../ui/ignore-file-guidance.js";
 import { trackOperationDialogs } from "../ui/operation-dialogs.js";
 import { startupTransferSummary } from "../ui/sync-behavior.js";
 import { setSyncStatus } from "../ui/sync-status.js";
@@ -93,7 +94,11 @@ export async function executeCommand(
       case "daemon": {
         const client = piDaemonClient(ctx);
         const action = options.args[0] ?? "status";
-        if (action === "handover") {
+        if (action === "recover") {
+          if (rest.length !== 1) throw new Error("Usage: /sync daemon recover");
+          const { recoverDaemonOwnership } = await import("../daemon/ownership-recovery.js");
+          await recoverDaemonOwnership(ctx, client, signal);
+        } else if (action === "handover") {
           await client.run("daemon.handover", {}, options.signal);
         } else if (action === "allow-after-exit" || action === "revoke-after-exit") {
           await client.run("daemon.handover", {}, options.signal);
@@ -105,11 +110,15 @@ export async function executeCommand(
           );
         } else if (action === "status") {
           const connection = await client.verifyConnection(options.signal);
+          const guidance = client.ownershipCleanupRequired
+            ? "Use /sync daemon recover to review and stop the daemon."
+            : "Use pi-sync-daemon status/stop/restart --root <agent-directory> for explicit lifecycle control.";
+          const state = client.ownershipCleanupRequired ? "connected; recovery required" : "connected";
           ctx.ui.notify(
-            `pi-sync-daemon: connected\nPID: ${connection.identity.pid}\nInstance: ${connection.identity.instance}\nUse pi-sync-daemon status/stop/restart --root <agent-directory> for explicit lifecycle control.`,
+            `pi-sync-daemon: ${state}\nPID: ${connection.identity.pid}\nInstance: ${connection.identity.instance}\n${guidance}`,
             "info",
           );
-        } else throw new Error("Use /sync daemon status|handover|allow-after-exit|revoke-after-exit.");
+        } else throw new Error("Use /sync daemon status|recover|handover|allow-after-exit|revoke-after-exit.");
         return { kind: "completed" };
       }
       case "help":
@@ -256,7 +265,8 @@ async function initConfig(ctx: ExtensionCommandContext, signal?: AbortSignal) {
 }
 
 async function showConfig(ctx: ExtensionCommandContext, options: CommandOptions) {
-  const config = await loadConfig(options.setup);
+  const config = await loadSettingsConfig(options.setup);
+  throwIfAborted(options.signal);
   const warnings = [
     ...(config.backend.type === "s3" ? sessionTokenWarnings(config.backend.profile) : []),
     ...syncSessionsWarnings(config),
@@ -276,12 +286,14 @@ async function showConfig(ctx: ExtensionCommandContext, options: CommandOptions)
       `autonomous sync: ${config.agentMode ? "On" : "Off"}`,
       `continuous sync: ${config.continuous ? (config.agentMode ? "On" : "paused; Autonomous sync is Off") : "Off"}`,
       config.scope ? "sync scope: Pi agent directory" : `included content: ${config.include.join(", ") || "none"}`,
-      ...(config.scope
-        ? [
-            `excluded paths: ${config.exclude?.map(safeTerminalText).join(", ") || "none"}`,
-            `re-included paths: ${config.reinclude?.map(safeTerminalText).join(", ") || "none"}`,
-          ]
-        : []),
+      ...(config.pathPolicy === "ignore-file"
+        ? ["path policy: local ignore file", manualIgnoreFileGuidance(config.ignoreFile ?? ".syncignore")]
+        : config.scope
+          ? [
+              `excluded paths: ${config.exclude?.map(safeTerminalText).join(", ") || "none"}`,
+              `re-included paths: ${config.reinclude?.map(safeTerminalText).join(", ") || "none"}`,
+            ]
+          : []),
       `sessions: ${syncSessionsSelected(config) ? "included" : "not included"}`,
       `settings file: ${localConfigPath()}`,
       ...warnings,

@@ -50,7 +50,7 @@ export async function main(args: readonly string[]) {
         log?.close(); /* Never follow a replaced diagnostic path. */
       }
     };
-    const service = createEngineService(paths.root);
+    const service = createEngineService(paths.root, true);
     let server: Awaited<ReturnType<typeof startServer>>;
     try {
       server = await startServer(paths.root, service.execute, {
@@ -68,6 +68,7 @@ export async function main(args: readonly string[]) {
       try {
         log = openLifecycleLog(paths.directory);
       } catch (error) {
+        server.recordBootOutcome("failed");
         await server.close();
         throw error;
       }
@@ -79,6 +80,7 @@ export async function main(args: readonly string[]) {
       throw error;
     }
     note("ready");
+    server.recordBootOutcome("ready");
     let stopping: Promise<void> | undefined;
     const stop = () => {
       stopping ??= server.close().catch(() => {

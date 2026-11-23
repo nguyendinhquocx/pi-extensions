@@ -6,10 +6,11 @@ import path from "node:path";
 import { setImmediate } from "node:timers/promises";
 import { test, vi } from "vitest";
 import { DAEMON_BUILD_VERSION } from "../src/build-version.js";
-import { DaemonConnection, DaemonError, requestDaemon } from "../src/client.js";
+import { DaemonError, requestDaemon } from "../src/client.js";
 import { daemonPaths, privateDirectory, readIdentity, runtimePaths } from "../src/identity.js";
 import { type ClientFacts, type Execute, type JobView, operationPrefix, type PollReply } from "../src/protocol.js";
 import { startServer } from "../src/server.js";
+import { withRpcServer } from "./rpc-server-fixture.js";
 
 function facts(root: string): ClientFacts {
   return {
@@ -59,6 +60,82 @@ function poll(server: Server, client: string, job?: string) {
 
 function expiredError(error: unknown) {
   return error instanceof DaemonError && error.remote.name === "ClientContactExpiredError";
+}
+
+test("queued automatic jobs cannot reuse a participant generation after an idle transition", () =>
+  fixture(async (root) => {
+    const entered = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    const execute = vi.fn<Execute>(async (operation) => {
+      if (operation === "hold") {
+        entered.resolve();
+        await release.promise;
+      }
+    });
+    await withRpcServer(root, execute, async ({ server, createConnection }) => {
+      const owner = await createConnection(facts(root), { callback: async () => true }).attach();
+      const peer = await createConnection(facts(root), { callback: async () => true }).attach();
+      const hold = owner.run("hold", {});
+      try {
+        await entered.promise;
+        const id = `${operationPrefix(server.identity)}${randomUUID()}`;
+        const submit = await requestDaemon(server.paths, server.identity, "submit", {
+          id,
+          client: owner.facts.id,
+          operation: "startup-transfer",
+          payload: {},
+        });
+        assert.equal((submit as JobView).phase, "queued");
+        const stable = { ...peer.facts };
+        await peer.update({ ...stable, idle: false });
+        await peer.update(stable);
+        release.resolve();
+        await hold;
+        const job = await terminal(server, owner.facts.id, id);
+        assert.equal(job.phase, "failed");
+        assert.match(job.error?.message ?? "", /participants changed/i);
+        assert.deepEqual(
+          execute.mock.calls.map(([operation]) => operation),
+          ["hold"],
+        );
+      } finally {
+        release.resolve();
+        await hold.catch(() => {});
+      }
+    });
+  }));
+
+for (const committed of [false, true]) {
+  test(`stop fences automatic work while draining an existing commit (${committed})`, () =>
+    fixture(async (root) => {
+      const entered = Promise.withResolvers<void>();
+      const release = Promise.withResolvers<void>();
+      let finished = false;
+      const execute: Execute = async (_operation, _payload, execution) => {
+        if (committed) execution.committed();
+        entered.resolve();
+        await release.promise;
+        execution.validate();
+        finished = true;
+      };
+      await withRpcServer(root, execute, async ({ server }) => {
+        const peer = facts(root);
+        const request = (method: string, params: unknown) =>
+          requestDaemon(server.paths, server.identity, method, params);
+        const id = `${operationPrefix(server.identity)}${randomUUID()}`;
+        await request("attach", peer);
+        await request("submit", { id, client: peer.id, operation: "shutdown", payload: {} });
+        try {
+          await entered.promise;
+          assert.deepEqual(await request("stop", {}), { stopping: true });
+          assert.equal(server.isIdle(), false);
+        } finally {
+          release.resolve();
+          await server.close();
+        }
+        assert.equal(finished, committed);
+      });
+    }));
 }
 
 test("root-bound local handshake rejects a second live daemon and authenticates calls", () =>
@@ -168,23 +245,18 @@ test("a cancellation that arrives before dispatch prevents execution", () =>
 test("client callbacks preserve request identity and their results", () =>
   fixture(async (root) => {
     const execute: Execute = async (_operation, _payload, context) => context.request("confirm", { title: "Review" });
-    const server = await startServer(root, execute);
-    const peer = facts(root);
     const seen: string[] = [];
-    const connection = await new DaemonConnection(server.paths, server.identity, peer, {
-      callback: async (callback) => {
-        seen.push(callback.id);
-        assert.deepEqual(callback.payload, { title: "Review" });
-        return true;
-      },
-    }).attach();
-    try {
+    await withRpcServer(root, execute, async ({ createConnection }) => {
+      const connection = await createConnection(facts(root), {
+        callback: async (callback) => {
+          seen.push(callback.id);
+          assert.deepEqual(callback.payload, { title: "Review" });
+          return true;
+        },
+      }).attach();
       assert.equal(await connection.run("review", {}), true);
       assert.equal(new Set(seen).size, 1);
-    } finally {
-      await connection.dispose();
-      await server.close();
-    }
+    });
   }));
 
 test("session-generation changes are not accepted as an ordinary update", () =>
@@ -365,6 +437,47 @@ test("expired contact cancels work but never treats a live client session as saf
       await server.close();
     }
   }));
+
+test.each([false, true])("a process exit invalidates participants only while attached (retired: %s)", (retired) =>
+  fixture(async (root) => {
+    const peer = { ...facts(root), pid: process.pid + 100_000 };
+    const kill = process.kill;
+    let exited = false;
+    const probe = vi.spyOn(process, "kill").mockImplementation((pid, signal) => {
+      if (pid !== peer.pid || signal !== 0) return kill(pid, signal);
+      if (exited) throw Object.assign(new Error("process exited"), { code: "ESRCH" });
+      return true;
+    });
+    try {
+      await withRpcServer(
+        root,
+        async () => null,
+        async ({ server }) => {
+          await requestDaemon(server.paths, server.identity, "attach", peer);
+          if (retired) await requestDaemon(server.paths, server.identity, "detach", { client: peer.id });
+          assert.equal(
+            server.participants().some(({ id }) => id === peer.id),
+            !retired,
+          );
+          assert.equal(
+            server.liveClients().some(({ id }) => id === peer.id),
+            true,
+          );
+          const generation = server.participantGeneration();
+          exited = true;
+          await server.expireClients();
+          assert.equal(server.participantGeneration(), generation + Number(!retired));
+          assert.equal(
+            server.liveClients().some(({ id }) => id === peer.id),
+            false,
+          );
+        },
+      );
+    } finally {
+      probe.mockRestore();
+    }
+  }),
+);
 
 test("a poll that beats the heartbeat sweep renews active contact without a resume", () =>
   fixture(async (root) => {
@@ -639,39 +752,36 @@ test("disposing a client cancels an open review and drains acknowledged queue re
       granted = resolve;
     });
     let released = false;
-    const server = await startServer(root, async (_operation, _payload, execution) => {
+    const execute: Execute = async (_operation, _payload, execution) => {
       await execution.request("queue-acquire", {});
       try {
         return await execution.request("confirm", {});
       } finally {
         await execution.request("queue-release", {});
       }
-    });
-    const connection = await new DaemonConnection(server.paths, server.identity, facts(root), {
-      callback: async (callback, signal) => {
-        if (callback.kind === "queue-acquire") return true;
-        if (callback.kind === "queue-release") {
-          released = true;
-          return true;
-        }
-        granted();
-        return new Promise((_resolve, reject) =>
-          signal.addEventListener("abort", () => reject(signal.reason), { once: true }),
-        );
-      },
-    }).attach();
-    const job = connection.run("review", {}).then(
-      () => undefined,
-      (error) => error,
-    );
-    try {
+    };
+    await withRpcServer(root, execute, async ({ createConnection, server }) => {
+      const connection = await createConnection(facts(root), {
+        callback: async (callback, signal) => {
+          if (callback.kind === "queue-acquire") return true;
+          if (callback.kind === "queue-release") {
+            released = true;
+            return true;
+          }
+          granted();
+          return new Promise((_resolve, reject) =>
+            signal.addEventListener("abort", () => reject(signal.reason), { once: true }),
+          );
+        },
+      }).attach();
+      const job = connection.run("review", {}).then(
+        () => undefined,
+        (error) => error,
+      );
       await ready;
       await connection.dispose();
       assert.equal(released, true);
       assert.ok((await job) instanceof Error);
       assert.deepEqual(server.participants(), []);
-    } finally {
-      await connection.dispose();
-      await server.close();
-    }
+    });
   }));

@@ -30,7 +30,9 @@ export function createStartupCheck(
       }
     | undefined;
 
-  let pending: { ctx: ExtensionContext; signal: AbortSignal; config: AnySyncConfig } | undefined;
+  let pending:
+    | { ctx: ExtensionContext; signal: AbortSignal; config: AnySyncConfig; logTimings?: (report: string) => void }
+    | undefined;
 
   const controllerApi = {
     async interrupt(ctx: ExtensionContext) {
@@ -43,12 +45,17 @@ export function createStartupCheck(
       const queued = pending;
       if (!queued || queued.ctx.sessionManager !== ctx.sessionManager || queued.signal.aborted || !ctx.isIdle()) return;
       pending = undefined;
-      controllerApi.start(ctx, queued.signal, queued.config);
+      controllerApi.start(ctx, queued.signal, queued.config, queued.logTimings);
     },
-    start(ctx: ExtensionContext, sessionSignal: AbortSignal, initialConfig?: AnySyncConfig) {
+    start(
+      ctx: ExtensionContext,
+      sessionSignal: AbortSignal,
+      initialConfig?: AnySyncConfig,
+      logTimings?: (report: string) => void,
+    ) {
       if (!ctx.hasUI || sessionSignal.aborted) return;
       if (initialConfig && startupTransferEnabled(initialConfig) && !ctx.isIdle()) {
-        pending = { ctx, signal: sessionSignal, config: initialConfig };
+        pending = { ctx, signal: sessionSignal, config: initialConfig, logTimings };
         return;
       }
       if (active) throw new Error("Previous startup check has not been drained.");
@@ -76,7 +83,7 @@ export function createStartupCheck(
         .then(async () => {
           try {
             throwIfAborted(signal);
-            config = initialConfig ?? (await loadConfigForCheck());
+            config = initialConfig ?? (await loadConfigForCheck(undefined, signal));
             task.transfer = startupTransferEnabled(config);
             throwIfAborted(signal);
             if (!config.automatic && !startupTransferEnabled(config)) return;
@@ -86,7 +93,7 @@ export function createStartupCheck(
             setSyncStatus(ctx, "sync ...", { activity: "checking" });
             const { inspectSync } = await timings.measure("inspection import", () => loaders.inspection());
             throwIfAborted(signal);
-            const currentConfig = await loadConfigForCheck();
+            const currentConfig = await loadConfigForCheck(undefined, signal);
             throwIfAborted(signal);
             if (syncCheckConfigFingerprint(currentConfig) !== identity) return;
             // The daemon owns the operation and cache guards.
@@ -94,7 +101,7 @@ export function createStartupCheck(
               inspectSync(captured, snapshotOptionsForContext(ctx, captured), signal, undefined, timings),
             );
             throwIfAborted(signal);
-            const latest = await loadConfigForCheck();
+            const latest = await loadConfigForCheck(undefined, signal);
             throwIfAborted(signal);
             if (syncCheckConfigFingerprint(latest) !== identity) return;
             const state = await withStateDirectoryAccess(() => readStateForConfig(latest));
@@ -115,9 +122,11 @@ export function createStartupCheck(
             ) {
               const operations = await timings.measure("operations import", () => loaders.operations());
               throwIfAborted(signal);
-              if (!isCurrent()) return;
+              const transferConfig = await loadConfigForCheck(undefined, signal);
+              throwIfAborted(signal);
+              if (!isCurrent() || syncCheckConfigFingerprint(transferConfig) !== identity) return;
               if (!ctx.isIdle()) {
-                pending = { ctx, signal: sessionSignal, config: captured };
+                pending = { ctx, signal: sessionSignal, config: captured, logTimings };
                 return;
               }
               await timings.measure("automatic transfer", () =>
@@ -129,6 +138,7 @@ export function createStartupCheck(
                   silent: true,
                   reload: false,
                   auto: true,
+                  automaticFingerprint: identity,
                   signal,
                   startupTimings: timings,
                   onCommit: () => attention.clearObservation(),
@@ -188,6 +198,7 @@ export function createStartupCheck(
                 sessionSignal,
                 "background startup",
                 signal.aborted || stopped ? "stopped" : "completed",
+                logTimings,
               );
             }
             if (active === task) active = undefined;

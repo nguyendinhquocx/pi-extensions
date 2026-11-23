@@ -169,6 +169,7 @@ try {
   }, 30_000);
   assert.match(JSON.stringify(ready), /skill:configure-pi-sync/u);
   assert.match(JSON.stringify(ready), /"name":"sync"/u);
+  await send("set_auto_compaction", { enabled: false });
   async function prompt(message: string) {
     const settled = waitFor((record) => record.type === "agent_settled");
     await Promise.all([send("prompt", { message }), settled]);
@@ -188,8 +189,14 @@ try {
     "manual-only metadata must not enter ordinary prompts",
   );
   const requestsToExpand = [
-    "Exclude npm/ from my active setup.",
-    "How do I set up Git without automatic sync?",
+    "Turn on debug logging in pi-sync.json.",
+    "Exclude npm/ from the ignore file for my home setup.",
+    "Exclude npm/ from my active ignore file only if this setup remains current.",
+    "Draft a .syncignore without writing it.",
+    "Audit my ignore rules for blocked exceptions without editing the file.",
+    "Turn on Autonomous sync in my legacy-only setup.",
+    "The running daemon is older. Can you still edit my active ignore file?",
+    "Error: Agent directory changed or has an unsafe filesystem layout; no snapshot was collected.",
     "Where do I enter my WebDAV app password?",
     "What does ./ mean for R2 and S3?",
     "How do the four automatic controls differ?",
@@ -203,8 +210,14 @@ try {
     const request = latestUserMessage();
     assert.match(request, /<skill name=\\"configure-pi-sync/u);
     assert.ok(request.includes(message));
-    assert.ok(request.includes("Apply the user's requested local Pi Sync settings changes"));
+    assert.ok(request.includes("Make and verify a clear, authorized local edit"));
     assert.ok(request.includes("expected: documentFingerprint(document), next"));
+    assert.ok(request.includes("start with read-only local checks"));
+    assert.ok(request.includes("Draft a new ignore file"));
+    assert.ok(request.includes("Add, revise, or audit existing rules"));
+    assert.ok(request.includes("never write based only on `activeSyncSetup`"));
+    assert.ok(request.includes("needsUpgrade: false"));
+    assert.ok(request.includes("A schema-valid change is not proof of user review or consent"));
   }
   const beforeReload = requests.length;
   await send("prompt", { message: "/skill-smoke-reload" });
@@ -212,13 +225,14 @@ try {
   assert.match(JSON.stringify(afterReload), /skill:configure-pi-sync/u);
   assert.equal(requests.length, beforeReload, "reload must not contact the provider");
   await prompt("/skill:configure-pi-sync What changed after reload?");
-  assert.match(latestUserMessage(), /Apply the user's requested local Pi Sync settings changes/u);
+  assert.match(latestUserMessage(), /Make and verify a clear, authorized local edit/u);
   assert.match(latestUserMessage(), /What changed after reload\?/u);
   cli.stdin?.end();
   assert.equal(await exited, 0, stderr);
   clearTimeout(deadline);
   await assert.rejects(fs.stat(path.join(agentDir, "pi-sync.json")), { code: "ENOENT" });
   await assert.rejects(fs.stat(path.join(agentDir, "pi-sync.local.json")), { code: "ENOENT" });
+  await assert.rejects(fs.stat(path.join(agentDir, ".syncignore")), { code: "ENOENT" });
   await assert.rejects(fs.stat(path.join(agentDir, "pi-sync")), { code: "ENOENT" });
   assert.deepEqual(await fs.readdir(workspace), []);
   console.log(

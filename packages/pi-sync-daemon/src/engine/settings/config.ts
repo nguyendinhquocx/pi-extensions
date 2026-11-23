@@ -1,26 +1,30 @@
 import { createHash } from "node:crypto";
+import path from "node:path";
+import { documentFingerprint } from "../../document.js";
 import { backendIdentityCoordinates } from "../backends/backend-identity.js";
 import { normalizeGitBranch, normalizeGitDirectory, normalizeGitRemote } from "../backends/git/git-config.js";
 import { normalizeWebDavPath, normalizeWebDavUrl } from "../backends/webdav/webdav-config.js";
-import { getEngineRoot } from "../host.js";
-import { type IgnorePolicyInput, loadEffectiveIgnorePolicy } from "../ignore/effective-ignore-policy.js";
+import { engineHost, getEngineRoot } from "../host.js";
+import { compileEffectiveIgnorePolicy, type IgnorePolicyInput } from "../ignore/effective-ignore-policy.js";
 import { DEFAULT_IGNORE_FILENAME, readIgnoreSource, validateIgnoreFilename } from "../ignore/ignore-source.js";
 import { normalizeSyncExclude } from "../sync/exclude-policy.js";
 import { normalizeLocalFields } from "../sync/local-field-policy.js";
 import {
+  localIgnorePolicyKey,
   normalizeDirectoryRules,
   normalizeSyncInclude,
   type SyncSelectionConfig,
   syncDirectoryPolicyKey,
   syncSessionsSelected,
 } from "../sync/sync-policy.js";
+import { safeTerminalText } from "../ui/terminal-text.js";
 import {
   type LocalConfigDocument,
   localConfigPath,
   readActiveLocalConfigDocumentForRepair,
   withLockedLocalConfigDocument,
 } from "./config-file.js";
-import { requireSettings } from "./settings-store.js";
+import { readLocalConfigDocument, requireSettings } from "./settings-store.js";
 import type {
   AnySyncConfig,
   OnSwitchAction,
@@ -42,13 +46,26 @@ import {
   validateSettingsDocument,
 } from "./settings-validation.js";
 
-export async function loadConfig(setupName?: string): Promise<AnySyncConfig> {
-  return requireLegacyOperationConfig(configFromSettings(await requireSettings(), setupName));
+export async function loadConfig(setupName?: string, signal?: AbortSignal): Promise<AnySyncConfig> {
+  signal?.throwIfAborted();
+  const document = await readLocalConfigDocument();
+  if (!document)
+    throw new Error(`Missing pi-sync settings. Open /sync and choose Set up sync, or create ${localConfigPath()}.`);
+  return operationalConfig(document, setupName, signal);
 }
 
 /** A background freshness read must never trigger legacy-file publication. */
-export async function loadConfigForCheck(): Promise<AnySyncConfig> {
-  return requireLegacyOperationConfig(configFromSettings(await readSettingsForCheck()));
+export async function loadConfigForCheck(setupName?: string, signal?: AbortSignal): Promise<AnySyncConfig> {
+  signal?.throwIfAborted();
+  return operationalConfig(await readActiveLocalConfigDocumentForRepair(), setupName, signal);
+}
+
+async function operationalConfig(document: LocalConfigDocument | undefined, setupName?: string, signal?: AbortSignal) {
+  signal?.throwIfAborted();
+  const config = configFromSettings(settingsFromCheckDocument(document), setupName);
+  if (!config.reservedIgnoreNames) return config;
+  if (engineHost().ignoreFileOperationsAvailable === false) return requireLegacyOperationConfig(config);
+  return resolveOperationPolicy(config, setupName, signal, document && { kind: "checked", document });
 }
 
 export async function loadSettingsConfig(setupName?: string): Promise<AnySyncConfig> {
@@ -77,51 +94,107 @@ export async function resolveIgnoreConfig(
   signal?: AbortSignal,
 ): Promise<AnySyncConfig> {
   signal?.throwIfAborted();
-  const config = configFromSettings(validateSettingsDocument(settings), setupName);
-  if (config.pathPolicy !== "ignore-file") return requireLegacyOperationConfig(config);
+  return resolveOperationPolicy(configFromSettings(validateSettingsDocument(settings), setupName), setupName, signal);
+}
+
+export function createSettingsConfigView(document: LocalConfigDocument) {
+  const settings = validateSettingsDocument(document.parsed);
+  const ignoreNames = reservedIgnoreFilenames(settings);
+  const metadata = (setupName?: string) => projectSettingsConfig(settings, setupName, () => ignoreNames);
+  let fingerprint: string | null | undefined;
+  return {
+    activeSetupName: settings.activeSyncSetup,
+    setupNames: Object.keys(settings.syncSetups),
+    metadata,
+    async observe(setupName?: string, signal?: AbortSignal) {
+      signal?.throwIfAborted();
+      const config = metadata(setupName);
+      if (!config.reservedIgnoreNames) return config;
+      if (engineHost().ignoreFileOperationsAvailable === false) return requireLegacyOperationConfig(config);
+      fingerprint ??= settingsDocumentFingerprint(document);
+      return resolveOperationPolicy(config, setupName, signal, { kind: "view", fingerprint });
+    },
+  };
+}
+
+function settingsDocumentFingerprint(document: LocalConfigDocument | undefined) {
+  return documentFingerprint(document && { bytes: document.bytes.toString("base64"), identity: document.identity });
+}
+
+type OperationSettingsSource =
+  | { kind: "checked"; document: LocalConfigDocument }
+  | { kind: "view"; fingerprint: string | null };
+
+async function resolveOperationPolicy(
+  config: AnySyncConfig,
+  setupName: string | undefined,
+  signal: AbortSignal | undefined,
+  settingsSource?: OperationSettingsSource,
+): Promise<AnySyncConfig> {
+  if (!config.reservedIgnoreNames) return config;
   const root = getEngineRoot();
   const validateRoot = () => {
+    signal?.throwIfAborted();
     if (root !== getEngineRoot())
       throw new Error("The Pi agent directory changed; reopen the review before continuing.");
   };
-  const settingsFingerprint = syncCheckConfigFingerprint(config);
-  const validateSettings = (document: PiSyncSettingsV3) => {
-    signal?.throwIfAborted();
+  const original = settingsSource?.kind === "checked" ? settingsSource.document : undefined;
+  const configDocumentFingerprint =
+    settingsSource?.kind === "view" ? settingsSource.fingerprint : original && settingsDocumentFingerprint(original);
+  const settingsFingerprint = settingsSource?.kind === "view" ? undefined : syncCheckConfigFingerprint(config);
+  const validateSettings = (document: LocalConfigDocument | undefined) => {
     validateRoot();
-    const current = configFromSettings(document, setupName);
-    if (settingsFingerprint !== syncCheckConfigFingerprint(current)) {
+    if (
+      (original &&
+        (document?.path !== original.path || settingsDocumentFingerprint(document) !== configDocumentFingerprint)) ||
+      settingsFingerprint !==
+        syncCheckConfigFingerprint(configFromSettings(settingsFromCheckDocument(document), setupName))
+    ) {
       throw new Error("Pi Sync settings changed; reopen the review before continuing.");
     }
-    return current;
   };
-  const ignorePolicy = await loadEffectiveIgnorePolicy(root, ignorePolicyInput(config), signal);
-  signal?.throwIfAborted();
+  const source =
+    config.pathPolicy === "ignore-file" ? await readIgnoreSource(root, config.ignoreFile, signal) : undefined;
   validateRoot();
-  return {
+  if (settingsSource && source && !source.present) {
+    throw new Error(
+      `Ignore file is missing: ${safeTerminalText(path.join(root, source.filename))}. Create it and reopen Pi Sync; starter rules are only a preview.`,
+    );
+  }
+  if (original && source) validateSettings(await readActiveLocalConfigDocumentForRepair());
+  const observed = {
     ...config,
-    ignorePolicy,
+    ...(configDocumentFingerprint ? { configDocumentFingerprint } : {}),
+    ...(source ? { ignorePolicy: compileEffectiveIgnorePolicy(source, ignorePolicyInput(config)) } : {}),
+    ...(source?.identity ? { ignoreSourceIdentity: source.identity } : {}),
+  };
+  if (settingsSource?.kind === "view") return observed;
+  return {
+    ...observed,
     validateIgnorePolicy: async () => {
-      signal?.throwIfAborted();
       validateRoot();
       await withLockedLocalConfigDocument(
         async (document, recheck) => {
-          const current = validateSettings(settingsFromCheckDocument(document));
-          const source = await readIgnoreSource(root, current.ignoreFile, signal);
-          validateRoot();
-          recheck();
-          if (source.sourceDigest !== ignorePolicy.sourceDigest) {
-            throw new Error("Pi Sync ignore policy changed; reopen the review before continuing.");
-          }
-          if (!source.present) {
-            throw new Error(
-              `Ignore file "${source.filename}" is missing; starter rules can only be used for a preview.`,
-            );
+          validateSettings(document);
+          if (source) {
+            const current = await readIgnoreSource(root, source.filename, signal);
+            validateRoot();
+            recheck();
+            if (current.sourceDigest !== source.sourceDigest || current.identity !== source.identity) {
+              throw new Error("Pi Sync ignore policy changed; reopen the review before continuing.");
+            }
+            if (!current.present) {
+              throw new Error(
+                `Ignore file "${source.filename}" is missing; starter rules can only be used for a preview.`,
+              );
+            }
+          } else {
+            recheck();
           }
         },
         signal,
         true,
       );
-      signal?.throwIfAborted();
       validateRoot();
     },
   };
@@ -135,7 +208,26 @@ function ignorePolicyInput(config: AnySyncConfig): IgnorePolicyInput {
   };
 }
 
+function reservedIgnoreFilenames(settings: PiSyncSettingsV3) {
+  const names = new Set<string>();
+  for (const { sync } of Object.values(settings.syncSetups)) {
+    if (sync.pathPolicy === "ignore-file")
+      names.add(validateIgnoreFilename(sync.ignoreFile ?? DEFAULT_IGNORE_FILENAME).toLowerCase());
+  }
+  if (names.size === 0) return undefined;
+  names.add(DEFAULT_IGNORE_FILENAME);
+  return [...names].sort();
+}
+
 export function configFromSettings(settings: PiSyncSettingsV3, setupName?: string): AnySyncConfig {
+  return projectSettingsConfig(settings, setupName, () => reservedIgnoreFilenames(settings));
+}
+
+function projectSettingsConfig(
+  settings: PiSyncSettingsV3,
+  setupName: string | undefined,
+  getReservedIgnoreNames: () => string[] | undefined,
+): AnySyncConfig {
   const selectedName = setupName ?? settings.activeSyncSetup;
   if (!selectedName) throw new Error("No sync setups are configured.");
   validateConfigName(selectedName, "sync setup");
@@ -148,12 +240,7 @@ export function configFromSettings(settings: PiSyncSettingsV3, setupName?: strin
       `Invalid pi-sync settings: sync setup “${selectedName}” references missing storage connection “${connectionName}”.`,
     );
   }
-  const ignoreNames = new Set<string>();
-  for (const { sync } of Object.values(settings.syncSetups)) {
-    if (sync.pathPolicy === "ignore-file")
-      ignoreNames.add(validateIgnoreFilename(sync.ignoreFile ?? DEFAULT_IGNORE_FILENAME).toLowerCase());
-  }
-  if (ignoreNames.size > 0) ignoreNames.add(DEFAULT_IGNORE_FILENAME);
+  const reservedIgnoreNames = getReservedIgnoreNames();
   return {
     ...resolveSyncConfig(
       selectedName,
@@ -165,7 +252,7 @@ export function configFromSettings(settings: PiSyncSettingsV3, setupName?: strin
       settings.showStatus ?? true,
     ),
     debug: settings.debug ?? false,
-    ...(ignoreNames.size > 0 ? { reservedIgnoreNames: [...ignoreNames].sort() } : {}),
+    ...(reservedIgnoreNames ? { reservedIgnoreNames } : {}),
   };
 }
 
@@ -217,6 +304,7 @@ export function syncSetupReviewIdentity(
 }
 
 export function syncConfigReviewIdentity(config: AnySyncConfig) {
+  const localPolicy = localIgnorePolicyKey(config);
   const directoryPolicy =
     config.pathPolicy === "ignore-file" && !config.ignorePolicy
       ? JSON.stringify([config.pathPolicy, config.ignoreFile])
@@ -240,6 +328,7 @@ export function syncConfigReviewIdentity(config: AnySyncConfig) {
       : config.exclude === undefined
         ? []
         : ["exclude", normalizeSyncExclude(config.exclude).map((rule) => rule.toLowerCase())]),
+    ...(localPolicy ? [localPolicy] : []),
   ]);
 }
 
@@ -252,6 +341,15 @@ export function syncCheckConfigFingerprint(config: AnySyncConfig) {
   return createHash("sha256")
     .update(JSON.stringify({ ...config, showStatus: undefined, debug: undefined }))
     .digest("hex");
+}
+
+export function syncSettingsConfigFingerprint(config: AnySyncConfig) {
+  return syncCheckConfigFingerprint({
+    ...config,
+    configDocumentFingerprint: undefined,
+    ignoreSourceIdentity: undefined,
+    ignorePolicy: undefined,
+  });
 }
 
 function storageReviewFromConfig(config: AnySyncConfig): SyncSetupStorageReview {

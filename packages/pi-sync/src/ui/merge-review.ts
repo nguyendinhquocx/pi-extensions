@@ -1,29 +1,43 @@
 import type { ExtensionCommandContext, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { truncateToWidth } from "@earendil-works/pi-tui";
 import { defineMenu, runCustomInteraction, runDocumentReview, runMenu } from "@narumitw/pi-tui-kit";
+import { runCancellableTask } from "./cancellable-operation.js";
 import { createSyncConfirmation, type SyncConfirmationChoice } from "./sync-confirmation.js";
 import { safeTerminalText } from "./terminal-text.js";
 
 type ReviewContext = ExtensionCommandContext | ExtensionContext;
+type ReviewDetails = string | ((signal?: AbortSignal) => Promise<string>);
 
-/** One approval screen; full details are optional and never authorize a transfer. */
 export async function confirmMergeReview(
   ctx: ReviewContext,
   title: string,
-  content: string,
+  details: ReviewDetails,
   signal: AbortSignal | undefined,
   isCurrent: () => boolean,
   confirmationLabel = "apply changes",
   summaryLines?: readonly string[],
 ) {
-  const lines = summaryLines ?? [
-    ...content
-      .split("\n")
-      .slice(0, 6)
-      .map((line) => truncateToWidth(safeTerminalText(line), 100)),
-    "View details for the complete review.",
-  ];
+  let content = typeof details === "string" ? details : undefined;
+  const summary =
+    summaryLines ??
+    (typeof details === "string"
+      ? [
+          ...details
+            .split("\n")
+            .slice(0, 6)
+            .map((line) => truncateToWidth(safeTerminalText(line), 100)),
+          "View details for the complete review.",
+        ]
+      : []);
+  const tuiSummary =
+    ctx.mode === "tui" &&
+    typeof details === "string" &&
+    confirmationLabel === "apply reviewed transfer" &&
+    summaryLines?.join("\n") === details
+      ? compactLegacyTransferSummary(summary)
+      : summary;
   while (isCurrent() && !signal?.aborted) {
+    const allowApproval = ctx.mode === "tui" || content !== undefined;
     const choice: { value: "cancel" | "approve" | "details" } = { value: "cancel" };
     const menu = defineMenu<undefined, "confirm", "choose", ReviewContext>({
       start: "confirm",
@@ -31,11 +45,11 @@ export async function confirmMergeReview(
         confirm: () => ({
           kind: "choice",
           title,
-          lines,
+          lines: allowApproval ? summary : [...summary, "Open View details before approving."],
           initialItemId: "cancel",
           items: [
             { id: "cancel", label: "No, cancel" },
-            { id: "approve", label: `Yes, ${confirmationLabel}` },
+            ...(allowApproval ? [{ id: "approve", label: `Yes, ${confirmationLabel}` }] : []),
             { id: "details", label: "View details" },
           ],
           action: "choose",
@@ -53,7 +67,15 @@ export async function confirmMergeReview(
       ctx.mode === "tui" && ctx.hasUI
         ? await runCustomInteraction<SyncConfirmationChoice, ReviewContext>(ctx, {
             create: ({ tui, theme, keybindings, complete }) =>
-              createSyncConfirmation({ title, lines, confirmationLabel, tui, theme, keybindings, complete }),
+              createSyncConfirmation({
+                title,
+                lines: tuiSummary,
+                confirmationLabel,
+                tui,
+                theme,
+                keybindings,
+                complete,
+              }),
             signal,
             isCurrent,
             onError: () => {},
@@ -66,8 +88,25 @@ export async function confirmMergeReview(
     if (result.kind === "completed") choice.value = result.value;
     else if (result.kind !== "closed") return false;
     // Keep authorization separate from UI termination in both adapters.
-    if (choice.value === "approve") return true;
-    if (choice.value !== "details") return false;
+    const approved = choice.value === "approve" && allowApproval;
+    if (!approved && choice.value !== "details") return false;
+    if (content === undefined && typeof details === "function") {
+      try {
+        const message = approved ? "Verifying sync transfer…" : "Loading exact sync details…";
+        const loaded = await runCancellableTask(ctx, message, details, {
+          signal,
+          isCurrent,
+          cancelledMessage: null,
+        });
+        if (!isCurrent() || signal?.aborted || loaded.kind !== "completed") return false;
+        content = loaded.value;
+      } catch {
+        if (!isCurrent() || signal?.aborted) return false;
+        throw new Error("Sync review failed; no transfer was performed.");
+      }
+    }
+    if (content === undefined) return false;
+    if (approved) return true;
     const detail = await runDocumentReview(ctx, {
       title: "Sync change details",
       content,
@@ -85,4 +124,27 @@ export async function confirmMergeReview(
     // Unlike Pi's native Yes-first dialog, approval requires moving off the safe default.
   }
   return false;
+}
+
+function compactLegacyTransferSummary(lines: readonly string[]): string[] {
+  const result: string[] = [];
+  for (let index = 0; index < lines.length; index++) {
+    const line = lines[index] ?? "";
+    result.push(line);
+    const counts = /^Changes: (\d+) add · (\d+) update · (\d+) remove$/u.exec(line);
+    if (!counts) continue;
+    const expected = counts.slice(1).map(Number);
+    const actual = [0, 0, 0];
+    let side: string | undefined;
+    let end = index + 1;
+    for (; end < lines.length; end++) {
+      const row = /^(Add|Update|Remove) (locally|remotely): .+$/u.exec(lines[end] ?? "");
+      if (!row || (side && row[2] !== side)) break;
+      side = row[2];
+      const action = row[1] === "Add" ? 0 : row[1] === "Update" ? 1 : 2;
+      actual[action] = (actual[action] ?? 0) + 1;
+    }
+    if (actual.every((count, action) => count === expected[action])) index = end - 1;
+  }
+  return result;
 }

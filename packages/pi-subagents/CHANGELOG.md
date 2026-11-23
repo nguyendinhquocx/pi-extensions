@@ -1,5 +1,19 @@
 # @narumitw/pi-subagents
 
+## 4.1.0
+
+### Minor Changes
+
+- 23b8aaf: Let each subagent opt in to specific Pi MCP servers with `mcpServers`. Jobs without a server selection do not connect to MCP servers.
+
+## 4.0.2
+
+### Patch Changes
+
+- 20a3fae: Show a read-only sample widget preview above the Settings options. A divider separates the preview from the Saved preferences and This session groups.
+- Updated dependencies [1cbb470]
+  - @narumitw/pi-tui-kit@0.71.0
+
 ## 4.0.1
 
 ### Patch Changes

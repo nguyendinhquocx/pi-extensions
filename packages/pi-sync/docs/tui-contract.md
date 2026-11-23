@@ -35,11 +35,17 @@ All settings are private to this device. There are no project overrides. Default
 | Content merge / partial progress | `sync.mergeContent`, `sync.partialSync`, false/false | Current setup | Explicit compatibility review and atomic save; Off, Merge only, Merge + partial, Partial only preserve all combinations |
 | Skip secret scan | `skipSecretScan`, false | All setups | Immediate save; subsequent manual/automatic pushes; Diagnostics still scans |
 | Show sync status | `showStatus`, true | All setups | Immediate save and immediate status visibility change; notifications/widgets remain |
-| Debug startup timings | `debug`, false | All setups | Immediate save; fixed-label duration notifications from the next session start; TUI/RPC only |
+| Debug mode | `debug`, false | All setups | Immediate save; Pi logging and timing display use the next session start in TUI/RPC; daemon log uses the next owner, job, or Continuous sync cycle boundary |
 
 Opening foreground Settings cancels and drains startup work. Back does not undo successful saves; cancelling a draft or compatibility review leaves that change unsaved. A failed save retains the previous document and effective/displayed value. Completed transfers are never undone by changing a preference.
 
 Writers queue the complete read-modify-write operation, hold the cross-process lock through validation and same-directory atomic replacement, preserve unknown fields and private permissions, and refuse invalid existing files. UI changes do not replace those writers.
+
+### Debug mode verification
+
+The row retains its **On**/**Off** values, existing save queue, and failure rollback. Changing it does not change the current Pi session's captured preference. Timing reports still use custom transcript entries in TUI and notifications in RPC, with no protocol or model-context changes. Print and JSON modes add no client log writes. The daemon's separate file-logging preference comes from the root at its own boundaries, not from the client timing flag. See the [Debug mode reference](../skills/configure-pi-sync/references/configuration.md#debug-mode).
+
+Check the setting's save and rollback with non-default bindings and verify next-session activation in both directions. Exercise TUI and RPC timing delivery, cancellation and session replacement, and print/JSON framing. Separately verify concurrent client/daemon appends, unsafe file and write failure isolation, local-only snapshot and watcher policy, detached owner logging, and disablement without owner replacement. Use a package-directory RPC smoke and inspect both package archives; the earlier timing-only checks do not establish shared-file behavior.
 
 ## Presentation decisions
 
@@ -68,7 +74,7 @@ Startup transfer summaries report the preference and prerequisites, not a claim 
 | Explicit `--yes` | Existing documented review bypass only | Mandatory migration and operation safety remain; existing route suites |
 | Automatic startup / shutdown | No new modal; existing opt-in, capability, idle, all-or-nothing conflict and secret policies | `automatic-transfer.test.ts`, `startup-check.test.ts`, `backend-orchestration.test.ts` |
 
-TUI Pull and Push reviews reuse the existing scrollable safe-default confirmation and exact Details document; RPC and History rollback retain their observable confirmation protocols. The existing History dialog ownership/cancellation flow is not replaced. All changed counts come from effective snapshot differences rather than raw merge decisions. Protected paths, preserved remote files, merged bytes, and withheld paths must be accounted for before rendering. Cancellation performs no transfer; pre-commit preparation may retain recovery evidence. After the commit boundary, existing completion/recovery rules apply instead of promising undo.
+TUI Pull, Push, and ignore-file rollback show directional counts and safety notes in the confirmation. Exact path rows are available in the read-only **View details** document. Older daemons can send the complete file list as the directional summary; the TUI moves only recognized path groups with verified counts out of that summary, without changing the exact details or the approval requirement. The configured Up and Down actions always select an option; selection-page bindings and the mouse wheel scroll the summary independently. Approval still requires displaying every row of the compact summary; a resize restarts the review. On a terminal too short to show the summary, resize to continue or cancel. RPC and legacy History rollback retain full file lists in their existing confirmation protocols. All changed counts come from effective snapshot differences rather than raw merge decisions. Protected paths, preserved remote files, merged bytes, and withheld paths must be accounted for before rendering. Cancellation performs no transfer; pre-commit preparation may retain recovery evidence. After the commit boundary, existing completion/recovery rules apply instead of promising undo.
 
 ## Resource reload after a transfer
 

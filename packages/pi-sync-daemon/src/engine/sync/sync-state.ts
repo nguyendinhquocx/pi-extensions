@@ -2,35 +2,39 @@ import { createHash } from "node:crypto";
 import type { RemoteHead } from "../backends/sync-backend.js";
 import { toPosix } from "../paths.js";
 import { canonicalSnapshotPathForConfig, filterSnapshotForConfigPolicy, isSessionPath } from "../snapshot/snapshot.js";
-import type { Snapshot } from "../snapshot/snapshot-types.js";
+import type { Snapshot, SnapshotFileHash, SnapshotObservation } from "../snapshot/snapshot-types.js";
 import type { SyncState } from "../state/state-types.js";
 import { sameSyncExclude } from "./exclude-policy.js";
-import { portableSnapshot, sameLocalFields } from "./local-fields.js";
+import { portableObservation, portableSnapshot, sameLocalFields } from "./local-fields.js";
 import {
   compareIgnorePolicy,
   configuredSnapshotPathMatcher,
   customIncludePathsByLower,
   includeFromSelectionConfig,
+  localIgnorePolicyKey,
   normalizeSyncInclude,
   type SyncSelectionConfig,
   syncDirectoryPolicyKey,
   syncSessionsSelected,
 } from "./sync-policy.js";
 
-type SyncPolicyConfig = SyncSelectionConfig & { localFields?: string[] };
-function ignorePolicyKey(config: SyncPolicyConfig) {
-  const key = config.ignorePolicy && syncDirectoryPolicyKey(config);
-  return key === undefined ? undefined : createHash("sha256").update(key).digest("hex");
-}
+type SyncPolicyConfig = SyncSelectionConfig & {
+  localFields?: string[];
+  setupName?: string;
+  ignoreSourceIdentity?: string;
+};
 
-export function hasLocalChanges(local: Snapshot, state: SyncState, config: SyncPolicyConfig) {
-  return (
-    (Boolean(state.lastAppliedSnapshot) &&
-      (state.scope !== config.scope ||
-        !sameLocalFields(state.localFields, config.localFields) ||
-        !sameSelectionRules(state, config))) ||
-    !sameHashes(fileHashMap(portableSnapshot(local, config.localFields)), stateHashMapForConfig(state, config))
-  );
+export function hasLocalChanges(local: Snapshot | SnapshotObservation, state: SyncState, config: SyncPolicyConfig) {
+  if (
+    state.lastAppliedSnapshot &&
+    (state.scope !== config.scope ||
+      !sameLocalFields(state.localFields, config.localFields) ||
+      !sameSelectionRules(state, config))
+  )
+    return true;
+  const portable =
+    "version" in local ? portableSnapshot(local, config.localFields) : portableObservation(local, config.localFields);
+  return !sameHashes(fileHashMap(portable), stateHashMapForConfig(state, config));
 }
 
 export function remoteChangedSinceState(
@@ -77,8 +81,14 @@ export function sameHashes(left: Record<string, string>, right: Record<string, s
   return true;
 }
 
-export function fileHashMap(snapshot: Snapshot) {
+export function fileHashMap(snapshot: { files: readonly SnapshotFileHash[] }) {
   return Object.fromEntries(snapshot.files.map((file) => [file.path, file.sha256]));
+}
+
+export function rawSnapshotHashIdentity(snapshot: { files: readonly SnapshotFileHash[] }) {
+  return createHash("sha256")
+    .update(JSON.stringify(fileHashMap(snapshot)))
+    .digest("hex");
 }
 
 function stateHashMapForConfig(state: SyncState, config: SyncPolicyConfig) {
@@ -141,7 +151,7 @@ export function shouldRefreshSyncedState(
 export function acceptedSelection(
   config: SyncPolicyConfig & { include: string[]; exclude?: string[]; reinclude?: string[] },
 ) {
-  const key = ignorePolicyKey(config);
+  const key = localIgnorePolicyKey(config);
   return {
     include: config.ignorePolicy ? includeFromSelectionConfig(config) : [...config.include],
     ...(key === undefined ? {} : { ignorePolicyKey: key }),
@@ -152,7 +162,7 @@ export function acceptedSelection(
 }
 
 function sameSelectionRules(state: SyncState, config: SyncPolicyConfig) {
-  const key = ignorePolicyKey(config);
+  const key = localIgnorePolicyKey(config);
   if (key !== undefined || state.ignorePolicyKey !== undefined) return key === state.ignorePolicyKey;
   return config.scope === "agent-directory" && state.scope === config.scope
     ? syncDirectoryPolicyKey(state) === syncDirectoryPolicyKey(config)

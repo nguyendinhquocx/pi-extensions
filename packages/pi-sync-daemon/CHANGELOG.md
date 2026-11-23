@@ -1,5 +1,34 @@
 # @narumitw/pi-sync-daemon
 
+## 0.10.0
+
+### Minor Changes
+
+- 316dde1: Append safe owner, timing, job, and Continuous sync diagnostics to the shared, local-only `pi-sync.log`. Use the agent directory's Debug mode setting at the next owner, job, or cycle boundary, including for already-authorized unattended work. Keep repeated unchanged polls quiet and leave the operational `lifecycle.log` unchanged.
+
+### Patch Changes
+
+- 6224417: Recover a blocked daemon from the Pi Sync menu or `/sync daemon recover`. Stop the reviewed owner without restarting it or replaying a transfer, and clean up the owned operation lock when a release failure blocks further writes.
+- bbcc9e9: Reduce sync work without changing transfer approvals or recovery formats. Pull and rollback avoid reinstalling identical files, inspection avoids building unused payloads, and local requests wait for state changes instead of repeatedly polling jobs. Reduce repeated setup reads, review downloads, and backend work while preserving fresh checks and existing peer compatibility.
+
+## 0.9.1
+
+### Patch Changes
+
+- eb17fcc: Explain how to reduce sync scope when the agent-directory scan exceeds its limit. Replace outdated Check setup directions with current Diagnostics and storage settings paths.
+- aa99878: Let Up and Down select sync confirmation actions immediately. Show directional counts and safety notes in the summary, with exact file paths available in View details instead of requiring a scroll through the entire file list.
+- 8e32b4b: Exclude top-level `git/` package checkouts in new `.syncignore` starter files and list the starter rules in alphabetical order. Preserve existing rule files and recover interrupted creation with its original rules.
+
+## 0.9.0
+
+### Minor Changes
+
+- 5dfa289: Resolve local ignore-file policies for reviewed setup, inspection, transfer, and recovery while keeping legacy policies usable in mixed settings. Keep rule files local and publish only the portable policy fingerprint in version 6 snapshots. Create a missing starter after confirmation on Linux, macOS, and Windows; if automatic creation is unavailable, show the exact path and instructions for manual creation. Preserve the existing settings writer and keep in-app rule saves disabled.
+
+### Patch Changes
+
+- 25777f7: Read Git history manifests in bounded batches to reduce subprocess launches. Keep the same history preview and validate all retained publications in the original order.
+
 ## 0.8.0
 
 ### Minor Changes

@@ -1,6 +1,6 @@
 # Configuration skill verification
 
-The skill is loaded on explicit invocation. It applies authorized local settings edits through the existing daemon; questions do not authorize edits.
+The skill is loaded on explicit invocation. It saves authorized routine preferences through the existing daemon and uses the daemon to verify the active ignore file before editing it locally. Questions and error reports do not authorize edits.
 The authoritative configuration text is the [bundled settings reference](../skills/configure-pi-sync/references/configuration.md).
 
 ## Representative question review
@@ -11,7 +11,16 @@ No user settings were read or changed and no backend command was run for these r
 
 | Question | Required answer and user handoff | Implementation evidence |
 | --- | --- | --- |
-| Exclude `npm/` and `sessions/` from my active setup. | Use the daemon to update `sync.exclude`, keep existing rules and unrelated settings, check for directory re-inclusions, re-read the saved rules, and stop without starting a transfer. If the daemon requires handover, leave that decision to the user. | `packages/pi-sync-daemon/test/settings.test.ts` exercises passive attachment, handover refusal, exclusion saves, and stale-source rejection against the daemon. |
+| Turn on debug logging in `pi-sync.json`. | Verify the canonical file, submit only the `debug` change through the passive settings client, re-read it, and do not run a sync. | `packages/pi-sync-daemon/test/settings.test.ts` covers a passive save for an existing ignore-file setup without changing its rules, as well as stale-source rejection. |
+| Draft a new `.syncignore` that keeps package checkouts and a local cache off other devices. | Start with the current starter rules and add a narrow cache rule when its path is known. Check root anchoring and return a draft without writing. Leave creation and activation to the reviewed setup flow. | `packages/pi-sync-daemon/test/ignore-source.test.ts` and `packages/pi-sync-daemon/test/ignore-initialization.test.ts`. |
+| Exclude `npm/` from the ignore file for my `home` setup. | Use `ignore.read` to check the `home` source and shared setups. If already excluded, report a no-op. Otherwise test a root match and a nested non-match, then recheck `home` before replacement. For a legacy setup, explain the path-selection review and account for re-inclusions. | `packages/pi-sync-daemon/test/ignore-edit.test.ts` and `packages/pi-sync-daemon/test/ignore-source.test.ts`. |
+| Exclude `npm/` from my active ignore file only if the setup remains current. | Do not write. A named setup read and a later local replacement cannot guarantee that the setup remains current. If the user wants an edit independent of which setup is current, ask for its exact name. | `packages/pi-sync-daemon/src/engine/ignore/ignore-edit.ts` checks the requested setup under the settings lock, but that lock does not cover local replacement. |
+| Add a rule when the configured filename points to another live client's session. | Stop on `ignore.read` refusal. Do not fall back to reading or overwriting that path directly. | `packages/pi-sync-daemon/test/ignore-edit.test.ts` covers a live session reached through an alias. |
+| Turn on debug logging while an older daemon owns the agent directory. | `findDaemon` can return an owner with `needsUpgrade: true`. Stop before attaching and leave upgrade to the user. | `packages/pi-sync-daemon/test/closing-owner.test.ts` covers lookup of an older owner. |
+| Turn on Autonomous sync in a legacy-only setup. | Route the user to Settings review. Do not submit `settings.cas` merely because the document validates. | `packages/pi-sync-daemon/src/engine/settings/settings-validation.ts` checks the field's type; the bundled settings reference describes authorization. |
+| Audit `/notes/` followed by `!/notes/shared.md`. | Explain that the excluded parent blocks the exception. Propose `/notes/*` in place of `/notes/`, verify the exception and an ignored sibling, and do not write in an audit. If applying later, confirm the scope expansion and require peer alignment and fresh review. | `packages/pi-sync-daemon/test/ignore-source.test.ts` and `packages/pi-sync-daemon/test/ignore-automatic-permission.test.ts`. |
+| Agent directory changed or has an unsafe filesystem layout. | Investigate local metadata and concurrent writes; the error does not identify a settings field. Do not reset settings, change rules without a supported fix, or run backend diagnostics. | `packages/pi-sync-daemon/src/engine/snapshot/snapshot.ts` and `test/agent-directory-files.test.ts`. |
+| Autonomous sync requires a separate policy review. | Distinguish transfer approval from a settings parse failure; point to **Review automatic transfers** and do not grant consent on the user's behalf. | `packages/pi-sync-daemon/src/consent.ts` and `packages/pi-sync-daemon/test/ignore-automatic-permission.test.ts`. |
 | How do I use Git without automatic sync? | Use an existing credential-free SSH/HTTPS remote and a dedicated owned branch; choose the exact path, Minimal content, and automatic Off in `/sync` → Set up sync, then review before saving and separately review the first transfer. | `src/backends/git/git-config.ts`, `src/ui/setup/setup-wizard.ts`, `src/ui/setup/setup-review.ts` |
 | Where do I enter a WebDAV password? | Enter it in the existing masked TUI, not chat or a URL; use HTTPS and review the collection and relative path, without assuming saving tests connectivity. | `src/backends/webdav/webdav-config.ts`, `src/ui/secret-input.ts`, `src/ui/setup/webdav-ui.ts` |
 | What does `./` mean for R2/S3? | It is the selected existing bucket root, not a literal object prefix; R2 persists as type `s3`, and independent setups need separate prefixes. | `src/settings/settings-validation.ts`, `src/backends/s3/s3-backend.ts`, `src/ui/setup/s3-ui.ts` |
@@ -40,8 +49,8 @@ Its negative cases cover unsupported versions, missing required policy fields, i
 
 `test/skill-cli-smoke.ts` reads the installed Pi package's `bin.pi` entry and starts it with `process.execPath`, without a global `pi` or npm's PATH changes.
 It starts the real `pi -e <package-directory>` process in RPC mode with a temporary HOME, workspace, agent directory, and loopback-only canned provider.
-It verifies one ordinary request without manual-only skill metadata, nine explicit expansions (including an edit request), and an additional expansion after public `ctx.reload()` through a temporary test-only extension command.
-The smoke makes eleven local fixture requests and zero external provider requests, with tools disabled.
+It verifies one ordinary request without manual-only skill metadata, explicit expansions for JSON edits, rule edits, rule drafts and audits, troubleshooting, and configuration questions, and a further expansion after public `ctx.reload()` through a temporary test-only extension command.
+The smoke uses only a loopback fixture and has tools disabled.
 It verifies that no private Pi Sync settings, sync state, or workspace content was created.
 It closes the child, drains its exit, closes the HTTP fixture, clears timers, and removes its temporary files on success and failure.
 Failure-injection runs replaced `spawn` through a temporary Node preload with an immediately exiting child and a missing executable.
@@ -52,4 +61,4 @@ The canned provider verifies transport and instruction loading, not whether a li
 The source-grounded review above is separate evidence and does not establish a model success rate.
 Native TUI `/reload` and masked credential input are not exercised by this non-interactive smoke; loader reload and real public command-context reload are exercised instead.
 Live provider behavior, production backend access, and operating systems other than the verification host remain unverified.
-The skill uses the existing settings writer; it does not change the runtime lifecycle, schema, or `/sync` command behavior.
+The skill uses the existing settings writer; it does not change the runtime lifecycle, schema, or `/sync` command behavior. The smoke does not execute an agent-driven edit; the daemon tests verify the underlying writer separately.

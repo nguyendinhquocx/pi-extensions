@@ -53,9 +53,29 @@ export default function sync(pi: ExtensionAPI, dependencies: Partial<SyncDepende
         await withPiDaemonClient(
           ctx,
           async (ctx) => {
-            const command = splitArgs(args)[0];
-            const ready = await initialization;
+            const [command, action, ...extra] = splitArgs(args);
+            const recover = command === "daemon" && action === "recover";
+            const ready = recover ? undefined : await initialization;
             if (signal.aborted || owner !== client) return;
+            const needsDaemonRecovery = () => client.ownershipCleanupRequired;
+            if (recover || (!command && needsDaemonRecovery())) {
+              if (recover && extra.length) {
+                ctx.ui.notify("Usage: /sync daemon recover", "error");
+                return;
+              }
+              const commands = await loaders.commands();
+              if (signal.aborted || owner !== client) return;
+              await commands.handleCommand(
+                args,
+                ctx,
+                commandSignal,
+                loaders,
+                attention,
+                undefined,
+                needsDaemonRecovery,
+              );
+              return;
+            }
             const requiresContact = !["help", "unlock", "migrate-state"].includes(command ?? "");
             let busyPublished = false;
             try {
@@ -85,8 +105,17 @@ export default function sync(pi: ExtensionAPI, dependencies: Partial<SyncDepende
               }
               const commands = await loaders.commands();
               if (signal.aborted || owner !== client) return;
-              await commands.handleCommand(args, ctx, commandSignal, loaders, attention);
+              await commands.handleCommand(
+                args,
+                ctx,
+                commandSignal,
+                loaders,
+                attention,
+                undefined,
+                needsDaemonRecovery,
+              );
             } catch (error) {
+              client.recordOwnershipFailure(error);
               if (!commandSignal.aborted && owner === client) {
                 ctx.ui.notify(`pi-sync command unavailable: ${safeTerminalText(errorMessage(error))}`, "error");
                 if (command === "unlock" || command === "migrate-state") throw error;
@@ -96,7 +125,7 @@ export default function sync(pi: ExtensionAPI, dependencies: Partial<SyncDepende
                 // Recovery can publish busy facts after bypassing the initial contact check.
                 const publish = busyPublished || command === "unlock" || command === "migrate-state";
                 // Release local busy state even if contact failed; do not mask the command result.
-                await client.setBusy("command", false, publish).catch(() => {});
+                await client.setBusy("command", false, publish && !needsDaemonRecovery()).catch(() => {});
               }
             }
           },
@@ -148,9 +177,12 @@ export default function sync(pi: ExtensionAPI, dependencies: Partial<SyncDepende
       } catch (error) {
         if (!signal.aborted && owner === client) {
           try {
-            client.validate();
-            if (ctx.hasUI)
-              ctx.ui.notify(`pi-sync recovery required: ${safeTerminalText(errorMessage(error))}`, "error");
+            ctx.isIdle();
+            client.recordOwnershipFailure(error);
+            if (ctx.hasUI) {
+              const advice = client.ownershipCleanupRequired ? " Open /sync to recover the daemon." : "";
+              ctx.ui.notify(`pi-sync recovery required: ${safeTerminalText(errorMessage(error))}${advice}`, "error");
+            }
           } catch {
             /* SDK context was replaced. */
           }
@@ -172,7 +204,12 @@ export default function sync(pi: ExtensionAPI, dependencies: Partial<SyncDepende
         (ready.automatic || startupTransferEnabled(ready))
       )
         await withPiDaemonClient(ctx, async () => {
-          check.start(ctx, signal, ready);
+          check.start(
+            ctx,
+            signal,
+            ready,
+            client.debugEnabled ? (report) => client.recordDebug({ event: "startup-timings", report }) : undefined,
+          );
         });
     } catch (error) {
       client.disableQueueReleaseUI();
@@ -239,6 +276,7 @@ export default function sync(pi: ExtensionAPI, dependencies: Partial<SyncDepende
       if (signal.aborted || owner !== client) return;
       if (reason !== "reload") {
         shutdownClient = bindPiDaemonClient(ctx, signal, publishTimings);
+        shutdownClient.setDebugPreference(client.debugEnabled);
         await shutdownClient.setBusy("shutdown", true);
         const attached = await shutdownClient.attachExisting();
         if (!signal.aborted && owner === client && attached)

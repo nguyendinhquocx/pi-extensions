@@ -1,8 +1,10 @@
 import { createHash } from "node:crypto";
 import path from "node:path";
 import type { Api, Model } from "@earendil-works/pi-ai";
+import type { DaemonDiagnosticSink } from "./daemon-debug.js";
 
 export const PROTOCOL_VERSION = 1;
+export const OWNERSHIP_CLEANUP_REQUIRED = "DAEMON_OWNERSHIP_CLEANUP";
 
 /** Authenticated idle shutdown after work is drained; callers may wait for this owner to exit. */
 export class DaemonStoppingError extends Error {
@@ -74,13 +76,14 @@ export interface Request {
   token: string;
   method: string;
   params: unknown;
+  reviewDetails?: 1;
 }
 export interface Callback {
   id: string;
   job: string;
   kind: string;
   payload: unknown;
-  review?: { pages: number; bytes: number; sha256: string };
+  review?: { pages: number; bytes: number; sha256: string; offer?: string };
 }
 export interface ClientEvent {
   id: number;
@@ -99,6 +102,15 @@ export interface JobView {
   error?: RemoteError;
 }
 export type ClientContact = "active" | "expired" | "inactive";
+export const DAEMON_JOB_CAPACITY = 64;
+export const UNKNOWN_JOB_RESULT =
+  "Operation is unknown or its result expired; reconcile journals instead of replaying.";
+export const STATE_WAIT_HEARTBEAT_MS = 1_000;
+export interface StateWaitReply extends PollReply {
+  stateRevision: string;
+  finished: string[];
+  missing: string[];
+}
 export interface PollReply {
   cursor: number;
   callbacks: Callback[];
@@ -106,6 +118,7 @@ export interface PollReply {
   job?: JobView;
   /** Absent on owners without protocol-v1 contact resume support. */
   contact?: ClientContact;
+  stateWait?: 1;
 }
 export interface Execution {
   readonly root: string;
@@ -120,6 +133,8 @@ export interface Execution {
   validate(): void;
   request(kind: string, payload: unknown, clientId?: string, signal?: AbortSignal): Promise<unknown>;
   emit(kind: ClientEvent["kind"], payload: unknown, clientId?: string): void;
+  debug?: DaemonDiagnosticSink;
+  noteDebugOutcome?(outcome: "blocked" | "cancelled" | "skipped"): void;
   committed(): void;
 }
 export type Execute = (operation: string, payload: unknown, execution: Execution) => Promise<unknown>;

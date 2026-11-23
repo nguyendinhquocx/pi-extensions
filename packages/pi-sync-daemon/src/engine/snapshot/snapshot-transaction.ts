@@ -9,9 +9,9 @@ import { normalizeSyncExclude } from "../sync/exclude-policy.js";
 import { mergePathIdentity } from "../sync/file-merge-planner.js";
 import { includeFromSelectionConfig, selectionForSnapshot } from "../sync/sync-policy.js";
 import { agentDir, configuredSessionDir } from "./session-paths.js";
-import { agentDirectoryConfiguredSessionDir } from "./snapshot.js";
+import { agentDirectoryConfiguredSessionDir, scanAgentDirectoryInventory } from "./snapshot.js";
 import { caseReplacementSpelling, coalesceCaseReplacements } from "./snapshot-case-replacement.js";
-import { recheckAgentDirectoryBudget } from "./snapshot-entry-projection.js";
+import { assertProjectedAgentDirectoryBudget, recheckAgentDirectoryBudget } from "./snapshot-entry-projection.js";
 import { assertUnexcludedTargets } from "./snapshot-exclude-safety.js";
 import { withMissingTargetQueues, withTargetQueues } from "./snapshot-mutation-queues.js";
 import { sessionStorageRoot } from "./snapshot-paths.js";
@@ -27,12 +27,14 @@ import {
   ownedScopedPostTree,
   readTransactionJournal,
   recheckScopedImage,
+  recheckUnchangedFile,
   removeScopedImage,
   scopedDescendant,
   scopedIdentity,
   scopedPathIdentity,
   scopedTransactionImage,
   stableScopedIdentity,
+  verifyUnchangedFile,
 } from "./snapshot-transaction-images.js";
 import { indexTransactionPlan } from "./snapshot-transaction-plan.js";
 import {
@@ -40,11 +42,14 @@ import {
   assertAllowedTarget,
   assertRecoveryPolicy,
   assertSafeParents,
+  BOUND_DIRECTORY_JOURNAL_VERSION,
+  BOUND_INCLUDED_PATHS_JOURNAL_VERSION,
   IGNORE_POLICY_JOURNAL_VERSION,
   ignorePolicyValidator,
   ignoreSourceBinding,
   isScopedJournal,
   isStrictlyInside,
+  recoveryPolicyKey,
   StaleIgnorePolicyError,
   type TransactionEntry,
   type TransactionJournal,
@@ -69,7 +74,13 @@ import type { SnapshotApplyPlan } from "./snapshot-types.js";
 const JOURNAL_VERSION = 4;
 class ScopedRemovalError extends Error {}
 
-export async function applySnapshotTransaction(plan: SnapshotApplyPlan, options: TransactionOptions = {}) {
+export type SkippedSnapshotWrite = SnapshotApplyPlan["writes"][number] & { preimage: string };
+
+export async function applySnapshotTransaction(
+  plan: SnapshotApplyPlan,
+  options: TransactionOptions = {},
+  skipped: readonly SkippedSnapshotWrite[] = [],
+) {
   options.validateMutation?.();
   const root = path.resolve(agentDir());
   if (options.scope === "agent-directory") {
@@ -135,7 +146,9 @@ export async function applySnapshotTransaction(plan: SnapshotApplyPlan, options:
         expectedPreimages.set(target, evidence.image);
       }
     }
+    const skippedPreimages = new Map(skipped.map(({ target, preimage }) => [target, preimage]));
     for (const [target, expected] of expectedPreimages) {
+      if (skippedPreimages.get(target) === expected) continue;
       if (scoped || options.reservedIgnoreNames?.length) await assertUnexcludedTargets(root, [target], options);
       const current = scoped ? (await scopedTransactionImage(target, options)).value : await legacyImage(target);
       options.validateMutation?.();
@@ -144,9 +157,33 @@ export async function applySnapshotTransaction(plan: SnapshotApplyPlan, options:
         throw new Error("Reviewed file preimage changed before apply; snapshot installation refused.");
     }
     if (validateIgnorePolicy) await validateIgnorePolicy();
+    const mutationTargets = skipped.length ? targets.filter((target) => !skippedPreimages.has(target)) : targets;
+    const writes = skipped.length ? plan.writes.filter(({ target }) => !skippedPreimages.has(target)) : plan.writes;
+    if (mutationTargets.length === 0) {
+      if (options.validateApplyReview) await options.validateApplyReview();
+      if (scoped) {
+        const pendingStateEntry = stateDir(root);
+        const inventory = await scanAgentDirectoryInventory(root, options, pendingStateEntry);
+        options.validateMutation?.();
+        options.signal?.throwIfAborted();
+        assertProjectedAgentDirectoryBudget(
+          inventory,
+          { deletes: [], writes: [{ target: pendingStateEntry }] },
+          options,
+        );
+      }
+      if (validateIgnorePolicy) await validateIgnorePolicy();
+      await verifySkippedWrites(root, skipped, heldKeys, options);
+      options.validateMutation?.();
+      options.signal?.throwIfAborted();
+      return;
+    }
+    const mutationPlan = skipped.length
+      ? { ...coalesced.plan, writes: coalesced.plan.writes.filter(({ target }) => !skippedPreimages.has(target)) }
+      : coalesced.plan;
     const transaction = await prepareTransaction(
-      coalesced.plan,
-      targets,
+      mutationPlan,
+      mutationTargets,
       { ...options, expectedPreimages },
       coalesced.replacements,
     );
@@ -161,6 +198,7 @@ export async function applySnapshotTransaction(plan: SnapshotApplyPlan, options:
       (entry) => !heldKeys.has(entry.target) || (entry.afterTarget && !heldKeys.has(entry.afterTarget)),
     );
     try {
+      if (options.validateApplyReview) await options.validateApplyReview();
       if (scoped && transaction.deletes.length) await recheckAgentDirectoryBudget(root, plan, options, stateDir(root));
       for (const target of transaction.deletes.sort((a, b) => a.length - b.length)) {
         options.signal?.throwIfAborted();
@@ -176,6 +214,8 @@ export async function applySnapshotTransaction(plan: SnapshotApplyPlan, options:
         heldKeys,
         options,
         async () => {
+          if (options.validateApplyReview && transaction.journal.entries.some((entry) => entry.removalPending))
+            await options.validateApplyReview();
           if (validateIgnorePolicy) await validateIgnorePolicy();
           if (scoped && plan.writes.length)
             await recheckAgentDirectoryBudget(root, { deletes: [], writes: plan.writes }, options);
@@ -190,7 +230,7 @@ export async function applySnapshotTransaction(plan: SnapshotApplyPlan, options:
           );
           // Only this uninterrupted call knows which deleted writes have not attempted installation yet.
           const uninstalledWrites = new Set(transaction.deletedWrites);
-          for (const item of plan.writes) {
+          for (const item of writes) {
             options.signal?.throwIfAborted();
             const entry = entriesByTarget.get(item.target);
             if (!entry) throw new Error("Unowned transaction target.");
@@ -229,10 +269,16 @@ export async function applySnapshotTransaction(plan: SnapshotApplyPlan, options:
               );
               options.signal?.throwIfAborted();
               options.validateMutation?.();
-              if (validateIgnorePolicy && verified.scoped) {
+              if (validateIgnorePolicy) {
                 await validateIgnorePolicy();
-                await recheckScopedImage(item.target, verified.scoped, options);
+                if (verified.scoped) await recheckScopedImage(item.target, verified.scoped, options);
+                else {
+                  await assertUnexcludedTargets(root, [item.target], options);
+                  await verifyTarget(transaction.directory, entry, transaction.journal, options, deletedByThisCall);
+                }
               }
+              options.validateMutation?.();
+              options.signal?.throwIfAborted();
               await fs.rename(temp, item.target);
               await syncDirectory(path.dirname(item.target));
             } finally {
@@ -242,7 +288,7 @@ export async function applySnapshotTransaction(plan: SnapshotApplyPlan, options:
           options.validateMutation?.();
           options.signal?.throwIfAborted();
           await syncMutationParents(
-            targets,
+            mutationTargets,
             [transaction.journal.root, ...(transaction.journal.sessionRoot ? [transaction.journal.sessionRoot] : [])],
             options,
           );
@@ -252,6 +298,9 @@ export async function applySnapshotTransaction(plan: SnapshotApplyPlan, options:
         },
       );
       if (validateIgnorePolicy) await validateIgnorePolicy();
+      await verifySkippedWrites(root, skipped, heldKeys, options);
+      options.validateMutation?.();
+      options.signal?.throwIfAborted();
     } catch (error) {
       // Aborted owners cannot roll back files after another session has replaced them.
       if (options.signal?.aborted)
@@ -275,6 +324,30 @@ export async function applySnapshotTransaction(plan: SnapshotApplyPlan, options:
     // Files are durably installed. Cleanup cannot roll back once it starts deleting evidence.
     await completeTransaction(transaction.directory, transaction.journal);
   });
+}
+
+async function verifySkippedWrites(
+  root: string,
+  skipped: readonly SkippedSnapshotWrite[],
+  heldKeys: ReadonlySet<string>,
+  options: TransactionOptions,
+) {
+  if (!skipped.length) return;
+  await assertUnexcludedTargets(
+    root,
+    skipped.map(({ target }) => target),
+    options,
+    { recursive: false },
+  );
+  const sessionRoot = options.sessionDir ? sessionStorageRoot(root, options.sessionDir) : undefined;
+  const verified = [];
+  for (const { target, content } of skipped) {
+    if (!heldKeys.has(target) || touchesProtectedTarget(target, options.protectedTargets))
+      throw new Error("Skipped file lost its transaction queue or session protection changed; review is required.");
+    await assertSafeParents(root, sessionRoot, target);
+    verified.push({ target, stat: await verifyUnchangedFile(target, content, options) });
+  }
+  for (const { target, stat } of verified) await recheckUnchangedFile(target, stat, options);
 }
 
 export async function recoverSnapshotTransactionsOnStartup(options: TransactionOptions = {}) {
@@ -357,6 +430,7 @@ async function prepareTransaction(
   const root = path.resolve(agentDir());
   const wholeDirectory = options.scope === "agent-directory";
   const ignoreSource = options.ignorePolicy ? ignoreSourceBinding(options.ignorePolicy) : undefined;
+  const localPolicyKey = recoveryPolicyKey(options);
   const sessionRoot = sessionDir || wholeDirectory ? path.resolve(sessionStorageRoot(root, sessionDir)) : undefined;
   const indexed = indexTransactionPlan(plan, targets);
   const directory = path.join(transactionRoot(), randomUUID());
@@ -405,17 +479,22 @@ async function prepareTransaction(
     ? undefined
     : await prepareSessionRootTransition(directory, root, effectiveRoot, entries, plan, options);
   const journal: TransactionJournal = {
-    version: ignoreSource
-      ? IGNORE_POLICY_JOURNAL_VERSION
-      : wholeDirectory
-        ? AGENT_DIRECTORY_JOURNAL_VERSION
-        : sessionRootTransition
-          ? 7
-          : replacements.size
-            ? 5
-            : JOURNAL_VERSION,
+    version: localPolicyKey
+      ? wholeDirectory
+        ? BOUND_DIRECTORY_JOURNAL_VERSION
+        : BOUND_INCLUDED_PATHS_JOURNAL_VERSION
+      : ignoreSource
+        ? IGNORE_POLICY_JOURNAL_VERSION
+        : wholeDirectory
+          ? AGENT_DIRECTORY_JOURNAL_VERSION
+          : sessionRootTransition
+            ? 7
+            : replacements.size
+              ? 5
+              : JOURNAL_VERSION,
     root,
     ignoreSource,
+    localPolicyKey,
     ...(wholeDirectory
       ? { selection: selectionForSnapshot(includeFromSelectionConfig(options), options.exclude, options) }
       : options.exclude === undefined
@@ -588,6 +667,8 @@ async function restoreQueuedTransaction(
     );
     if (entry.kind === "file") {
       try {
+        options.validateMutation?.();
+        options.signal?.throwIfAborted();
         await fs.mkdir(path.dirname(entry.target), { recursive: true });
         await fs.copyFile(path.join(directory, "before", entry.backupName), temporary);
         // Windows requires write access to flush an existing regular file.
@@ -630,6 +711,13 @@ async function restoreQueuedTransaction(
             options.validateMutation?.();
             options.signal?.throwIfAborted();
             if (atInstall === before && (await spellingMatches())) return;
+            if (validateIgnorePolicy) {
+              await validateIgnorePolicy();
+              await assertUnexcludedTargets(journal.root, [entry.target], options);
+              await verifyTarget(directory, entry, journal, options, atRename === "missing");
+            }
+            options.validateMutation?.();
+            options.signal?.throwIfAborted();
             await fs.rename(temporary, entry.target);
             await syncDirectory(path.dirname(entry.target));
           },
@@ -640,6 +728,8 @@ async function restoreQueuedTransaction(
       continue;
     }
     try {
+      options.validateMutation?.();
+      options.signal?.throwIfAborted();
       await fs.mkdir(path.dirname(entry.target), { recursive: true });
       await assertSafeParents(journal.root, journal.sessionRoot, entry.target);
       if (entry.kind === "directory") {
@@ -670,6 +760,13 @@ async function restoreQueuedTransaction(
         options.validateMutation?.();
         options.signal?.throwIfAborted();
         if (atInstall === before) return;
+        if (validateIgnorePolicy) {
+          await validateIgnorePolicy();
+          await assertUnexcludedTargets(journal.root, [entry.target], options);
+          await verifyTarget(directory, entry, journal, options, atRename === "missing");
+        }
+        options.validateMutation?.();
+        options.signal?.throwIfAborted();
         await fs.rename(temporary, entry.target);
         await syncDirectory(path.dirname(entry.target));
       });
@@ -845,6 +942,13 @@ async function removeOwnedTarget(
       await assertUnexcludedTargets(journal.root, [entry.target], options);
       await removeScopedImage(entry.target, current.scoped, options, validateIgnorePolicy);
     } else {
+      if (validateIgnorePolicy) {
+        await validateIgnorePolicy();
+        await assertUnexcludedTargets(journal.root, [entry.target], options);
+        await verifyTarget(directory, entry, journal, options);
+      }
+      options.validateMutation?.();
+      options.signal?.throwIfAborted();
       await fs.rm(entry.target, { recursive: true, force: true });
     }
     await syncDirectory(path.dirname(entry.target));
@@ -912,7 +1016,8 @@ async function completeTransaction(directory: string, journal: TransactionJourna
     path.join(directory, "journal.json"),
     {
       ...journal,
-      version: isScopedJournal(journal) ? journal.version : journal.sessionRootTransition ? 7 : 6,
+      version:
+        isScopedJournal(journal) || journal.localPolicyKey ? journal.version : journal.sessionRootTransition ? 7 : 6,
       completed: true,
     },
     {

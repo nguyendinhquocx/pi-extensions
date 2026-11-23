@@ -1,5 +1,42 @@
 # @narumitw/pi-sync
 
+## 0.64.0
+
+### Minor Changes
+
+- 316dde1: Rename **Debug startup timings** to **Debug mode** and keep the same default-off setting. Append safe startup, connection, and request diagnostics to the private, local-only `pi-sync.log` shared with the daemon. Client changes take effect at the next session start; existing TUI timing entries and RPC notifications stay unchanged.
+
+### Patch Changes
+
+- 6224417: Recover a blocked daemon from the Pi Sync menu or `/sync daemon recover`. Stop the reviewed owner without restarting it or replaying a transfer, and clean up the owned operation lock when a release failure blocks further writes.
+- bbcc9e9: Reduce sync work without changing transfer approvals or recovery formats. Pull and rollback avoid reinstalling identical files, inspection avoids building unused payloads, and local requests wait for state changes instead of repeatedly polling jobs. Reduce repeated setup reads, review downloads, and backend work while preserving fresh checks and existing peer compatibility.
+
+## 0.63.1
+
+### Patch Changes
+
+- fc5228d: Make the configuration skill verify the active ignore file with the existing local daemon before editing it. Stop on older daemon builds, and leave settings changes that require consent or policy review in `/sync`.
+- 9d382d1: Show the active setup in the sync menu heading and include the configured path in R2/S3 and Git storage summaries.
+- fc80c0c: Keep directional confirmation summaries short when a running older daemon still sends the full file list as the summary. Exact paths remain available in View details.
+- f1dc5d2: Add guidelines and local verification workflows to `/skill:configure-pi-sync` for drafting, editing, and auditing `.syncignore` rules. Keep file creation, activation, and transfer approval in the user-reviewed Pi Sync flows.
+- eb17fcc: Explain how to reduce sync scope when the agent-directory scan exceeds its limit. Replace outdated Check setup directions with current Diagnostics and storage settings paths.
+- 26f8c59: Let `/skill:configure-pi-sync` apply requested local edits to `pi-sync.json` and the active ignore file, and investigate sync errors before suggesting changes. Keep transfers and other reviewed operations in `/sync`.
+- aa99878: Let Up and Down select sync confirmation actions immediately. Show directional counts and safety notes in the summary, with exact file paths available in View details instead of requiring a scroll through the entire file list.
+- 8e32b4b: Exclude top-level `git/` package checkouts in new `.syncignore` starter files and list the starter rules in alphabetical order. Preserve existing rule files and recover interrupted creation with its original rules.
+
+## 0.63.0
+
+### Minor Changes
+
+- 5dfa289: Use local `.syncignore` rules for new TUI setups. Keep existing setup policies until the user reviews and confirms migration. Review the scope before transferring, upgrade peers before publishing version 6 snapshots, and edit existing rule files locally. Setup, migration, and rule-file switching do not start or authorize a transfer, and exclusions do not erase retained history. The bundled configuration skill can edit an explicitly identified local rule file on request; it no longer edits private JSON settings.
+
+### Patch Changes
+
+- 25777f7: Read Git history manifests in bounded batches to reduce subprocess launches. Keep the same history preview and validate all retained publications in the original order.
+- e3f2537: Keep the `/sync help` route from loading the interactive ignore-file editor or a second Pi TUI runtime from the extension install.
+- Updated dependencies [1cbb470]
+  - @narumitw/pi-tui-kit@0.71.0
+
 ## 0.62.0
 
 ### Minor Changes

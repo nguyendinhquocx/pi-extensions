@@ -1,5 +1,6 @@
+import { createHash } from "node:crypto";
 import path from "node:path";
-import { isDeniedPath, toPosix } from "../paths.js";
+import { DEBUG_LOG_FILENAME, isDebugLogPath, isDeniedPath, toPosix } from "../paths.js";
 import {
   type DirectoryScope,
   IGNORE_SNAPSHOT_VERSION,
@@ -248,6 +249,17 @@ export function validateSnapshotSelection(snapshot: Pick<Snapshot, "version" | "
     throw new Error("Ignore-file policy requires snapshot version 6 and selection version 4.");
 }
 
+export function assertSnapshotPathExcludesDebugLog(filePath: unknown) {
+  if (typeof filePath === "string" && isDebugLogPath(filePath))
+    throw new Error(
+      `Snapshot contains the local-only ${DEBUG_LOG_FILENAME}. Review the old snapshot before retrying sync.`,
+    );
+}
+
+export function assertSnapshotExcludesDebugLog(snapshot: Pick<Snapshot, "files">) {
+  for (const file of snapshot.files) assertSnapshotPathExcludesDebugLog(file?.path);
+}
+
 export function requireLegacyTransferPolicy(snapshot: Partial<Pick<Snapshot, "version" | "selection">>) {
   if (snapshot.version === IGNORE_SNAPSHOT_VERSION || snapshot.selection?.version === 4)
     throw new Error("This setup cannot transfer an ignore-file snapshot without a reviewed local ignore policy.");
@@ -332,6 +344,27 @@ export function syncDirectoryPolicyKey(config: SyncSelectionConfig) {
     normalizeDirectoryRules(config.exclude).map((rule) => rule.toLowerCase()),
     normalizeDirectoryRules(config.reinclude).map((rule) => rule.toLowerCase()),
   ]);
+}
+
+export function localIgnorePolicyKey(
+  config: SyncSelectionConfig & { setupName?: string; ignoreSourceIdentity?: string; recoverySetupKey?: string },
+) {
+  if (!config.ignorePolicy && config.reservedIgnoreNames === undefined) return undefined;
+  const reserved = reservedIgnoreSnapshotNames(config);
+  return createHash("sha256")
+    .update(
+      JSON.stringify([
+        config.setupName,
+        config.recoverySetupKey,
+        syncDirectoryPolicyKey(config) ?? [
+          includeFromSelectionConfig(config),
+          normalizeSyncExclude(config.exclude).map((rule) => rule.toLowerCase()),
+        ],
+        config.ignoreSourceIdentity,
+        [...(reserved ?? [])].sort(),
+      ]),
+    )
+    .digest("hex");
 }
 
 export function inspectRemoteSelection(
@@ -645,15 +678,21 @@ function isIgnoreSnapshotSelection(config: SyncSelectionConfig) {
   return config.version === 4 && config.fingerprint !== undefined;
 }
 
-function compileIgnoreControlPath(config: SyncSelectionConfig) {
+function reservedIgnoreSnapshotNames(config: SyncSelectionConfig) {
   const local = config.ignorePolicy;
   if (!local && !config.reservedIgnoreNames && !isIgnoreSnapshotSelection(config)) return undefined;
-  const names = new Set(
-    [...(local ? [local.filename, ...local.reservedNames] : []), ...(config.reservedIgnoreNames ?? [])].map((name) =>
-      name.toLowerCase(),
-    ),
+  return new Set(
+    [
+      ".syncignore",
+      ...(local ? [local.filename, ...local.reservedNames] : []),
+      ...(config.reservedIgnoreNames ?? []),
+    ].map((name) => name.toLowerCase()),
   );
-  return (relativePath: string) => isIgnoreControlPath(relativePath, names);
+}
+
+function compileIgnoreControlPath(config: SyncSelectionConfig) {
+  const names = reservedIgnoreSnapshotNames(config);
+  return names ? (relativePath: string) => isIgnoreControlPath(relativePath, names) : undefined;
 }
 
 function compileDirectoryPolicy(config: SyncSelectionConfig) {
