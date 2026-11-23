@@ -58,8 +58,7 @@ jobs:
           PUBLISH_FAILURES_FILE: ${{ runner.temp }}/package-publish-failures.ndjson
           PUBLISHED_PACKAGES_FILE: ${{ runner.temp }}/published-packages.ndjson
 
-      - &summarize-published-packages
-        name: Summarize published packages
+      - name: Summarize published packages
         if: always()
         env:
           PUBLISHED_PACKAGES_FILE: ${{ runner.temp }}/published-packages.ndjson
