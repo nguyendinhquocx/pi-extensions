@@ -4,7 +4,7 @@ This is the authoritative public settings reference for Pi Sync.
 The configuration skill applies explicitly requested local settings and ignore-rule edits and investigates Pi Sync errors. The user performs operations that require a separate review.
 
 - **Configure a setup:** [Required fields](#settings-ownership-and-required-fields), [Manager](#editing-in-the-manager), [Version 3 example](#complete-version-3-example), [Backends](#required-backend-shapes)
-- **Choose what syncs:** [Ignore-file policy](#ignore-file-policy), [Legacy directory scope](#agent-directory-scope), [Included content](#included-content), [Excluded paths](#excluded-paths), [Machine-local settings fields](#settings-field-merge-and-machine-local-fields)
+- **Choose what syncs:** [Ignore-file policy](#ignore-file-policy), [Legacy directory scope](#agent-directory-scope), [Included content](#included-content), [Excluded paths](#excluded-paths), [Transfer size limits](#transfer-size-limits), [Machine-local settings fields](#settings-field-merge-and-machine-local-fields)
 - **Manage automatic work:** [Controls and approval](#automatic-sync-controls), [Startup transfer](#automatic-startup-transfer), [Autonomous sync](#autonomous-sync), [Daemon lifetime](#daemon-lifetime-and-unattended-permission), [Continuous sync](#continuous-sync)
 - **Handle problems:** [Status](#status-display), [Debug mode](#debug-mode), [Secret scanning](#secret-scanning), [Diagnostics](#diagnostics), [Local troubleshooting](#local-troubleshooting), [Merge and partial progress](#content-merge-and-partial-progress), [Old settings and recovery](#unsupported-old-settings-and-recovery)
 
@@ -42,12 +42,13 @@ Global settings apply to all setups on this device; they are not remote policy.
 
 | Scope | Fields | Required values and defaults |
 | --- | --- | --- |
-| Document | `version`, `onSwitch`, `storageConnections`, `syncSetups` | All are required in a manually written document; versions 3 through 8 are supported. |
+| Document | `version`, `onSwitch`, `storageConnections`, `syncSetups` | All are required in a manually written document; versions 3 through 9 are supported. |
 | Current setup | `activeSyncSetup` | Required when setups exist; absent when the setup catalog is empty. |
 | Global preferences | `skipSecretScan`, `showStatus`, `debug` | Optional booleans; defaults are false, true, and false. |
 | Setup selection | `sync.scope`, `sync.include`, `sync.automatic` | Legacy directory scope requires version 7 or later and omits `include`; selected-path setups require `include`. Both require explicit `automatic`. |
-| Ignore-file selection | `sync.scope`, `sync.pathPolicy`, `sync.ignoreFile`, `sync.sessions` | Version 8, `scope: "agent-directory"`, `pathPolicy: "ignore-file"`. `ignoreFile` defaults to `.syncignore`; sessions require `true` and the rules must allow them. Use reviewed setup or migration, not manual JSON edits. |
+| Ignore-file selection | `sync.scope`, `sync.pathPolicy`, `sync.ignoreFile`, `sync.sessions` | Version 8 or later, `scope: "agent-directory"`, `pathPolicy: "ignore-file"`. `ignoreFile` defaults to `.syncignore`; sessions require `true` and the rules must allow them. Use reviewed setup or migration, not manual JSON edits. |
 | Setup behavior | `sync.automaticTransfer`, `sync.agentMode`, `sync.continuous`, `sync.mergeSettings`, `sync.mergeContent`, `sync.partialSync` | Optional booleans; all default to false. |
+| Transfer size limits | `sync.maxFileSizeMiB`, `sync.maxDirectorySizeMiB` | Independent optional positive whole numbers; absence means Off. Either value requires version 9. |
 | Portable policy | `sync.localFields` | Optional array; any explicit array, including `[]`, requires version 4 or later. |
 | Content/partial policy | `sync.mergeContent`, `sync.partialSync` | Enabling either requires version 5 or later. |
 | Path exclusions | `sync.exclude` | Optional array; an explicit array, including `[]`, requires version 6 or later. |
@@ -76,7 +77,7 @@ The screen uses a searchable flat list without category navigation. Compare cont
 Returning from catalog management refreshes the rows; switching or removing the owning setup closes its old Settings screen.
 
 Descriptions identify the owner: this setup, all setups on this device, or shared connections.
-Simple choices report Saving and the durable Saved or failed/rejected result, preserve the selected row and search during refresh, and restore their previous value if saving fails.
+Simple choices report saving, then a setting-specific confirmation or an error in Pi's notifications. They preserve the selected row and search during refresh and restore the previous value if saving fails.
 Escape closes the screen without undoing successful saves.
 Complex values retain their input/review flows.
 This navigation change does not alter schema, defaults, automatic-sync behavior, or explicit opt-ins.
@@ -307,6 +308,7 @@ Use the first concrete error, not a generic recovery hint appended to it. Start 
 | --- | --- |
 | **Autonomous sync requires a separate policy review** | The selected setup has Autonomous sync enabled, but its current policy has no matching automatic-transfer approval. This does not mean that `pi-sync.json` is malformed. Check which setup the operation used and whether settings or rules changed. The user can review **Settings → Review automatic transfers** for the current setup or choose a reviewed directional push or pull. |
 | **Agent directory changed or has an unsafe filesystem layout** | The local scan could not establish a stable filesystem view. Use file metadata to check the agent root, Pi's `settings.json`, the effective session directory (including any `--session-dir` override), and in-scope paths. Symlinks in the session directory path and hard-linked candidate files can trigger this error; ordinary symlinks encountered in the directory scan are skipped. Check whether another Pi process or editor is changing files during the scan. Do not change synchronization settings unless the evidence identifies a relevant setting; this error alone does not identify a path or field. |
+| **Transfer blocked by size limits** | Check the reported paths and byte counts. Use `/sync diff`, then narrow the selection or review a different source. See [transfer size limits](#transfer-size-limits). |
 | **Malformed or unsupported settings** | Check the canonical path and documented version and field constraints. Preserve the original private bytes and follow [settings recovery](#unsupported-old-settings-and-recovery); do not replace the document with defaults. |
 | **Backend access or publication failure** | Use the reported error class to distinguish credentials, a missing location, transport, and publication safety. A 404 alone does not identify which remote resource is missing. If local checks are insufficient, explain the backend-specific effects of [Diagnostics](#diagnostics) and leave that action to the user. |
 
@@ -314,7 +316,7 @@ A local check does not verify remote connectivity or permissions. Diagnostics ca
 
 ### Ignore-file policy
 
-New TUI setups use `.syncignore` when the daemon advertises support. Existing setups keep their policy and can coexist with ignore-file setups in version 8.
+New TUI setups use `.syncignore` when the daemon advertises support. Existing setups keep their policy and can coexist with ignore-file setups in version 8 or later.
 To migrate a legacy setup, choose **Review migration now** when first offered in the TUI manager, or **Settings → Migrate to ignore file…** later. **Not now** defers the offer for that setup on this device; closing the prompt without a choice does not save a deferral. Review local and remote paths that enter or leave scope, including what the rules would do for future files. Legacy selected paths and `reinclude` rules do not always translate directly.
 
 This version 8 `sync` fragment shows a setup using the default rule file. It is not a complete settings document or a substitute for review:
@@ -353,17 +355,19 @@ Use `/` as the separator; escaped `/` is not supported. A leading `/` anchors a 
 
 Session sync requires both a separate opt-in and rules that allow sessions. The starter `/sessions/` still excludes them. Match sessions by their logical `sessions/` paths even if stored elsewhere. Loaded sessions stay protected during apply.
 
-Pi credentials and trust (`auth.json` and `trust.json`), private Pi Sync files (settings, state, and the [debug log](#shared-log)), and `.syncignore` or its configured alternatives stay local regardless of the rules. `truth.json` is a starter exclusion, not Pi's trust file. Transfers do not replace or remove ignored local files, and exclusions do not erase retained snapshots or backups.
+Pi credentials and trust (`auth.json` and `trust.json`), private Pi Sync files (settings, state, and the [debug log](#shared-log)), and other setups' rule files stay local. `truth.json` is a starter exclusion, not Pi's trust file. A new snapshot includes the active rule text and filename unless the file excludes itself. Add `/.syncignore` to keep the default rule file out of future snapshots. A later `!/.syncignore` can include it again. This does not erase rules or comments from retained history.
 
 #### Transfer review and recovery
 
-Setup, migration, rule-file switching, and edits neither start nor authorize transfers. Upgrade all peers before publishing a version 6 snapshot. It stores a policy fingerprint, not the filename or rule text. Use the same rule text and session opt-in on peers: even comment or whitespace changes can change the fingerprint. Do not copy rules from the remote.
+Setup, migration, rule-file switching, and edits neither start nor authorize transfers. Upgrade all peers before publishing a version 7 snapshot. A version 6 snapshot has only the policy fingerprint; an upgraded publisher with matching rules can publish again to include rule text. Comments, whitespace and session opt-in affect the fingerprint. Re-review automatic transfers after upgrading an ignore-file setup.
 
-A legacy or mismatched head requires separately reviewed directional policy publication. Neither `--yes` nor automatic work can authorize it. Inspect scope with `/sync diff` and review the direction in `/sync`. A pull cannot apply a foreign policy, and rollback requires compatible history. If the rules, setup, or head change, reopen the review.
+When policies differ, a reviewed Push can replace the remote policy. Pull can preview and adopt verified remote rules without writing to the remote. Cancel to leave both sides unchanged. Neither `--force`, `--yes` nor background work approves a policy overwrite. If rule text is unavailable, match the publisher's rules manually. If Sessions opt-in differs, review that setting locally first. Select a dedicated rule file before adopting into a shared source. An omitted rule file is not a request to delete it. Rollback projects historical content through the current local rules; it does not adopt historical rules.
 
-If creation or transfer is blocked or interrupted, stop new work. Preserve the rule file, creation marker, journals, backups, and consent records. Use a compatible daemon to review recovery with the originating setup and exact source. If source or remote evidence differs, preserve it instead of forcing replay or deleting a marker. The old policy remains authoritative until settings commit; a verified starter or settings backup can remain after a failed save.
+If adoption is interrupted, keep the local rules, backups and journals. Startup recovers an interrupted local file transaction before opening sync, without adopting rules or contacting the backend. If startup cannot verify the recovery evidence, do not edit the affected files; preserve the journals for review.
 
-After any version 6 publication, downgrading the package alone is not rollback. Close incompatible clients, verify daemon exit, and review compatible local and remote restoration before resuming transfers. Keep retained history intact.
+Run `/sync pull` on the originating setup to review resumption. It uses the recorded, retained snapshot even if another device has since published a newer one. If that snapshot is missing or the local evidence no longer matches, preserve the journals and backups; do not replace them with the newer snapshot. After recovery, run `/sync status` to check the newer remote state. The successful transfer reports the backup path for the previous rule text.
+
+After a version 6 or 7 publication, downgrading the package alone is not rollback. Close incompatible clients, verify daemon exit, and review compatible local and remote restoration before resuming transfers. Keep retained history intact.
 
 ### Agent-directory scope
 
@@ -489,6 +493,29 @@ Clearing rules retains `[]` and the newer versions; never downgrade in place.
 A pending transaction or merge journal under different rules remains available for reviewed recovery rather than replaying old writes.
 To return to an older client, stop automatic work, resolve pending recovery with a compatible client, preserve backups, and create a separate reviewed legacy-compatible setup/location.
 
+### Transfer size limits
+
+Use **/sync → Settings → Max file size** or **Max directory size** for the current setup. The file limit applies to each included file. The directory limit applies to the sum of included files in each directory below the logical sync root, including the logical `sessions/` tree. A nested file contributes once to each of its parent directories below that root. The root itself has no size limit from this setting. A size equal to the limit passes.
+
+Both settings default to **Off** and can be set independently. Enter `Off` or a positive whole number of MiB (`1 MiB = 1,048,576 bytes`) whose byte count is a safe integer. The settings file takes JSON numbers, not strings, booleans, zero, fractions, or `null`. In RPC or other non-TUI use, close Pi Sync clients, drain and stop the daemon, and verify owner exit before editing the canonical private `pi-sync.json`. Keep unrelated fields and private permissions. For example, in a version-9 document, add the following fields to the existing `syncSetups.<name>.sync` object:
+
+```json
+{
+  "maxFileSizeMiB": 4,
+  "maxDirectorySizeMiB": 8
+}
+```
+
+Omit a key to turn that limit Off. There is no project or environment override. Older documents are not changed merely because both limits are Off. To enable a limit manually, set the document's top-level `version` to `9` in the same edit. In the TUI, review the compatibility warning before the first save that upgrades the file. **Close or upgrade older Pi Sync clients and daemon builds that share this agent directory before enabling a limit.** Older processes cannot use any setup in the version-9 document, even after both limits are cleared. Each device enforces its own limits, with no snapshot format change or remote settings migration. See [daemon ownership and upgrade](https://github.com/narumiruna/pi-extensions/blob/main/packages/pi-sync/docs/daemon-migration.md#ownership-and-upgrade) if the running owner does not support the limits.
+
+A saved change applies to subsequent transfer attempts. It starts no transfer and grants no new automatic permission. If the change invalidates existing permission, review automatic transfers again through the existing controls. The daemon measures the actual uncompressed bytes after content selection, portable field projection, and any applicable merge or conflict resolution. It checks each side's proposed image separately, so the same path on both sides does not count twice. With partial sync or live-session protection, count only what belongs to that side's selected result. Ignored paths, preserved out-of-scope content, and old destination bytes outside that result do not count. Neither do transport encoding, backups, or History. If the active ignore file is included and the transfer writes or publishes it as rule metadata, its actual UTF-8 bytes count toward the limits.
+
+A violation blocks new publication or local apply without skipping the offending files or advancing the accepted baseline. This applies to automatic work, reviewed rollback, and Pull that adopts remote rules. Neither `--force` nor `--yes` bypasses it. The error lists a bounded set of relative paths, measured sizes, and limits, plus the omitted count if there are more findings. An unchanged automatic size violation is a safety block, not a transient retry. The existing scan, decode, merge, and backend bounds still apply and can stop work earlier.
+
+Use `/sync diff` to inspect the difference or policy mismatch. For example, if `skills/local-cache/` makes `skills/` exceed an 8 MiB directory cap, add `/skills/local-cache/` to the active ignore file, or exclude `skills/local-cache` through the legacy Settings editor. Check the new selection, then use `/sync push` and confirm the reviewed direction if this device is authoritative. Review any policy replacement separately; a legacy policy mismatch can require a reviewed `/sync push --force` without `--yes`. If the remote is authoritative, use a reviewed `/sync pull` with an applicable selection. Previous remote versions remain in History; Pull keeps its local backup, so a compliant source can replace larger managed destination bytes without losing the restore point.
+
+Read-only reviews remain available. A new limit does not prevent verified reconciliation of an already committed transfer. A pending local-only merge or rule adoption that has not installed its rule file can still be blocked: matching local files do not prove that the interrupted transfer wrote them. When a limit is on, local-only merge recovery also stops if it finds new or changed included files outside the journal's recorded images. Keep the settings, backups, and journals. Review the limits and verify the local and remote snapshots with a compatible daemon before retrying. Turning both limits Off restores the previous size policy for future transfers without changing version 9 or rewriting history.
+
 ### Automatic startup transfer
 
 `sync.automaticTransfer` is optional and accepts only a boolean; absent means `false`.
@@ -524,7 +551,7 @@ Unknown fields remain preserved and malformed/invalid files block saves, just as
 
 ### Autonomous sync
 
-Autonomous sync uses the unchanged `sync.agentMode` key, an optional per-setup boolean, default `false`, in settings versions 3 through 8.
+Autonomous sync uses the unchanged `sync.agentMode` key, an optional per-setup boolean that defaults to `false`.
 Open **Settings → Autonomous sync** and review the setup, destination, content policy, transfer authorization, model disclosure, costs, and autonomous writes before enabling. For directory scope, the review shows session opt-in separately from path rules.
 In a legacy-only settings file, RPC users can authorize Autonomous sync by explicitly setting this field to `true`. If any setup uses an ignore file, follow the [separate approval step](#automatic-sync-controls) after enabling it.
 
@@ -648,7 +675,7 @@ A failed consent write blocks automatic work in that service instance. Uncertain
 
 ### Continuous sync
 
-`sync.continuous` is an optional per-setup boolean, default `false`, in settings versions 3 through 8.
+`sync.continuous` is an optional per-setup boolean that defaults to `false`.
 Open **Settings → Continuous sync** after enabling Autonomous sync. For directory scope, the review shows session opt-in separately from path rules.
 In a legacy-only settings file, RPC users can opt in by explicitly setting this field to `true`. If any setup uses an ignore file, follow the [separate approval step](#automatic-sync-controls) after enabling it.
 Existing Autonomous sync consent does not enable recurring requests.
@@ -785,7 +812,7 @@ Coupled fields must be excluded together.
 Selected-path setups with nonempty rules must include `settings.json` in `sync.include`. Directory-scope setups must omit `sync.include` and can configure local fields without it. Path rules still govern whether `settings.json` syncs, and nonempty field rules require that exact file spelling if it is synced. Absent or explicitly empty rules remain valid for either scope.
 Settings asks for confirmation before saving changes to these rules. An explicit array requires settings version 4 or later, and editing the rules does not downgrade an existing settings version.
 Absent rules keep a setup nonportable, including unrelated setups in a version-4 document.
-An explicit array opts that setup into at least snapshot version 2; exclusion-enabled selected-path setups retain version 4, legacy directory scope retains version 5, and ignore-file setups use version 6.
+An explicit array opts that setup into at least snapshot version 2; exclusion-enabled selected-path setups retain version 4, legacy directory scope retains version 5, and ignore-file setups publish version 7.
 `[]` after rule removal retains this reviewed opt-in and differs from absence.
 Older clients must refuse portable data rather than replace local-only values.
 
@@ -825,7 +852,7 @@ Never reinterpret portable snapshots with an old binary.
 `sync.mergeContent` and `sync.partialSync` are independent opt-in booleans, both default `false`.
 The owning **Settings → Content merge / partial progress** setting offers Off, Merge only, Merge + partial, and Partial only and confirms an explicit upgrade to at least settings version 5.
 Use a supported settings version of at least 5 (at least 7 for legacy directory scope and 8 for ignore-file policy).
-Partial publications retain snapshot version 4 for exclusion-enabled selected paths, version 5 for legacy directory scope, and version 6 for ignore-file policy.
+Partial publications retain snapshot version 4 for exclusion-enabled selected paths, version 5 for legacy directory scope, and version 7 for ignore-file policy.
 Settings version 5 retains the portable-policy behavior of version 4; moving from a legacy setup can require the existing separately confirmed directional policy migration.
 Disabling options retains the schema and recovery evidence.
 
@@ -879,6 +906,8 @@ Recovery:
 3. create a new version 3 document or run the setup manager;
 4. run `/sync doctor`, inspect the exact storage path, and review the first pull or push;
 5. restore the retained file and a compatible older package only if rolling back.
+
+If your processes reject a newer settings version, keep the document and use compatible Pi Sync and daemon builds. In particular, [clearing transfer size limits](#transfer-size-limits) never downgrades version 9. Do not use the recovery steps above to replace a newer document.
 
 Malformed, invalid, unsupported, symlinked, or concurrently changed documents remain untouched.
 Failed UI saves keep the previous file and displayed/effective state.

@@ -1,5 +1,5 @@
 import { createSyncBackend, type SyncBackendFactory } from "../backends/backend-factory.js";
-import type { SyncBackend } from "../backends/sync-backend.js";
+import { HISTORY_PREVIEW_LIMIT, type SyncBackend } from "../backends/sync-backend.js";
 import type { CommandOptions } from "../commands/command-types.js";
 import type { EngineContext as ExtensionCommandContext } from "../host.js";
 import { loadConfig, syncSessionsWarnings } from "../settings/config.js";
@@ -25,7 +25,7 @@ function contentLines(config: AnySyncConfig) {
     config.scope === "agent-directory"
       ? "included content: eligible files in the Pi agent directory"
       : `included content: ${config.include.map(safeTerminalText).join(", ") || "none"}`,
-    ...(config.ignorePolicy ? ["path policy: local ignore file (rule text is not published)"] : []),
+    ...(config.ignorePolicy ? ["path policy: local ignore file (published unless it excludes itself)"] : []),
     ...(config.exclude === undefined
       ? []
       : [`excluded paths: ${config.exclude.map(safeTerminalText).join(", ") || "none"}`]),
@@ -206,7 +206,7 @@ export async function history(
   const config = await loadConfig(options.setup);
   throwIfAborted(options.signal);
   const backend = await factory(config);
-  const snapshots = (await backend.listHistory(options.signal)).slice(-20).reverse();
+  const snapshots = (await backend.listHistory(options.signal)).slice(-HISTORY_PREVIEW_LIMIT).reverse();
   throwIfAborted(options.signal);
   const lastApplied = await readStateForConfig(config)
     .then((state) => state.lastAppliedSnapshot)

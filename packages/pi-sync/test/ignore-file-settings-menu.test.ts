@@ -116,8 +116,12 @@ test.each(["tui", "rpc"] as const)("%s can open Settings from /sync while transf
       expect(managerRows?.join("\n")).not.toMatch(/Sync now|Push to remote|Pull from remote/u);
       expect(select.mock.calls[1]?.[0]).toContain(mode === "tui" ? "Pi Sync Settings" : "Sync settings management");
       const presentation = [select.mock.calls[1]?.[0], ...notifications.map(({ message }) => message)].join("\n");
-      expect(presentation).toContain(`Edit existing ignore rules manually: ${rulePath}`);
-      if (mode === "tui") expect(presentation).toContain("Setup preferences are read-only");
+      if (mode === "tui") {
+        expect(presentation).toContain("Edit existing ignore rules manually:");
+        expect(presentation).toContain("Setup preferences are read-only");
+      } else {
+        expect(presentation).toContain(`Edit existing ignore rules manually: ${rulePath}`);
+      }
       expect(presentation).not.toMatch(/PRIVATE RULE CONTENT|Excluded paths:/u);
       const operations = run.mock.calls.map(([operation]) => operation);
       expect(operations.length).toBeGreaterThan(1);
@@ -173,6 +177,31 @@ test.each(["approved", "cancelled", "setup changed"] as const)(
       expect(await fs.readFile(settingsPath, "utf8")).toBe(before);
     }),
 );
+
+test("saving a transfer size limit preserves the separate automatic approval action", () =>
+  withTempHome(async (root) => {
+    const { settingsPath, settings } = await writeSetup(root, "ignore-file");
+    const expected = JSON.parse(settings);
+    expected.syncSetups.work.sync.automaticTransfer = true;
+    await fs.writeFile(settingsPath, JSON.stringify(expected));
+    run.mockReset().mockResolvedValue({ available: true });
+    const select = vi
+      .fn<(title: string, rows: string[]) => Promise<string | undefined>>()
+      .mockResolvedValueOnce("Max file size")
+      .mockResolvedValue(undefined);
+    const runRoute = vi.fn(async () => undefined);
+    const { ctx, notifications } = createMockContext({ mode: "tui", select, input: async () => "2" });
+    await showSyncSettings(ctx, runRoute);
+    expected.version = 9;
+    expected.syncSetups.work.sync.maxFileSizeMiB = 2;
+    expect(JSON.parse(await fs.readFile(settingsPath, "utf8"))).toEqual(expected);
+    expect(select.mock.calls[1]?.[1]).toContain("Review automatic transfers");
+    expect(notifications.at(-1)?.message).toContain(
+      "Use Review automatic transfers to approve this policy separately.",
+    );
+    expect(run.mock.calls.map(([operation]) => operation)).toEqual(["ignore.capabilities"]);
+    expect(runRoute).not.toHaveBeenCalled();
+  }));
 
 test.each([
   ["tui", "legacy", "ignore-file", true, true],

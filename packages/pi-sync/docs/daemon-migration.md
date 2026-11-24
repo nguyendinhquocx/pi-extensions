@@ -68,6 +68,8 @@ Before the first daemon-owned transfer, close or upgrade every older Pi process 
 
 Backend formats, `pi-sync.json`, `pi-sync/`, `.pisync/`, backups, and journals remain owned by the extracted engine. Legacy directory migration remains explicit. Coexisting or unsafe state roots must be reconciled without merging or deleting evidence automatically.
 
+Before enabling [transfer size limits](../skills/configure-pi-sync/references/configuration.md#transfer-size-limits), make sure the running owner supports both saving and enforcing the limits. A healthy `status` handshake alone does not establish that support. If an old owner remains after an update or an in-place rebuild, use the exit checks above before reloading Pi. Upgrade or close all older clients using that agent directory. Enabling a limit requires version 9 for the entire local settings document, which older processes refuse. It does not change the IPC protocol or remote snapshots.
+
 ## Lifetime is not consent
 
 Old Continuous consent was limited to an open Pi session. Existing Automatic, Autonomous, and Continuous defaults stay unchanged. When no registered live client PID remains for that canonical root and no valid explicit after-exit grant covers the active setup, a fixed 30-second grace period starts. Explicit CLI start without clients follows the same policy. Live passive, disconnected, publishing, and orderly retired PIDs keep the owner alive; detach, heartbeat loss, and an empty active-participant list do not prove process exit. `/reload`, `/new`, fork, and resume retain protection while their Pi process lives. A client arriving before shutdown becomes final cancels automatic exit. No new setting, environment variable, or keep-alive flag is added.
@@ -92,21 +94,18 @@ accepts the current participant's facts. An older daemon can stay reachable
 without supporting this repair; a healthy CLI status alone does not confirm Pi
 participation.
 
-Reconnect does not replay a submitted operation or restart startup transfers.
+Ordinary reconnect does not replay a submitted operation or restart startup transfers.
 If Pi releases a file queue but the local acknowledgement is lost in transit,
 it retries that acknowledgement with the same daemon. Brief retries stay
 quiet; longer retries show `sync recovering` when sync status is enabled.
 If a background release remains unconfirmed during a command, Pi reports it
 after the command finishes.
 A release acknowledgement alone does not confirm that a transfer succeeded.
-If a write or file-queue release cannot be confirmed, preserve the journals and
-use the existing recovery path before retrying a transfer. Reconnect does not
-stop or restart the service, and it does not extend transfer or model permission.
+For the manager's explicit **Push to remote** and **Pull from remote** actions, the client first resolves the original job with the same daemon. On an eligible file-queue failure it can then drain that exact owner and reconnect after verifying exit. It never repeats a verified result. It can resume after a proven pre-write failure only once and only when the original setup and source/destination evidence still match. It does not restart an owner that still has other live participating Pi clients, pending work, or unresolved consent or upgrade state. A missing result or conflicting evidence is not permission to replay. If recovery stops after a verified transfer, Pi Sync reports the restore point to the active session. If `/sync daemon status` is blocked by recovery, run it after recovery finishes. This path does not extend transfer or model permission.
 
 ## Recover from uncertain daemon cleanup
 
-**Stop daemon for recovery…** in `/sync` remains available when daemon cleanup
-blocks Pi Sync initialization. In TUI or RPC, `/sync daemon recover` opens the same
+**Stop daemon for recovery…** in `/sync` remains a diagnostic fallback when automatic recovery cannot verify cleanup or daemon cleanup blocks initialization. In TUI or RPC, `/sync daemon recover` opens the same
 review without starting or upgrading the daemon. The review identifies the
 agent directory and PID before requesting permission to stop work for every
 Pi session attached to that daemon.
@@ -148,6 +147,10 @@ Before rollback:
    65,536 bytes because it keeps all other fields when revoking grants. Builds with the old
    65,536-byte limit cannot read that file. Preserve it and use a build that supports the larger
    file. Do not delete it or restore an older copy to make the rollback work.
+5. Check settings compatibility. Version 9 remains after both transfer limits are cleared. Keep a
+   compatible owner; do not relabel the document as version 8 or replace it with older bytes to
+   bypass the check. Keep journals and backups and verify the local and remote snapshot IDs before
+   retrying uncertain work.
 
 Operation retries are instance-bound and deduplicated. An expired result or old instance requires journal reconciliation, not blind replay. A full bounded result ledger requires an explicit drained restart.
 

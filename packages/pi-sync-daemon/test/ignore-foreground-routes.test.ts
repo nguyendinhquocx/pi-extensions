@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
@@ -7,8 +8,9 @@ import path from "node:path";
 import { test } from "vitest";
 import type { LatestPointer } from "../src/engine/backends/backend-types.js";
 import { WebDavSyncBackend } from "../src/engine/backends/webdav/webdav-backend.js";
-import { configFromSettings } from "../src/engine/settings/config.js";
-import type { PiSyncSettingsV3 } from "../src/engine/settings/settings-types.js";
+import { ignorePolicyFingerprint } from "../src/engine/ignore/ignore-source.js";
+import { configFromSettings, syncCheckConfigFingerprint } from "../src/engine/settings/config.js";
+import type { AnySyncConfig, PiSyncSettingsV3 } from "../src/engine/settings/settings-types.js";
 import { createEngineService } from "../src/engine-service.js";
 import type { Callback } from "../src/protocol.js";
 import { withRpcServer } from "./rpc-server-fixture.js";
@@ -22,6 +24,7 @@ async function fixture(
     saveSettings: (document: PiSyncSettingsV3) => Promise<void>;
     readHead: (name?: string) => { snapshot: LatestPointer; bytes: Buffer };
     run: (operation: string, options?: object) => Promise<unknown>;
+    foregroundPayload: () => Promise<{ setup: string; fingerprint: string }>;
     onCallback: (answer: (callback: Callback) => Promise<unknown>) => void;
     onBackend: (action: (method: string, url: string) => Promise<void>) => void;
     requests: [string, string][];
@@ -149,7 +152,12 @@ async function fixture(
           loadSettings,
           saveSettings,
           requests,
-          run: (operation, options) => client.run(operation, { ...command, ...options }),
+          run: (operation, options) =>
+            client.run(operation, operation.endsWith(".foreground") ? options : { ...command, ...options }),
+          foregroundPayload: async () => {
+            const { config } = (await client.run("initialize", {})) as { config: AnySyncConfig };
+            return { setup: config.setupName, fingerprint: syncCheckConfigFingerprint(config) };
+          },
           onCallback: (answer) => {
             callback = answer;
           },
@@ -185,7 +193,157 @@ function snapshotFile(path: string, text: string) {
   return { path, sha256: createHash("sha256").update(bytes).digest("hex"), contentBase64: bytes.toString("base64") };
 }
 
-test("daemon routes review a legacy-to-v6 publication, merge divergent files, and roll back through current rules", () =>
+for (const direction of ["push", "pull"] as const) {
+  test(`the foreground ${direction} IPC path accepts divergence without a second approval`, () =>
+    fixture(async ({ root, run, foregroundPayload, loadSettings, onCallback }) => {
+      await run("push", { yes: true });
+      const backend = fixtureBackend(loadSettings());
+      const original = await backend.readHead();
+      assert.ok(original);
+      const snapshot = await backend.readSnapshot(original.snapshotRef);
+      const local = path.join(root, "notes.md");
+      await fs.writeFile(local, "local edit\n");
+      const newer = "20260101T000000Z-eeeeeeee";
+      await backend.publishSnapshot(
+        { ...snapshot, id: newer, files: [snapshotFile("notes.md", "remote edit\n")] },
+        { kind: "revision", revision: original.revision },
+      );
+      const payload = await foregroundPayload();
+      const seen: string[] = [];
+      onCallback(async ({ kind }) => {
+        seen.push(kind);
+        return ["directional-checkpoint", "queue-acquire", "queue-release"].includes(kind);
+      });
+      const result = (await run(`${direction}.foreground`, payload)) as { outcome?: string; message?: string };
+      assert.equal(result.outcome, "applied");
+      assert.match(result.message ?? "", direction === "push" ? /History/u : /backup/iu);
+      assert.ok(seen.includes("directional-checkpoint"));
+      assert.ok(seen.every((kind) => ["directional-checkpoint", "queue-acquire", "queue-release"].includes(kind)));
+      const final = await backend.readHead();
+      assert.ok(final);
+      if (direction === "push") {
+        assert.ok((await backend.listHistory()).some(({ snapshotRef }) => snapshotRef === newer));
+        assert.equal(
+          Buffer.from(
+            (await backend.readSnapshot(final.snapshotRef)).files[0]?.contentBase64 ?? "",
+            "base64",
+          ).toString(),
+          "local edit\n",
+        );
+      } else {
+        assert.equal(final.snapshotId, newer);
+        assert.equal(await fs.readFile(local, "utf8"), "remote edit\n");
+      }
+    }));
+}
+
+test("the documented History recovery extracts a file excluded by a narrower Push without rewriting the head", () =>
+  fixture(async ({ root, run, foregroundPayload, onCallback, requests, readHead }) => {
+    await fs.writeFile(path.join(root, "legacy.txt"), "excluded after Push\n");
+    await run("push", { yes: true });
+    const reference = readHead().snapshot.snapshot;
+    await fs.appendFile(path.join(root, ".syncignore"), "/legacy.txt\n");
+    onCallback(async ({ kind }) =>
+      ["confirm", "directional-checkpoint", "queue-acquire", "queue-release"].includes(kind),
+    );
+    const outcome = (await run("push.foreground", await foregroundPayload())) as { outcome: string; message: string };
+    assert.equal(outcome.outcome, "applied");
+    assert.match(outcome.message, /Rollback uses the current rules and does not restore excluded files/u);
+    assert.ok(outcome.message.includes(reference));
+    const head = readHead().bytes;
+    const readme = await fs.readFile("packages/pi-sync/README.md", "utf8");
+    const example = readme.match(/### Recover excluded files from History[\s\S]*?<<'JS'\n([\s\S]*?)\nJS\n/u)?.[1];
+    assert.ok(example);
+    requests.length = 0;
+    const child = spawn(process.execPath, ["--input-type=module", "-", root, "home", reference, "legacy.txt"], {
+      env: { ...process.env, TMPDIR: root, TEMP: root, TMP: root },
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+    const done = new Promise<number | null>((resolve, reject) => {
+      child.once("error", reject);
+      child.once("close", resolve);
+    });
+    child.stdin.end(example);
+    const [code, stdout, stderr] = await Promise.all([done, child.stdout.toArray(), child.stderr.toArray()]);
+    assert.equal(code, 0, Buffer.concat(stderr).toString());
+    const output = Buffer.concat(stdout).toString().trim();
+    assert.equal(await fs.readFile(output, "utf8"), "excluded after Push\n");
+    if (process.platform !== "win32") assert.equal((await fs.stat(output)).mode & 0o777, 0o600);
+    assert.deepEqual(readHead().bytes, head);
+    assert.ok(requests.length > 0 && requests.every(([method]) => method === "GET"));
+  }));
+
+test("the daemon previews a policy conflict, and only confirmed Pull adopts it without rewriting WebDAV", () =>
+  fixture(async ({ root, run, foregroundPayload, loadSettings, readHead, onCallback, requests }) => {
+    await run("push", { yes: true });
+    const backend = fixtureBackend(loadSettings());
+    const initial = await backend.readHead();
+    assert.ok(initial);
+    const image = await backend.readSnapshot(initial.snapshotRef);
+    assert.ok(image.selection?.version === 4);
+    const text = "\uFEFF# rule bytes\r\n/private.md\r\n";
+    await backend.publishSnapshot(
+      {
+        ...image,
+        id: "remote-rules",
+        files: [snapshotFile("notes.md", "incoming")],
+        ignoreRules: { filename: ".syncignore", text },
+        selection: { ...image.selection, fingerprint: ignorePolicyFingerprint(text, false) },
+      },
+      { kind: "revision", revision: initial.revision },
+    );
+    const head = readHead().bytes;
+    const rules = path.join(root, ".syncignore");
+    const previous = await fs.readFile(rules, "utf8");
+    const localNote = path.join(root, "notes.md");
+    let approved = false;
+    const reviews: string[] = [];
+    onCallback(async ({ kind, payload }) => {
+      if (kind === "confirm") {
+        const { title, message } = payload as { title: string; message: string };
+        reviews.push(`${title}\n${message}`);
+        return approved;
+      }
+      return ["directional-checkpoint", "queue-acquire", "queue-release"].includes(kind);
+    });
+    await assert.rejects(run("pull", { force: true, yes: true }), /policy differs/u);
+    const before = await foregroundPayload();
+    assert.equal(((await run("pull.foreground", before)) as { outcome: string }).outcome, "cancelled");
+    assert.equal(await fs.readFile(rules, "utf8"), previous);
+    assert.equal(await fs.readFile(localNote, "utf8"), "local notes\n");
+    assert.match(reviews[0] ?? "", /Overwrite local rules and pull\?/u);
+    assert.match(reviews[0] ?? "", /Update locally: notes\.md/u);
+    assert.match(reviews[0] ?? "", /rule bytes/u);
+    approved = true;
+    requests.length = 0;
+    assert.equal(((await run("pull.foreground", before)) as { outcome: string }).outcome, "applied");
+    assert.equal(await fs.readFile(rules, "utf8"), text);
+    assert.equal(await fs.readFile(localNote, "utf8"), "incoming");
+    assert.equal(await fs.readFile(path.join(root, "private.md"), "utf8"), "never publish\n");
+    assert.deepEqual(readHead().bytes, head);
+    assert.ok(requests.length > 0 && requests.every(([method]) => method === "GET"));
+  }));
+
+test("a foreground request rejects unbound actions or replay under a different checkpoint", () =>
+  fixture(async ({ run, foregroundPayload, requests, root, onCallback }) => {
+    await run("push", { yes: true });
+    const payload = await foregroundPayload();
+    const notes = path.join(root, "notes.md");
+    await fs.writeFile(notes, "local changed after last sync\n");
+    onCallback(async ({ kind }) => assert.fail(`Unexpected callback: ${kind}`));
+    requests.length = 0;
+    await assert.rejects(
+      run("pull.foreground", { ...payload, force: true }),
+      /Invalid foreground directional request/u,
+    );
+    await assert.rejects(run("pull.foreground", { ...payload, setup: "other" }), /setup changed/u);
+    assert.equal(requests.length, 0);
+    await assert.rejects(run("pull.foreground", { ...payload, retryCheckpoint: "0".repeat(64) }), /not replayed/u);
+    assert.ok(requests.every(([method]) => method === "GET"));
+    assert.equal(await fs.readFile(notes, "utf8"), "local changed after last sync\n");
+  }));
+
+test("daemon routes review a legacy-to-v7 publication, merge divergent files, and roll back through current rules", () =>
   fixture(async ({ root, run, loadSettings, saveSettings, readHead, onCallback }) => {
     const legacy = loadSettings();
     const home = legacy.syncSetups.home;
@@ -210,7 +368,8 @@ test("daemon routes review a legacy-to-v6 publication, merge divergent files, an
     const first = await backend.readHead();
     assert.ok(first);
     const image = await backend.readSnapshot(first.snapshotRef);
-    assert.equal(image.version, 6);
+    assert.equal(image.version, 7);
+    assert.equal(image.ignoreRules?.text, await fs.readFile(path.join(root, ".syncignore"), "utf8"));
     assert.deepEqual(Object.keys(image.selection ?? {}).sort(), ["fingerprint", "scope", "sessions", "version"]);
     assert.deepEqual(
       image.files.map(({ path }) => path),

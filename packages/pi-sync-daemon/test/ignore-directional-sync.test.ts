@@ -4,15 +4,26 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { test, vi } from "vitest";
-import { expectedRemoteHead, type RemoteHead, type SyncBackend } from "../src/engine/backends/sync-backend.js";
+import {
+  expectedRemoteHead,
+  type RemoteHead,
+  type SyncBackend,
+  verifyPreviousHeadInHistory,
+} from "../src/engine/backends/sync-backend.js";
 import type { CommandOptions } from "../src/engine/commands/command-types.js";
-import { configureEngineHost, type EngineContext, getEngineRoot } from "../src/engine/host.js";
-import { configFromSettings, loadConfig } from "../src/engine/settings/config.js";
+import { configureEngineHost, type EngineContext, engineHost, getEngineRoot } from "../src/engine/host.js";
+import { hasPendingAdoption } from "../src/engine/ignore/adoption-journal.js";
+import { ignorePolicyFingerprint } from "../src/engine/ignore/ignore-source.js";
+import { configFromSettings, loadConfig, syncCheckConfigFingerprint } from "../src/engine/settings/config.js";
 import type { PiSyncSettingsV3 } from "../src/engine/settings/settings-types.js";
 import { snapshotOptionsForContext } from "../src/engine/snapshot/session-paths.js";
 import { createSnapshot } from "../src/engine/snapshot/snapshot.js";
+import { applySnapshot } from "../src/engine/snapshot/snapshot-apply.js";
+import { decodeSnapshot } from "../src/engine/snapshot/snapshot-codec.js";
+import { pendingTransactionEntries } from "../src/engine/snapshot/snapshot-transaction-directory.js";
 import type { Snapshot, SnapshotFile } from "../src/engine/snapshot/snapshot-types.js";
-import { readStateForConfig } from "../src/engine/state/sync-state-store.js";
+import { readStateForConfig, statePathForConfig } from "../src/engine/state/sync-state-store.js";
+import { initializeSync } from "../src/engine/sync/initialization.js";
 import { readRemoteSnapshot } from "../src/engine/sync/remote-snapshot.js";
 import { inspectSync } from "../src/engine/sync/sync-inspection.js";
 import { pull, push, rollback, syncBoth } from "../src/engine/sync/sync-mutations.js";
@@ -23,18 +34,17 @@ import {
   RemoteSelectionMismatchError,
   selectionForSnapshot,
 } from "../src/engine/sync/sync-policy.js";
+import { diff } from "../src/engine/sync/sync-queries.js";
 import { syncPolicyChanged } from "../src/engine/sync/sync-state.js";
 import { formatPullSummary, formatRollbackSummary } from "../src/engine/ui/sync-format.js";
 
 vi.mock(import("../src/engine/settings/config.js"), async (importOriginal) => {
   const actual = await importOriginal();
-  return {
-    ...actual,
-    loadConfig: async (setup?: string) => {
-      const settings = JSON.parse(await fs.readFile(path.join(getEngineRoot(), "pi-sync.json"), "utf8"));
-      return actual.resolveIgnoreConfig(settings, setup);
-    },
+  const load = async (setup?: string) => {
+    const settings = JSON.parse(await fs.readFile(path.join(getEngineRoot(), "pi-sync.json"), "utf8"));
+    return actual.resolveIgnoreConfig(settings, setup);
   };
+  return { ...actual, loadConfig: load, loadConfigForCheck: load };
 });
 
 const options: CommandOptions = {
@@ -57,6 +67,7 @@ function file(path: string, content: string): SnapshotFile {
 
 function memoryRemote() {
   const snapshots = new Map<string, Snapshot>();
+  const history: RemoteHead[] = [];
   let head: RemoteHead | undefined;
   let reads = 0;
   let publicationHook: (() => void | Promise<void>) | undefined;
@@ -72,6 +83,7 @@ function memoryRemote() {
       syncSessions: snapshot.syncSessions ?? false,
       selection: snapshot.selection,
     };
+    history.push(head);
     return head;
   };
   const backend: SyncBackend = {
@@ -91,11 +103,12 @@ function memoryRemote() {
       assert.ok(opts?.validateIgnorePolicy, "v6 publication requires a late freshness guard");
       await opts.validateIgnorePolicy();
       assert.deepEqual(expected, expectedRemoteHead(head));
+      if (opts.preservePreviousHead && head) await verifyPreviousHeadInHistory(backend, head, opts.signal);
       opts.onCommit?.();
       commits.push(snapshot);
       return { head: seed(snapshot), warnings: [] };
     },
-    listHistory: async () => [],
+    listHistory: async () => history,
     diagnose: async () => [],
   };
   return {
@@ -112,6 +125,16 @@ function memoryRemote() {
 }
 
 const activeRules = "/private.txt\n";
+const MIB = 1024 ** 2;
+
+async function enableSizeLimits(settings: PiSyncSettingsV3, save: () => Promise<void>) {
+  const setup = settings.syncSetups.work;
+  assert.ok(setup);
+  settings.version = 9;
+  setup.sync.maxFileSizeMiB = 1;
+  setup.sync.maxDirectorySizeMiB = 1;
+  await save();
+}
 
 async function fixture(
   run: (fixture: {
@@ -222,11 +245,16 @@ for (const comparison of ["mismatch", "local-ignore-remote-legacy"] as const) {
       const observed = await readRemoteSnapshot(remote.backend, config, undefined, { allowSelectionDifference: true });
       assert.equal(observed.selectionState?.ignorePolicyComparison, comparison);
       assert.deepEqual(observed.snapshot?.selection, local.selection);
-      for (const direction of [options, { ...options, force: true, yes: true }]) {
-        await assert.rejects(push(ctx, direction, undefined, remote.factory), mismatch(comparison));
-        await assert.rejects(pull(ctx, direction, remote.factory), mismatch(comparison));
-        await assert.rejects(syncBoth(ctx, direction, remote.factory), mismatch(comparison));
-      }
+      ctx.ui.confirm = async () => false;
+      assert.equal(await push(ctx, options, undefined, remote.factory), "cancelled");
+      const unattended = { ...options, force: true, yes: true };
+      await assert.rejects(push(ctx, unattended, undefined, remote.factory), mismatch(comparison));
+      await assert.rejects(pull(ctx, unattended, remote.factory), mismatch(comparison));
+      await assert.rejects(
+        pull(ctx, options, remote.factory),
+        comparison === "mismatch" ? /does not contain rule text/u : mismatch(comparison),
+      );
+      await assert.rejects(syncBoth(ctx, options, remote.factory), mismatch(comparison));
       await assert.rejects(pull(ctx, { ...options, auto: true }, remote.factory), mismatch(comparison));
       assert.equal(remote.commits.length, 0);
       assert.equal((await readStateForConfig(config)).lastAppliedSnapshot, undefined);
@@ -279,13 +307,14 @@ test("reviewed push transitions selected-path history using only current local b
     assert.match(review, /Remote rules are not adopted/u);
     const [upload] = remote.commits;
     assert.ok(upload);
-    assert.equal(upload.version, 6);
+    assert.equal(upload.version, 7);
     assert.deepEqual(
       upload.files.map((entry) => entry.path),
       ["notes.txt"],
     );
     assert.deepEqual(upload.selection, selectionForSnapshot([], undefined, config));
-    assert.doesNotMatch(JSON.stringify(upload), /Local\.rules|private\.txt|sourceDigest/u);
+    assert.deepEqual(upload.ignoreRules, { filename: "Local.rules", text: activeRules });
+    assert.doesNotMatch(JSON.stringify(upload.selection), /Local\.rules|private\.txt|sourceDigest/u);
     const accepted = await readStateForConfig(config);
     assert.ok(accepted.ignorePolicyKey);
     assert.ok(!syncPolicyChanged(accepted, config));
@@ -416,6 +445,575 @@ for (const history of ["v6", "legacy"] as const) {
       assert.deepEqual(remote.commits[0]?.selection, current.selection);
     }));
 }
+
+async function boundAction(ctx: EngineContext): Promise<CommandOptions> {
+  ctx.ui.confirm = async () => assert.fail("Unexpected transfer confirmation");
+  ctx.ui.select = async () => assert.fail("Unexpected transfer selection");
+  const expected = syncCheckConfigFingerprint(await loadConfig());
+  return {
+    ...options,
+    directionalAction: {
+      validate: (current) => assert.equal(syncCheckConfigFingerprint(current), expected, "stale settings binding"),
+    },
+  };
+}
+
+for (const direction of ["push", "pull"] as const) {
+  test(`the bound ${direction} selects its source, keeps excluded/live files, and retains a usable exact restore point`, () =>
+    fixture(async ({ root, ctx, settings, save, remote }) => {
+      const setup = settings.syncSetups.work;
+      assert.ok(setup && setup.sync.scope === "agent-directory");
+      setup.sync.sessions = true;
+      await save();
+      const dir = path.join(root, "sessions");
+      await fs.mkdir(dir);
+      const peer = path.join(dir, "peer.jsonl");
+      ctx.protectedSessionFiles = [peer];
+      const note = path.join(root, "notes.txt");
+      const privateFile = path.join(root, "private.txt");
+      const localOnly = path.join(root, "local.txt");
+      const remoteOnly = path.join(root, "remote.txt");
+      await fs.writeFile(peer, "local live");
+      await fs.writeFile(privateFile, "private stays");
+      await fs.writeFile(note, "accepted");
+      assert.equal(await push(ctx, await boundAction(ctx), undefined, remote.factory), "applied");
+      const config = await loadConfig();
+      const seed = await createSnapshot(config.snapshotIdentity, snapshotOptionsForContext(ctx, config));
+      const previous = remote.seed({
+        ...seed,
+        files: [
+          file("notes.txt", "remote changed"),
+          file("remote.txt", "remote only"),
+          file("sessions/peer.jsonl", "remote live"),
+        ],
+      });
+      await fs.writeFile(note, "local changed");
+      await fs.writeFile(localOnly, "unpushed local only");
+      const action = await boundAction(ctx);
+      let message = "";
+      assert.ok(action.directionalAction);
+      action.directionalAction.notifySuccess = (value) => {
+        message = value;
+      };
+      if (direction === "push") {
+        await assert.rejects(push(ctx, options, undefined, remote.factory), /Remote or sync policy changed/u);
+        assert.equal(await push(ctx, action, undefined, remote.factory), "applied");
+        const latest = remote.commits.at(-1);
+        assert.deepEqual(latest?.files, [
+          file("local.txt", "unpushed local only"),
+          file("notes.txt", "local changed"),
+          file("sessions/peer.jsonl", "remote live"),
+        ]);
+        assert.match(message, /Restore the previous remote version .*History/u);
+        const history = await remote.backend.listHistory();
+        assert.ok(history.some((entry) => entry.snapshotRef === previous.snapshotRef));
+        ctx.ui.confirm = async () => true;
+        await rollback(ctx, { ...options, args: [previous.snapshotRef] }, remote.factory);
+        assert.deepEqual(remote.commits.at(-1)?.files, [
+          file("notes.txt", "remote changed"),
+          file("remote.txt", "remote only"),
+          file("sessions/peer.jsonl", "remote live"),
+        ]);
+      } else {
+        await assert.rejects(pull(ctx, options, remote.factory), /Both local and remote changed/u);
+        assert.equal(await pull(ctx, action, remote.factory), "applied");
+        assert.equal(await fs.readFile(note, "utf8"), "remote changed");
+        assert.equal(await fs.readFile(remoteOnly, "utf8"), "remote only");
+        await assert.rejects(fs.stat(localOnly), { code: "ENOENT" });
+        const backupPath = /Local backup: (.*\.json\.gz)\. To restore/u.exec(message)?.[1];
+        assert.ok(backupPath);
+        const backup = await decodeSnapshot(await fs.readFile(backupPath));
+        assert.deepEqual(backup.files, [
+          file("local.txt", "unpushed local only"),
+          file("notes.txt", "local changed"),
+          file("sessions/peer.jsonl", "local live"),
+        ]);
+        await applySnapshot(backup, new Set(["sessions/peer.jsonl"]), snapshotOptionsForContext(ctx, config));
+        assert.equal(await fs.readFile(note, "utf8"), "local changed");
+        assert.equal(await fs.readFile(localOnly, "utf8"), "unpushed local only");
+        assert.equal((await remote.backend.readHead())?.revision, previous.revision);
+      }
+      assert.equal(await fs.readFile(privateFile, "utf8"), "private stays");
+      assert.equal(await fs.readFile(peer, "utf8"), "local live");
+    }));
+}
+
+for (const direction of ["push", "pull"] as const) {
+  test(`one-action ${direction} requires approval before a narrowing policy can overwrite the destination`, () =>
+    fixture(async ({ root, ctx, rules, remote }) => {
+      await fs.writeFile(path.join(root, "notes.txt"), "accepted");
+      await fs.writeFile(path.join(root, "omitted.txt"), "kept local");
+      await fs.writeFile(path.join(root, "private.txt"), "never synchronized");
+      await push(ctx, await boundAction(ctx), undefined, remote.factory);
+      const invoke = (action: CommandOptions) =>
+        direction === "push" ? push(ctx, action, undefined, remote.factory) : pull(ctx, action, remote.factory);
+      const narrowed = "/private.txt\n/omitted.txt\n";
+      await fs.writeFile(rules, narrowed);
+      let action = await boundAction(ctx);
+      ctx.ui.confirm = async (title) => {
+        assert.match(title, /^Overwrite /u);
+        return false;
+      };
+      assert.equal(await invoke(action), "cancelled");
+      assert.equal(await fs.readFile(rules, "utf8"), narrowed);
+      assert.equal(remote.commits.length, 1);
+      action = await boundAction(ctx);
+      ctx.ui.confirm = async (title) => {
+        assert.match(title, /^Overwrite /u);
+        return true;
+      };
+      assert.equal(await invoke(action), "applied");
+      assert.equal(await fs.readFile(rules, "utf8"), direction === "push" ? narrowed : activeRules);
+      assert.equal(await fs.readFile(path.join(root, "omitted.txt"), "utf8"), "kept local");
+      assert.equal(await fs.readFile(path.join(root, "private.txt"), "utf8"), "never synchronized");
+      assert.equal(remote.commits.length, direction === "push" ? 2 : 1);
+      if (direction === "push")
+        assert.deepEqual(
+          remote.commits.at(-1)?.files.map((item) => item.path),
+          ["notes.txt"],
+        );
+    }));
+}
+
+for (const direction of ["push", "pull"] as const) {
+  test(`size-blocked ${direction} preserves both images and the baseline, then allows a reviewed replacement`, () =>
+    fixture(async ({ root, ctx, settings, save, remote }) => {
+      await enableSizeLimits(settings, save);
+      const config = await loadConfig();
+      const relative = direction === "push" ? "notes.txt" : "notes/first.txt";
+      const note = path.join(root, relative);
+      await fs.mkdir(path.dirname(note), { recursive: true });
+      await fs.writeFile(note, "accepted");
+      assert.equal(await push(ctx, options, undefined, remote.factory), "applied");
+      const accepted = await readStateForConfig(config);
+      const [small] = remote.commits;
+      assert.ok(small);
+      assert.equal(accepted.lastAppliedSnapshot, small.id);
+      if (direction === "push") {
+        await fs.writeFile(note, "x".repeat(MIB + 1));
+      } else {
+        remote.seed({
+          ...small,
+          id: "oversize-directory",
+          files: [file(relative, "x".repeat(MIB / 2)), file("notes/nested/second.txt", "y".repeat(MIB / 2 + 1))],
+        });
+      }
+      const head = await remote.backend.readHead();
+      assert.ok(head);
+      const remoteBefore = structuredClone(await remote.backend.readSnapshot(head.snapshotRef));
+      const snapshotOptions = snapshotOptionsForContext(ctx, config);
+      const localBefore = await createSnapshot(config.snapshotIdentity, snapshotOptions);
+      const onCommit = vi.fn();
+      const error =
+        direction === "push"
+          ? /Transfer blocked by size limits\. Remote file "notes\.txt": 1048577 bytes \(limit 1048576 bytes\)/u
+          : /Transfer blocked by size limits\. Local directory "notes": 1048577 bytes \(limit 1048576 bytes\)/u;
+      const transfer = (attempt: CommandOptions) => {
+        const command = { ...attempt, onCommit };
+        return direction === "push"
+          ? push(ctx, command, undefined, remote.factory)
+          : pull(ctx, command, remote.factory);
+      };
+      await assert.rejects(transfer(options), error);
+      await assert.rejects(transfer({ ...options, force: true, yes: true }), error);
+      await assert.rejects(transfer(await boundAction(ctx)), error);
+      assert.equal(onCommit.mock.calls.length, 0);
+      assert.equal(remote.commits.length, 1);
+      assert.deepEqual(await remote.backend.readHead(), head);
+      assert.deepEqual(await remote.backend.readSnapshot(head.snapshotRef), remoteBefore);
+      assert.deepEqual((await createSnapshot(config.snapshotIdentity, snapshotOptions)).files, localBefore.files);
+      assert.deepEqual(await readStateForConfig(config), accepted);
+
+      let message = "";
+      const report = (value: string) => {
+        message = value;
+      };
+      ctx.ui.notify = report;
+      await diff(ctx, options, remote.factory);
+      assert.ok(message.includes(`Different: ${relative}`));
+
+      const action = await boundAction(ctx);
+      assert.ok(action.directionalAction);
+      action.directionalAction.notifySuccess = report;
+      if (direction === "push") {
+        assert.equal(await pull(ctx, action, remote.factory), "applied");
+        assert.equal(await fs.readFile(note, "utf8"), "accepted");
+        const backupPath = /Local backup: (.*\.json\.gz)\. To restore/u.exec(message)?.[1];
+        assert.ok(backupPath);
+        assert.deepEqual((await decodeSnapshot(await fs.readFile(backupPath))).files, localBefore.files);
+        assert.deepEqual(await remote.backend.readHead(), head);
+      } else {
+        assert.equal(await push(ctx, action, undefined, remote.factory), "applied");
+        assert.deepEqual(remote.commits.at(-1)?.files, small.files);
+        assert.match(message, /Restore the previous remote version oversize-directory from .*History/u);
+        assert.ok((await remote.backend.listHistory()).some((entry) => entry.snapshotRef === head.snapshotRef));
+        assert.deepEqual((await remote.backend.readSnapshot(head.snapshotRef)).files, remoteBefore.files);
+      }
+    }));
+
+  test(`initial Sync cannot ${direction} an oversize file`, () =>
+    fixture(async ({ root, ctx, settings, save, remote }) => {
+      await enableSizeLimits(settings, save);
+      const config = await loadConfig();
+      const note = path.join(root, "notes.txt");
+      const oversized = "x".repeat(MIB + 1);
+      if (direction === "push") {
+        await fs.writeFile(note, oversized);
+      } else {
+        const empty = await createSnapshot(config.snapshotIdentity, snapshotOptionsForContext(ctx, config));
+        remote.seed({ ...empty, files: [file("notes.txt", oversized)] });
+      }
+      const head = await remote.backend.readHead();
+      const error =
+        direction === "push"
+          ? /Transfer blocked by size limits\. Remote file "notes\.txt"/u
+          : /Transfer blocked by size limits\. Local file "notes\.txt"/u;
+      await assert.rejects(syncBoth(ctx, options, remote.factory), error);
+      assert.deepEqual(await remote.backend.readHead(), head);
+      assert.equal(remote.commits.length, 0);
+      assert.equal((await readStateForConfig(config)).lastAppliedSnapshot, undefined);
+      if (direction === "push") assert.equal(await fs.readFile(note, "utf8"), oversized);
+      else await assert.rejects(fs.stat(note), { code: "ENOENT" });
+    }));
+}
+
+for (const failure of ["backup write", "backup corruption", "local race", "remote race"] as const) {
+  test(`one-action Pull does not overwrite after ${failure}`, () =>
+    fixture(async ({ root, ctx, remote }) => {
+      const note = path.join(root, "notes.txt");
+      const backups = path.join(root, "pi-sync", "backups");
+      await fs.writeFile(note, "local");
+      const config = await loadConfig();
+      const snapshot = await createSnapshot(config.snapshotIdentity, snapshotOptionsForContext(ctx, config));
+      remote.seed({ ...snapshot, files: [file("notes.txt", "incoming")] });
+      if (failure === "backup write") {
+        await fs.mkdir(path.dirname(backups));
+        await fs.writeFile(backups, "not a directory");
+      } else {
+        engineHost().reserveTargets = async (_targets, run) => {
+          if (failure === "backup corruption") {
+            const [backup] = await fs.readdir(backups);
+            assert.ok(backup);
+            await fs.writeFile(path.join(backups, backup), "not a snapshot");
+          } else if (failure === "local race") await fs.writeFile(note, "edited during reservation");
+          else remote.seed({ ...snapshot, id: "raced", files: [file("notes.txt", "new incoming")] });
+          return run();
+        };
+      }
+      const onCommit = vi.fn();
+      const expected = {
+        "backup write": /EEXIST/u,
+        "backup corruption": /backup could not be verified/u,
+        "local race": /preimage changed/u,
+        "remote race": /Remote changed/u,
+      }[failure];
+      await assert.rejects(pull(ctx, { ...(await boundAction(ctx)), onCommit }, remote.factory), expected);
+      assert.equal(onCommit.mock.calls.length, 0);
+      assert.equal(await fs.readFile(note, "utf8"), failure === "local race" ? "edited during reservation" : "local");
+    }));
+}
+
+test("an aggregate Pull failure retains the exact backup and both cleanup errors", () =>
+  fixture(async ({ root, ctx, remote }) => {
+    const note = path.join(root, "notes.txt");
+    await fs.writeFile(note, "local before Pull");
+    const config = await loadConfig();
+    const local = await createSnapshot(config.snapshotIdentity, snapshotOptionsForContext(ctx, config));
+    remote.seed({ ...local, files: [file("notes.txt", "incoming")] });
+    const failures = [new Error("Apply did not settle."), new Error("Cleanup could not be confirmed.")];
+    engineHost().reserveTargets = async (_targets, apply) => {
+      await apply();
+      throw new AggregateError(failures, "Queue cleanup did not settle after apply.");
+    };
+    let archive: string | undefined;
+    await assert.rejects(pull(ctx, await boundAction(ctx), remote.factory), (error: unknown) => {
+      assert.ok(error instanceof AggregateError);
+      assert.deepEqual(error.errors, failures);
+      assert.match(error.message, /outcome is not verified/u);
+      archive = /Local backup: (.*\.json\.gz)\. To restore/u.exec(error.message)?.[1];
+      return true;
+    });
+    assert.ok(archive);
+    assert.deepEqual((await decodeSnapshot(await fs.readFile(archive))).files, [
+      file("notes.txt", "local before Pull"),
+    ]);
+  }));
+
+test("bound Push rechecks the checkpoint before any remote write", () =>
+  fixture(async ({ root, ctx, remote }) => {
+    const note = path.join(root, "notes.txt");
+    await fs.writeFile(note, "initially approved");
+    const action = await boundAction(ctx);
+    assert.ok(action.directionalAction);
+    action.directionalAction.checkpoint = async (fingerprint) => {
+      assert.match(fingerprint, /^[a-f0-9]{64}$/u);
+      await fs.writeFile(note, "changed while the checkpoint was retained");
+    };
+    await assert.rejects(
+      push(ctx, action, undefined, remote.factory),
+      /Local bytes changed at the push publication boundary/u,
+    );
+    assert.equal(remote.commits.length, 0);
+  }));
+
+test("bound Push still rejects local changes inside backend publication", () =>
+  fixture(async ({ root, ctx, remote }) => {
+    const note = path.join(root, "notes.txt");
+    await fs.writeFile(note, "initial bytes");
+    remote.duringPublish(() => fs.writeFile(note, "changed in backend"));
+    await assert.rejects(
+      push(ctx, await boundAction(ctx), undefined, remote.factory),
+      /Local bytes changed at the push publication boundary/u,
+    );
+    assert.equal(remote.commits.length, 0);
+    assert.equal(await fs.readFile(note, "utf8"), "changed in backend");
+  }));
+
+test("one-action Pull protects a selected-path case alias even for a destination-only removal", () =>
+  fixture(async ({ root, ctx, settings, save, remote }) => {
+    const setup = settings.syncSetups.work;
+    assert.ok(setup);
+    setup.sync = { include: ["AGENTS.md"], automatic: false };
+    await save();
+    await fs.writeFile(path.join(root, "agents.MD"), "preimage not stored at its actual spelling");
+    const config = await loadConfig();
+    const snapshot = await createSnapshot(config.snapshotIdentity, snapshotOptionsForContext(ctx, config));
+    remote.seed({ ...snapshot, files: [] });
+    await assert.rejects(pull(ctx, await boundAction(ctx), remote.factory), /case-variant paths/u);
+    assert.equal(await fs.readFile(path.join(root, "agents.MD"), "utf8"), "preimage not stored at its actual spelling");
+  }));
+
+test("the bound Push cannot be combined with existing commands or authorization flags", () =>
+  fixture(async ({ ctx, remote }) => {
+    const action = await boundAction(ctx);
+    for (const extra of [{ auto: true }, { force: true }, { yes: true }, { background: { validate() {} } }]) {
+      await assert.rejects(
+        push(ctx, { ...action, ...extra }, undefined, remote.factory),
+        /bound foreground Push or Pull/u,
+      );
+    }
+    await assert.rejects(syncBoth(ctx, action, remote.factory), /cannot authorize bidirectional Sync/u);
+    assert.deepEqual(remote.commits, []);
+  }));
+
+test("rule adoption checks files newly included by the incoming rules before changing local state", () =>
+  fixture(async ({ root, rules, ctx, settings, save, remote }) => {
+    await enableSizeLimits(settings, save);
+    const config = await loadConfig();
+    const privateFile = path.join(root, "private.txt");
+    const note = path.join(root, "notes.txt");
+    await fs.writeFile(privateFile, "keep local");
+    await fs.writeFile(note, "accepted");
+    assert.equal(await push(ctx, options, undefined, remote.factory), "applied");
+    const accepted = await readStateForConfig(config);
+    const [baseline] = remote.commits;
+    assert.ok(baseline?.selection?.version === 4);
+    const text = "/leave-local.txt\n";
+    const head = remote.seed({
+      ...baseline,
+      id: "oversize-rule-adoption",
+      selection: { ...baseline.selection, fingerprint: ignorePolicyFingerprint(text, false) },
+      ignoreRules: { filename: ".syncignore", text },
+      files: [file("notes.txt", "incoming"), file("private.txt", "x".repeat(MIB + 1))],
+    });
+    const onCommit = vi.fn();
+    await assert.rejects(
+      pull(ctx, { ...options, onCommit }, remote.factory),
+      /Transfer blocked by size limits\. Local file "private\.txt"/u,
+    );
+    assert.equal(onCommit.mock.calls.length, 0);
+    assert.equal(hasPendingAdoption(), false);
+    assert.equal(await fs.readFile(rules, "utf8"), activeRules);
+    assert.equal(await fs.readFile(privateFile, "utf8"), "keep local");
+    assert.equal(await fs.readFile(note, "utf8"), "accepted");
+    assert.deepEqual(await remote.backend.readHead(), head);
+    assert.deepEqual(await readStateForConfig(config), accepted);
+  }));
+
+test.each(["during payload", "before rule install", "after rule install", "during rule directory sync"] as const)(
+  "an interruption %s leaves a reviewed recovery path after the remote head advances",
+  (phase) =>
+    fixture(async ({ root, rules, ctx, remote, settings, save }) => {
+      const config = await loadConfig();
+      const local = await createSnapshot(config.snapshotIdentity, snapshotOptionsForContext(ctx, config));
+      assert.equal(local.selection?.version, 4);
+      const checkNewLimit = phase === "before rule install" || phase === "after rule install";
+      const incoming = checkNewLimit ? "x".repeat(MIB + 1) : "incoming";
+      const incomingRules = "# Active publisher rules\r\n/leave-local.txt\r\n";
+      if (phase === "during rule directory sync" && process.platform === "win32") return;
+      const head = remote.seed({
+        ...local,
+        id: "incoming",
+        version: 7,
+        selection: { ...local.selection, fingerprint: ignorePolicyFingerprint(incomingRules, false) },
+        ignoreRules: { filename: ".syncignore", text: incomingRules },
+        files: [file("notes.txt", incoming)],
+      });
+      const notes = path.join(root, "notes.txt");
+      await fs.writeFile(notes, "local");
+      await fs.writeFile(path.join(root, "leave-local.txt"), "left local under the new rules");
+      const controller = new AbortController();
+      const mutate = engineHost().mutate;
+      const rename = fs.rename;
+      const open = fs.open;
+      const syncFault = vi.spyOn(fs, "open").mockImplementation(async (...args) => {
+        if (
+          phase === "during rule directory sync" &&
+          args[0] === root &&
+          args[1] === "r" &&
+          (await fs.readFile(rules, "utf8")) === incomingRules
+        )
+          throw new Error("Simulated interruption syncing the rule directory");
+        return open(...args);
+      });
+      const fault = vi.spyOn(fs, "rename").mockImplementation(async (from, to) => {
+        if (phase === "after rule install" && to === statePathForConfig(config))
+          throw new Error("Simulated interruption before baseline publication");
+        await rename(from, to);
+        if (phase === "during payload" && to === notes) controller.abort();
+      });
+      engineHost().mutate = async (target, action) => {
+        if (phase === "before rule install" && target === rules)
+          throw new Error("Simulated interruption before rule installation");
+        return mutate(target, action);
+      };
+      try {
+        await assert.rejects(
+          pull(ctx, { ...options, signal: controller.signal }, remote.factory),
+          /Simulated interruption|cancelled/u,
+        );
+      } finally {
+        fault.mockRestore();
+        engineHost().mutate = mutate;
+      }
+      try {
+        if (phase === "during rule directory sync") {
+          await assert.rejects(pull(ctx, options, remote.factory), /interruption syncing the rule directory/u);
+          assert.equal(hasPendingAdoption(), true);
+          assert.equal((await readStateForConfig(config)).lastAppliedSnapshot, undefined);
+        }
+      } finally {
+        syncFault.mockRestore();
+      }
+      assert.ok((await fs.readFile(notes, "utf8")) === incoming);
+      assert.equal(
+        await fs.readFile(rules, "utf8"),
+        phase === "after rule install" || phase === "during rule directory sync" ? incomingRules : activeRules,
+      );
+      assert.equal(hasPendingAdoption(), true);
+      assert.equal((await readStateForConfig(config)).lastAppliedSnapshot, undefined);
+      await assert.rejects(push(ctx, options, undefined, remote.factory), /Pending ignore-rule adoption/u);
+      const newer = remote.seed(legacy("newer-head", [file("remote.txt", "not reviewed")]));
+      if (phase === "during payload") {
+        assert.ok((await pendingTransactionEntries()).length);
+        const reads = remote.reads();
+        await fs.writeFile(rules, "# different local rules\n");
+        await assert.rejects(initializeSync(ctx, new AbortController().signal), /file transaction no longer match/u);
+        assert.ok((await pendingTransactionEntries()).length);
+        assert.equal(await fs.readFile(notes, "utf8"), "incoming");
+        await fs.writeFile(rules, activeRules);
+        await initializeSync(ctx, new AbortController().signal);
+        assert.equal(remote.reads(), reads);
+        assert.equal(await fs.readFile(notes, "utf8"), "local");
+        assert.equal(await fs.readFile(rules, "utf8"), activeRules);
+        assert.deepEqual(await pendingTransactionEntries(), []);
+        assert.equal(hasPendingAdoption(), true);
+      }
+      ctx.ui.confirm = async (title, summary) => {
+        assert.match(title, /Resume reviewed/u);
+        assert.match(summary, /recorded snapshot, not the current remote head/u);
+        return false;
+      };
+      assert.equal(await pull(ctx, options, remote.factory), "cancelled");
+      assert.equal(hasPendingAdoption(), true);
+      ctx.ui.confirm = async () => true;
+      if (checkNewLimit) {
+        await enableSizeLimits(settings, save);
+        if (phase === "before rule install") {
+          await assert.rejects(pull(ctx, options, remote.factory), /Transfer blocked by size limits/u);
+          assert.equal(hasPendingAdoption(), true);
+          assert.equal(await fs.readFile(rules, "utf8"), activeRules);
+          assert.equal((await readStateForConfig(config)).lastAppliedSnapshot, undefined);
+          assert.ok((await fs.readFile(notes, "utf8")) === incoming);
+          const setup = settings.syncSetups.work;
+          delete setup.sync.maxFileSizeMiB;
+          delete setup.sync.maxDirectorySizeMiB;
+          await save();
+        }
+      }
+      assert.equal(await pull(ctx, options, remote.factory), "applied");
+      assert.equal(hasPendingAdoption(), false);
+      assert.equal(await fs.readFile(rules, "utf8"), incomingRules);
+      assert.equal(await fs.readFile(path.join(root, "leave-local.txt"), "utf8"), "left local under the new rules");
+      assert.equal((await readStateForConfig(await loadConfig())).lastAppliedSnapshot, head.snapshotId);
+      assert.equal((await remote.backend.readHead())?.revision, newer.revision);
+      assert.ok((await fs.readFile(notes, "utf8")) === incoming);
+    }),
+);
+
+test.each(["head changed", "shared source", "session opt-in changed", "protected live file"] as const)(
+  "Pull preserves local rules and files when the %s",
+  (reason) =>
+    fixture(async ({ root, ctx, rules, remote, settings, save }) => {
+      const config = await loadConfig();
+      const local = await createSnapshot(config.snapshotIdentity, snapshotOptionsForContext(ctx, config));
+      assert.equal(local.selection?.version, 4);
+      const text = "# remote rules\n/private.txt\n";
+      const sessions = reason === "session opt-in changed";
+      const foreign = {
+        ...local,
+        id: "incoming-rules",
+        version: 7,
+        ignoreRules: { filename: ".syncignore", text },
+        selection: { ...local.selection, sessions, fingerprint: ignorePolicyFingerprint(text, sessions) },
+        files: [file("notes.txt", "incoming")],
+      };
+      remote.seed(foreign);
+      const note = path.join(root, "notes.txt");
+      await fs.writeFile(note, "keep local");
+      if (reason === "shared source") {
+        const setup = settings.syncSetups.work;
+        assert.ok(setup);
+        settings.syncSetups.shared = { ...setup, storage: { ...setup.storage, path: "another" } };
+        await save();
+      }
+      if (reason === "protected live file") ctx.protectedSessionFiles = [rules];
+      ctx.ui.confirm = async () => {
+        assert.equal(reason, "head changed");
+        remote.seed({ ...foreign, id: "advanced" });
+        return true;
+      };
+      const error = {
+        "head changed": /Remote changed/u,
+        "shared source": /shared by other setups/u,
+        "session opt-in changed": /Sessions opt-in differs/u,
+        "protected live file": /protected live session/u,
+      }[reason];
+      await assert.rejects(pull(ctx, options, remote.factory), error);
+      assert.equal(await fs.readFile(note, "utf8"), "keep local");
+      assert.equal(await fs.readFile(rules, "utf8"), activeRules);
+      assert.equal(hasPendingAdoption(), false);
+    }),
+);
+
+test("a self-excluding publication never carries the active rule text forward or deletes local rules on Pull", () =>
+  fixture(async ({ root, rules, ctx, remote }) => {
+    await fs.writeFile(path.join(root, "notes.txt"), "notes");
+    assert.equal(await push(ctx, options, undefined, remote.factory), "applied");
+    const first = await remote.backend.readHead();
+    assert.ok(first);
+    await fs.appendFile(rules, "/Local.rules\n# text stays local\n");
+    assert.equal(await push(ctx, options, undefined, remote.factory), "applied");
+    assert.equal(remote.commits.at(-1)?.ignoreRules, null);
+    assert.doesNotMatch(JSON.stringify(remote.commits.at(-1)), /text stays local/u);
+    assert.deepEqual((await remote.backend.readSnapshot(first.snapshotRef)).ignoreRules, {
+      filename: "Local.rules",
+      text: activeRules,
+    });
+    await fs.writeFile(rules, activeRules);
+    await assert.rejects(pull(ctx, options, remote.factory), /exclude their own file/u);
+    assert.equal(await fs.readFile(rules, "utf8"), activeRules);
+  }));
 
 test("mixed legacy setups reserve configured ignore control files without changing portable selection", () =>
   fixture(async ({ settings }) => {

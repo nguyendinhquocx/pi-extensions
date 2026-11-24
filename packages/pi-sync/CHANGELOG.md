@@ -1,5 +1,25 @@
 # @narumitw/pi-sync
 
+## 0.66.0
+
+### Minor Changes
+
+- 94d781f: Include the active ignore file in new snapshots unless it ignores itself. Require a reviewed overwrite for either direction of a policy conflict, and let Pull adopt verified remote rules without changing the remote. Upgrade all peers before publishing the new snapshot format and review automatic transfers again.
+
+### Patch Changes
+
+- 39e05a9: Find Settings by searching for storage connections in the sync menu. Show setting-specific save confirmations instead of generic transfer advice.
+
+## 0.65.0
+
+### Minor Changes
+
+- c31f9c4: Make the `/sync` manager's Push and Pull actions apply the selected direction without another confirmation. Preserve a restore point before an overwrite, and recover eligible daemon file-queue failures within the same action without repeating a committed write. Direct slash commands retain their existing behavior.
+
+### Patch Changes
+
+- 25d766a: Show Yes in the first terminal transfer confirmation, even for large reviews. Open View details only when you want to see individual paths. The summary still defaults to No, and Pi Sync verifies the transfer before applying it.
+
 ## 0.64.0
 
 ### Minor Changes

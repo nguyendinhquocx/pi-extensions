@@ -4,7 +4,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { posixJoin } from "../../paths.js";
 import { snapshotFileFromBlob } from "../../snapshot/snapshot-payload.js";
-import { IGNORE_SNAPSHOT_VERSION, type Snapshot, type SnapshotFile } from "../../snapshot/snapshot-types.js";
+import { isIgnoreSnapshotVersion, type Snapshot, type SnapshotFile } from "../../snapshot/snapshot-types.js";
 import { stateDir } from "../../state/state-directory.js";
 import { throwIfAborted } from "../../sync/signals.js";
 import { syncErrorGuidance } from "../../sync/sync-error-guidance.js";
@@ -19,6 +19,7 @@ import {
   type SyncBackend,
   SyncBackendConflictError,
   SyncBackendPublicationOutcomeUnknownError,
+  verifyPreviousHeadInHistory,
 } from "../sync-backend.js";
 import {
   normalizeGitBranch,
@@ -172,6 +173,7 @@ export class GitSyncBackend implements SyncBackend {
       profile: manifest.profile,
       ...(manifest.snapshotSyncSessions === undefined ? {} : { syncSessions: manifest.snapshotSyncSessions }),
       ...(manifest.selection === undefined ? {} : { selection: structuredClone(manifest.selection) }),
+      ...(manifest.ignoreRules === undefined ? {} : { ignoreRules: structuredClone(manifest.ignoreRules) }),
       ...(manifest.localFields === undefined ? {} : { localFields: [...manifest.localFields] }),
       files,
     };
@@ -204,6 +206,7 @@ export class GitSyncBackend implements SyncBackend {
       syncSessions: snapshot.syncSessions === true || snapshot.files.some((file) => file.path.startsWith("sessions/")),
       ...(snapshot.syncSessions === undefined ? {} : { snapshotSyncSessions: snapshot.syncSessions }),
       ...(snapshot.selection === undefined ? {} : { selection: snapshot.selection }),
+      ...(snapshot.ignoreRules === undefined ? {} : { ignoreRules: snapshot.ignoreRules }),
       ...(snapshot.localFields === undefined ? {} : { localFields: snapshot.localFields }),
       files: files.map(({ path: filePath, sha256: fileSha, size }) => ({
         path: filePath,
@@ -218,6 +221,17 @@ export class GitSyncBackend implements SyncBackend {
       throw this.redactedError(error);
     }
     throwIfAborted(options.signal);
+    if (options.preservePreviousHead && observed) {
+      try {
+        await verifyPreviousHeadInHistory(this, await this.headForSha(observed, options.signal), options.signal);
+      } catch (error) {
+        throwIfAborted(options.signal);
+        throw new Error(
+          `Cannot verify the previous Git publication ${observed} in History; remote head was not updated.`,
+          { cause: error },
+        );
+      }
+    }
     if (options.validateIgnorePolicy) {
       await options.validateIgnorePolicy();
       throwIfAborted(options.signal);
@@ -641,11 +655,7 @@ export class GitSyncBackend implements SyncBackend {
       (await this.git(["show", `${commit}:${this.manifestPath()}`], { signal, maxOutputBytes: MAX_GIT_MANIFEST_BYTES }))
         .stdout;
     const manifest = parseGitManifest(bytes);
-    const entries = await this.readPublicationTree(
-      commit,
-      signal,
-      manifest.snapshotVersion === IGNORE_SNAPSHOT_VERSION,
-    );
+    const entries = await this.readPublicationTree(commit, signal, isIgnoreSnapshotVersion(manifest.snapshotVersion));
     const payloadEntries = validateGitPublicationTree(entries, manifest, this.manifestPath(), (filePath) =>
       this.filePath(filePath),
     );
@@ -715,7 +725,7 @@ function parseGitManifest(bytes: Buffer): GitManifest {
     parsed &&
     typeof parsed === "object" &&
     "snapshotVersion" in parsed &&
-    parsed.snapshotVersion === IGNORE_SNAPSHOT_VERSION &&
+    isIgnoreSnapshotVersion(parsed.snapshotVersion) &&
     !isUtf8(bytes)
   ) {
     throw new Error("Git publication manifest is not valid UTF-8.");
