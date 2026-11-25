@@ -77,7 +77,7 @@ test("completeGoalArguments suggests /goal subcommands and token options", () =>
 test("parseCommand parses budgets, quoted objectives, and management commands", () => {
   assert.deepEqual(parseCommand('--tokens 1.5k "ship tests"'), {
     kind: "start",
-    objective: "ship tests",
+    objective: '"ship tests"',
     tokenBudget: 1500,
   });
   assert.deepEqual(parseCommand("edit --tokens 2m revise scope"), {
@@ -539,6 +539,45 @@ test("goal_complete requires current goal_id before validating summary", async (
     assert.doesNotMatch(staleId.content?.[0]?.text ?? "", new RegExp(escapeRegExp(currentGoal.id)));
     assert.equal(requireLastGoal(mock).id, currentGoal.id);
     assert.equal(lastGoalStatus(mock), "active");
+  } finally {
+    mock.events.get("session_shutdown")?.[0]?.({}, ctx);
+  }
+});
+
+const completionNoticeHead = `Verified ${"✓".repeat(148)}`;
+
+test.each([
+  {
+    name: "short summary",
+    summary: "Fixed the test and verified it passes.",
+    preview: "Fixed the test and verified it passes.",
+  },
+  {
+    name: "long summary with terminal controls",
+    summary: `${completionNoticeHead} plus additional evidence.`,
+    preview: `${completionNoticeHead}...`,
+    controls: "\u001b]52;c;clipboard\u0007",
+  },
+])("goal_complete notifies with the accepted $name", async ({ summary, preview, controls = "" }) => {
+  const objective = "Fix the failing test";
+  const suppliedSummary = `${controls}${summary}`;
+  const { mock, ctx, notifications } = await startGoalForTest({}, objective);
+  const tool = requireGoalTool(mock, "goal_complete");
+  const goalId = requireLastGoal(mock).id;
+
+  try {
+    const result = await tool.execute(
+      "completion-notification",
+      { goal_id: goalId, summary: suppliedSummary },
+      new AbortController().signal,
+      () => undefined,
+      ctx,
+    );
+
+    assert.equal(result.terminate, true);
+    assert.equal(result.content?.[0]?.text, `Goal complete: ${summary}`);
+    assert.deepEqual(result.details, { goal: objective, goal_id: goalId, summary: suppliedSummary });
+    assert.deepEqual(notifications.at(-1), { message: `Goal complete: ${preview}`, level: "info" });
   } finally {
     mock.events.get("session_shutdown")?.[0]?.({}, ctx);
   }
