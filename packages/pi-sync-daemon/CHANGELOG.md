@@ -1,5 +1,17 @@
 # @narumitw/pi-sync-daemon
 
+## 0.13.2
+
+### Patch Changes
+
+- 489bc7a: Record foreground Push and Pull attempts in the private debug log, including resumed ignore-rule Pulls. Match client and daemon records by operation ID without logging raw errors or transfer data.
+
+## 0.13.1
+
+### Patch Changes
+
+- df24888: Resume an interrupted ignore-rule adoption from Pull when the original session can verify file-queue recovery. Use the recorded snapshot and ask before continuing.
+
 ## 0.13.0
 
 ### Minor Changes
