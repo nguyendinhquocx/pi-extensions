@@ -18,16 +18,11 @@ If you installed the [standalone daemon package](https://www.npmjs.com/package/@
 
 The daemon remains a separate process. Pi uses one detached service per canonical agent directory and does not install an OS service. Updating the standalone package does not update the build bundled in Pi Sync. To get a newer bundled daemon, install a Pi Sync release that includes it.
 
-After an update, use `/reload` in open Pi sessions. On the next active connection, the client
-checks the owner's daemon build version, not the Pi Sync version, over authenticated, compatible
-IPC. It reuses a compatible owner on the same or a newer build. For an older or unversioned owner,
-the client checks that no retained unattended permission blocks the upgrade. It then requests a stop
-and starts the replacement only after the owner releases its identity and exits. If any check fails,
-follow manual recovery. The upgrade does not run a transfer, replay an operation, or change sync
-settings. Passive print, JSON, and shutdown paths do not replace an older owner. If an upgrade fails
-while switching sessions, Pi Sync reports the failure and tries to attach the new session to the
-same owner for file protection only. That attachment cannot submit sync work. Use `/reload`
-after recovery.
+After an update, start Pi or use `/reload`. The next eligible interactive connection checks the daemon version and capabilities, not the Pi Sync version. An owner that does not report retirement of Autonomous and Continuous sync cannot receive sync work from the new client, even if it has the same version or is newer. Use the stop and exit checks below if such an owner is not automatically replaced. Protection-only attachment does not stop older clients or their owner. An older owner that supports guarded upgrades refuses to stop while reviews, jobs, or queue releases are active. Finish the work and use `/reload` again if the update is deferred. If Continuous sync keeps the old owner busy, close the other Pi sessions on that root and try again. A retained after-exit grant on any setup blocks replacement.
+
+For an older or unversioned owner that does not support guarded upgrades, wait for all sync work to finish and close the Pi sessions that could submit more work. Run `restart --root <agent-directory>` using the [daemon CLI](#daemon-cli) from the intended build, then start Pi or use `/reload`. This is the one-time upgrade step for a legacy owner: it cannot check for new work before accepting a manual stop.
+
+The replacement starts only after the old owner releases its identity and lock and its exit is verified. Pi reports the new version after it attaches to the expected build. `/sync daemon status` shows both builds and any known blocker without starting or replacing the owner. Other open sessions retain their registered file protection and can `/reload` to attach to the new instance. If a guarded upgrade is deferred, Pi registers the open session file for protection without joining the old owner's sync work. On a legacy owner, Pi uses a protection-only connection; it cannot submit sync work. The restart does not transfer data, replay a request, change settings, or grant consent. Startup transfer retains its authorization checks. Retiring Autonomous and Continuous sync does not stop an older process until it is drained and exits. Print, JSON, and shutdown paths do not replace an older owner.
 
 Manual recovery:
 
@@ -61,8 +56,13 @@ Manual recovery:
    fails, keep the records. Do not edit or delete them to force startup.
 5. Use `/reload`, then `/sync daemon status`. Review after-exit permission again if you need it.
 
-Stop the service before rebuilding a local checkout in place. A source rebuild without a package
-version change does not trigger automatic replacement.
+Stop the service before rebuilding the files it runs from in place. For a separately built checkout, `/sync daemon status`
+compares the loaded daemon build with the running owner. The build ID identifies compiled engine code; it does not order
+builds. A missing ID means the match is unverified, and different IDs at the same version do not trigger an automatic restart.
+To switch explicitly, close or reload other Pi clients as appropriate and run `restart --root <agent-directory>` with the
+[daemon CLI](#daemon-cli) from the intended build. It uses the same guarded drain, refuses to downgrade a newer owner,
+and does not bypass retained unattended permission or pending recovery. Then load that Pi Sync build and use
+`/sync daemon status` to verify the match.
 
 Before the first daemon-owned transfer, close or upgrade every older Pi process and review `/sync daemon handover`. The existing operation lock excludes observed transfers, but an idle older client cannot be detected from an absent lock. Older binaries cannot be made to honor a new handover record retroactively. Do not run an old and new engine as interchangeable writers.
 
@@ -72,11 +72,11 @@ Before enabling [transfer size limits](../skills/configure-pi-sync/references/co
 
 ## Lifetime is not consent
 
-Old Continuous consent was limited to an open Pi session. Existing Automatic, Autonomous, and Continuous defaults stay unchanged. When no registered live client PID remains for that canonical root and no valid explicit after-exit grant covers the active setup, a fixed 30-second grace period starts. Explicit CLI start without clients follows the same policy. Live passive, disconnected, publishing, and orderly retired PIDs keep the owner alive; detach, heartbeat loss, and an empty active-participant list do not prove process exit. `/reload`, `/new`, fork, and resume retain protection while their Pi process lives. A client arriving before shutdown becomes final cancels automatic exit. No new setting, environment variable, or keep-alive flag is added.
+Autonomous and Continuous sync are retired. When no registered live client PID remains for that canonical root, a fixed 30-second grace period starts. Explicit CLI start without clients follows the same policy. Live passive, disconnected, publishing, and orderly retired PIDs keep the owner alive; detach, heartbeat loss, and an empty active-participant list do not prove process exit. `/reload`, `/new`, fork, and resume retain protection while their Pi process lives. A client arriving before shutdown becomes final cancels automatic exit. No new setting, environment variable, or keep-alive flag is added.
 
 After grace, stop new automatic work, cancel cancellable work, and drain committed writes, monitor work, mutation-queue releases, persistence, and owned callbacks before releasing ownership. Closing adds no final sync or model request and preserves journals, backups, request accounting, and existing transfer permissions. The next eligible interactive client or explicit command can use singleton startup only after the old owner's exit is proven. Print/JSON never launch a replacement.
 
-`/sync daemon allow-after-exit` reviews extra unattended permission for the current setup and selected standalone-capable model. `/sync daemon revoke-after-exit` stops new unattended work. Setup changes invalidate the persisted digest. Interactive model, working-directory, or session-directory changes durably revoke older grants; returning to the old binding or restarting does not restore them. A valid active-setup grant keeps service lifetime under the existing fingerprint and binding rules, without expanding work permissions. A grant for another setup, a revoked grant, or a stale fingerprint does not. Temporary provider or backend unavailability does not itself revoke a valid grant. Lifetime checks do not call a model, contact a provider or storage, or execute credential commands. Independent model availability for actual work is checked through public Pi SDK APIs; private extension registrations and parent runtime credentials are not transferred.
+The new daemon does not honor retained after-exit grants. `/sync daemon allow-after-exit` reports retirement; `/sync daemon revoke-after-exit` remains available to clear a retained grant. Follow [Ownership and upgrade](#ownership-and-upgrade) if an old owner is still running or a grant blocks the upgrade. Before a downgrade, review and disable legacy automation preferences and clear grants; older builds can still read and act on preserved settings.
 
 Headless print/JSON startup never launches a persistent service. It passively attaches to an existing one to protect its session and pause automatic work. Orderly closed clients retain live-PID file protection without remaining active participants; ambiguous disconnections and replacement gaps remain pauses. Pending recovery needs a configured observable client and reviewed ownership before managed files can be changed. No event automatically reloads resources or changes the model-visible prompt/tool prefix; reload remains an explicit reviewed client action.
 
@@ -105,7 +105,7 @@ For the manager's explicit **Push to remote** and **Pull from remote** actions, 
 
 ## Recover from uncertain daemon cleanup
 
-If a reviewed Pull saves an ignore-rule adoption journal but cannot start applying the files, Pi Sync can recover from an unconfirmed file-queue release when the original Pi session still owns the result and all stop checks pass. Use the same **Pull from remote** action if that option remains available. Pi Sync reconnects only after the original owner exits and asks you to review the recorded snapshot before continuing. It does not publish a new snapshot, change automatic-transfer permission, or require `/reload` on this path.
+A pending ignore-rule adoption journal requires the compatible release; the new daemon does not replay it. Use the [manual recovery guide](../skills/configure-pi-sync/references/configuration.md#retired-ignore-file-policy).
 
 **Stop daemon for recovery…** in `/sync` remains a diagnostic fallback when automatic recovery cannot verify cleanup or daemon cleanup blocks initialization. In TUI or RPC, `/sync daemon recover` opens the same
 review without starting or upgrading the daemon. The review identifies the
@@ -133,6 +133,8 @@ interrupted operation. Normal startup policy applies again on a separate
 `/reload`.
 
 ## Diagnostics and rollback
+
+For retired `.syncignore` settings, snapshots, or pending recovery, use `/skill:configure-pi-sync` or the [manual recovery guide](../skills/configure-pi-sync/references/configuration.md#retired-ignore-file-policy). The new daemon does not convert or replay retired records.
 
 If saving consent fails, that service instance blocks automatic work. Uncertain consent publication, failed revocation, or cleanup failure keeps the owner paused and retains evidence; automatic exit or implicit restart must not clear the barrier and restore an older persisted grant. Preserve the retained file, repair persistence, and revoke permission through the existing repair/revocation path before an explicit restart; a failed save does not prove the previous grant changed. Cleanup failure is not a successful exit.
 

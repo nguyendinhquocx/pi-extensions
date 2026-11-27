@@ -1,12 +1,10 @@
 import type { ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import type { Component } from "@earendil-works/pi-tui";
-import { type ActionMenuItem, defineMenu, type MenuDefinition, runDocumentReview, runMenu } from "@narumitw/pi-tui-kit";
+import { type ActionMenuItem, defineMenu, type MenuDefinition, runMenu } from "@narumitw/pi-tui-kit";
 import { loadConfig, loadSettingsConfig, syncCheckConfigFingerprint } from "../settings/config.js";
 import { operationBlocksChanges } from "../state/operation-availability.js";
 import { captureMutationOwner } from "../sync/sync-local.js";
 import { type RunRoute, runCancellableOperation } from "./cancellable-operation.js";
-import { ignoreFileSettingsAvailable } from "./ignore-file-ui.js";
-import { showIgnoreMigrationPrompt } from "./ignore-migration-prompt.js";
 import {
   attentionMainMenuItems,
   blockedSyncMenuItem,
@@ -29,7 +27,6 @@ export async function showSyncManager(
   sessionSignal?: AbortSignal,
   options: SyncManagerAttentionOptions & {
     needsDaemonRecovery?: () => boolean;
-    getPendingPullReview?: () => { setupName: string; fingerprint: string } | undefined;
   } = {},
 ): Promise<void> {
   if (!ctx.hasUI) {
@@ -49,7 +46,6 @@ export async function showSyncManager(
   type Action =
     | "activate"
     | "review-attention"
-    | "retry-refusal"
     | "sync"
     | "switch"
     | "settings"
@@ -83,7 +79,6 @@ export async function showSyncManager(
         cancelledMessage: direction === "push" ? "Push cancellation requested." : "Pull cancellation requested.",
         target: review.setupName,
         directionalFingerprint: review.fingerprint,
-        requirePendingAdoption: state.manager.recoveryPull,
         signal,
         isCurrent,
       },
@@ -190,35 +185,13 @@ export async function showSyncManager(
         const disposition = await dispatchManagerResult(ctx, result, "sync", runRoute, sessionSignal);
         return disposition.kind === "close" ? { kind: "close" } : { kind: "stay" };
       },
-      "retry-refusal": async ({ state, signal: actionSignal }) => {
-        const signal = sessionSignal ? AbortSignal.any([sessionSignal, actionSignal]) : actionSignal;
-        const validate = captureMutationOwner(ctx, signal);
-        validate();
-        const retryRoute: RunRoute = (route, operationSignal, onCommit, target, onDialog) =>
-          runRoute(route, operationSignal, onCommit, target, onDialog, true);
-        const result = await runCancellableOperation(ctx, "Checking cached refusal…", "sync", retryRoute, {
-          commitAware: true,
-          cancelAcrossDialogs: true,
-          signal,
-          target: state.manager.configReview?.setupName,
-          cancelledMessage: "Model retry cancelled. Submitted requests and committed writes cannot be undone.",
-        });
-        if (signal.aborted) return { kind: "close" };
-        validate();
-        if (result.kind === "decision-required" || result.kind === "remote-selection-required")
-          ctx.ui.notify(
-            "Model retry needs an established source and matching synced content. Use Sync now to review changed selection or recovery before retrying.",
-            "warning",
-          );
-        return { kind: result.kind === "closed" ? "close" : "stay" };
-      },
       switch: async () => {
         const result = await showSetupSwitcher(ctx, runRoute, undefined, sessionSignal);
         return result === "pull-attempted" || result === "closed" ? { kind: "close" } : { kind: "stay" };
       },
       settings: async ({ state, signal: actionSignal }) => {
         const signal = sessionSignal ? AbortSignal.any([sessionSignal, actionSignal]) : actionSignal;
-        const review = state.manager.settingsReview ?? state.manager.configReview;
+        const review = state.manager.configReview;
         const result = await showSyncSettings(ctx, runRoute, signal, review?.setupName);
         return { kind: result === "exit" ? "close" : "stay" };
       },
@@ -261,30 +234,6 @@ export async function showSyncManager(
         const validate = captureMutationOwner(ctx, signal);
         const config = await loadConfig(state.manager.configReview?.setupName);
         validate();
-        if (config.continuous) {
-          const { continuousStatusLines } = await import("../sync/continuous-record.js");
-          validate();
-          const lines = await continuousStatusLines(config);
-          validate();
-          const review = await runDocumentReview(ctx, {
-            title: "Sync diagnostics",
-            lines: [`Setup: ${safeTerminalText(config.setupName)} · local observations only`],
-            content: lines.join("\n"),
-            confirmation: { label: "Continue to backend checks…" },
-            hint: "back",
-            signal,
-            isCurrent,
-          });
-          validate();
-          if (review.kind === "cancelled") return { kind: review.reason === "close" ? "close" : "stay" };
-          if (review.kind !== "confirmed") return { kind: "stay" };
-          const current = await loadConfig();
-          validate();
-          if (syncCheckConfigFingerprint(config) !== syncCheckConfigFingerprint(current)) {
-            ctx.ui.notify("Setup changed during diagnostics review; reopen Diagnostics.", "warning");
-            return { kind: "stay" };
-          }
-        }
         const confirmed = await ctx.ui.confirm(
           "Run diagnostics?",
           `Setup: ${safeTerminalText(config.setupName)}\nStorage: ${backendStorageDescription(config)}\nS3/R2 reads the latest pointer without writing. Git reads remote snapshots and checks its cache. WebDAV probes conditional writes and cleanup, and can repair a missing history entry. Possible-secret checks still run. This is not the read-only Check remote status action.`,
@@ -338,7 +287,6 @@ export async function showSyncManager(
   for (const action of [
     "review-attention",
     "sync",
-    "retry-refusal",
     "settings",
     "pull",
     "push",
@@ -351,15 +299,7 @@ export async function showSyncManager(
     const activate = menu.actions[action];
     menu.actions[action] = async (invocation) => {
       validateOwner();
-      const { configReview, settingsReview, recoveryPull } = invocation.state.manager;
-      if (action === "pull" && recoveryPull) {
-        if (options.getPendingPullReview?.() !== configReview) {
-          ctx.ui.notify("The original Pull is no longer available for automatic recovery.", "warning");
-          return { kind: "stay" };
-        }
-        return activate(invocation);
-      }
-      const review = action === "settings" ? (settingsReview ?? configReview) : configReview;
+      const review = invocation.state.manager.configReview;
       let current = false;
       try {
         const config = await (action === "settings" ? loadSettingsConfig() : loadConfig());
@@ -397,31 +337,18 @@ export async function showSyncManager(
         }, customOptions),
     },
   };
-  let firstOpen = true;
   const recovery: State["manager"] = {
     title:
       "Pi Sync recovery required\nDaemon cleanup could not be confirmed. Stop the daemon before retrying a transfer.",
     actions: ["Stop daemon for recovery…", "Help"],
   };
-  const describeRecovery = (): State["manager"] => {
-    const configReview = options.getPendingPullReview?.();
-    if (!configReview) return recovery;
-    return {
-      title: "Pi Sync recovery required\nPull can try to recover the daemon and review the pending transfer.",
-      actions: ["Pull from remote", ...recovery.actions],
-      configReview,
-      recoveryPull: true,
-    };
-  };
   const describe = async (signal: AbortSignal) => {
-    if (options.needsDaemonRecovery?.()) return describeRecovery();
+    if (options.needsDaemonRecovery?.()) return recovery;
     const pendingAttention = options.getAttention?.();
     const observation = options.getObservation?.();
-    const manager = await describeManagerState(signal, pendingAttention, undefined, observation, () =>
-      ignoreFileSettingsAvailable(ctx, signal),
-    );
+    const manager = await describeManagerState(signal, pendingAttention, undefined, observation);
     if (signal.aborted || !isCurrent()) return manager;
-    if (options.needsDaemonRecovery?.()) return describeRecovery();
+    if (options.needsDaemonRecovery?.()) return recovery;
     // A busy operation suppresses baseline reads, not the stored check-time hint.
     if (
       observation &&
@@ -437,20 +364,7 @@ export async function showSyncManager(
     return manager;
   };
   await runMenu(menuContext, menu, {
-    getState: async ({ signal }) => {
-      const offerOnOpen = firstOpen;
-      firstOpen = false;
-      let manager = await describe(signal);
-      if (
-        offerOnOpen &&
-        manager.operation?.kind === "free" &&
-        manager.configReview &&
-        (await showIgnoreMigrationPrompt(ctx, manager.configReview.setupName, signal, isCurrent))
-      ) {
-        if (!signal.aborted && isCurrent()) manager = await describe(signal);
-      }
-      return { manager };
-    },
+    getState: async ({ signal }) => ({ manager: await describe(signal) }),
     signal: sessionSignal,
     isCurrent,
   });
@@ -461,7 +375,6 @@ function syncMainMenuItem(
 ): ActionMenuItem<
   "main",
   | "sync"
-  | "retry-refusal"
   | "pull"
   | "push"
   | "diff"
@@ -481,7 +394,6 @@ function syncMainMenuItem(
 > {
   const actions = {
     "Sync now": "sync",
-    "Retry refused model result…": "retry-refusal",
     "Pull from remote": "pull",
     "Push to remote": "push",
     "View differences": "diff",
@@ -508,7 +420,6 @@ function syncMainMenuItem(
     action,
     description: {
       sync: "Merge changes on both sides.",
-      "retry-refusal": "Retry model; may incur costs.",
       pull: "Remote → this device; replaces conflicting local files.",
       push: "This device → remote; replaces conflicting remote files.",
       diff: "Inspect changes; no transfer.",

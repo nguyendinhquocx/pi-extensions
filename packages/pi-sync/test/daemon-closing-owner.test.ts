@@ -66,6 +66,8 @@ async function fixture(agentDir: string) {
   const exited = Promise.withResolvers<void>();
   const events: string[] = [];
   const addresses = ["old", "new", "unexpected-third"].map((instance) => ({
+    ignoreFilesRetired: true,
+    autonomousSyncRetired: true,
     paths: {
       root,
       directory: path.join(root, "runtime"),
@@ -278,7 +280,7 @@ test("no external connection caller can bypass a directional recovery's compatib
       await running;
     }
     assert.equal(await running, verified);
-    assert.equal((await f.client.verifyConnection()).identity.instance, replacement.identity.instance);
+    assert.equal((await f.client.verifyConnection())?.identity.instance, replacement.identity.instance);
     assert.equal(transport.ensure.mock.calls.length, 2);
     assert.equal(original.run.mock.calls.length, 1);
     assert.equal(original.recoverForeground.mock.calls[0]?.[0], "verified-job");
@@ -303,6 +305,21 @@ test("a second closing attach exhausts the single retry without submitting the o
       assert.equal(connection.update.mock.calls.length, 0);
     }
   }));
+
+for (const capability of ["ignoreFilesRetired", "autonomousSyncRetired"] as const) {
+  for (const buildVersion of ["0.13.3", "99.0.0"]) {
+    test(`a ${buildVersion} daemon without ${capability} only protects files`, () =>
+      withClient(async (f) => {
+        f.attachErrors.length = 0;
+        transport.ensure.mockResolvedValueOnce({ ...f.addresses[0], buildVersion, [capability]: undefined });
+        await assert.rejects(f.client.run("initialize", {}), /only protecting.*incompatible/u);
+        await assert.rejects(f.client.run("sync", {}), /only protecting/u);
+        assert.equal(f.connections.length, 1);
+        assert.equal(f.connections[0]?.run.mock.calls.length, 0);
+        assert.equal(f.connections[0]?.update.mock.calls.length, 0);
+      }));
+  }
+}
 
 test("a closing error from an already submitted operation is not retried or replayed", () =>
   withClient(async (f) => {
@@ -579,6 +596,8 @@ test("a failed interactive upgrade reports its error and protects the replacemen
     f.attachErrors.length = 0;
 
     assert.equal(await f.client.attachExisting({ allowUpgrade: true }), false);
+    assert.equal(f.client.blockedUpgradeReason(oldOwner.identity.instance), "Unattended permission needs review?");
+    assert.equal(f.client.blockedUpgradeReason("another-instance"), undefined);
     assert.deepEqual(f.notifications, [
       { message: "pi-sync daemon upgrade failed: Unattended permission needs review?", level: "error" },
     ]);
@@ -605,6 +624,30 @@ test("a failed interactive upgrade reports its error and protects the replacemen
     assert.equal(transport.find.mock.calls.length, 1);
     assert.equal(transport.wait.mock.calls.length, 0);
   }));
+
+test.each([true, false])("a blocked legacy upgrade only attaches to the same owner (same: %s)", (same) =>
+  withClient(async (f) => {
+    const { DaemonUpgradeBlockedError } = await import("@narumitw/pi-sync-daemon");
+    const [oldOwner, newOwner] = f.addresses;
+    assert.ok(oldOwner && newOwner);
+    const blocked = new DaemonUpgradeBlockedError(oldOwner.identity.instance, "legacy");
+    transport.ensure.mockRejectedValue(blocked);
+    transport.find.mockResolvedValue({ ...(same ? oldOwner : newOwner), needsUpgrade: true });
+    f.attachErrors.length = 0;
+
+    await assert.rejects(f.client.connect(), (error) => error === blocked);
+    assert.equal(f.client.blockedUpgradeReason(oldOwner.identity.instance), blocked.message);
+    assert.deepEqual(f.events, same ? ["old:attach"] : []);
+    if (same) {
+      const facts = f.connections[0]?.facts;
+      assert.equal(facts?.sessionFile, f.ctx.sessionManager.getSessionFile());
+      assert.equal(facts?.hasUI, false);
+      assert.equal(facts?.ready, false);
+    }
+    await assert.rejects(f.client.run("initialize", {}), (error) => error === blocked);
+    assert.equal(transport.ensure.mock.calls.length, 1);
+  }),
+);
 
 for (const attachError of [stopping(), Object.assign(new Error("Owner has exited"), { code: "ECONNREFUSED" })])
   test(`a failed upgrade is reported even when fallback cannot attach: ${attachError.message}`, () =>

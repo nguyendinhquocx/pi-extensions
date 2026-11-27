@@ -7,21 +7,16 @@ import { test, vi } from "vitest";
 import { expectedRemoteHead, type RemoteHead, type SyncBackend } from "../src/engine/backends/sync-backend.js";
 import type { CommandOptions } from "../src/engine/commands/command-types.js";
 import { configureEngineHost, type EngineContext } from "../src/engine/host.js";
-import { loadEffectiveIgnorePolicy } from "../src/engine/ignore/effective-ignore-policy.js";
 import { configFromSettings, loadConfig } from "../src/engine/settings/config.js";
 import { resolvedSnapshotOptionsForContext } from "../src/engine/snapshot/session-paths.js";
 import { createSnapshot, observeSnapshot } from "../src/engine/snapshot/snapshot.js";
-import { decodeSnapshot } from "../src/engine/snapshot/snapshot-codec.js";
 import type { Snapshot } from "../src/engine/snapshot/snapshot-types.js";
 import { readStateForConfig, writeStateForConfig } from "../src/engine/state/sync-state-store.js";
-import { createContinuousSync } from "../src/engine/sync/continuous-sync.js";
 import { portableSnapshot } from "../src/engine/sync/local-fields.js";
 import { acceptedState } from "../src/engine/sync/merge-acceptance.js";
 import { readMergeJournal } from "../src/engine/sync/merge-journal.js";
 import { mergeSync } from "../src/engine/sync/merged-sync.js";
 import { inspectSync } from "../src/engine/sync/sync-inspection.js";
-import { createEngineLoaders } from "../src/engine/sync/sync-loaders.js";
-import { syncBoth } from "../src/engine/sync/sync-mutations.js";
 import { fileHashMap, hasLocalChanges } from "../src/engine/sync/sync-state.js";
 
 const commandOptions: CommandOptions = {
@@ -58,14 +53,6 @@ function document(scope?: "agent-directory") {
   };
 }
 
-function file(filePath: string, content: string) {
-  return {
-    path: filePath,
-    sha256: createHash("sha256").update(content).digest("hex"),
-    contentBase64: Buffer.from(content).toString("base64"),
-  };
-}
-
 function remoteFixture(initial: Snapshot) {
   let snapshot = initial;
   const head = (): RemoteHead => ({
@@ -79,7 +66,7 @@ function remoteFixture(initial: Snapshot) {
   });
   const publishSnapshot = vi.fn<SyncBackend["publishSnapshot"]>(async (candidate, expected, opts) => {
     assert.deepEqual(expected, expectedRemoteHead(head()));
-    await opts?.validateIgnorePolicy?.();
+    await opts?.validatePublication?.();
     opts?.onCommit?.();
     snapshot = candidate;
     return { head: head(), warnings: [] };
@@ -152,22 +139,14 @@ function countSentinelEncodes(scanBuffersOnly = false) {
   return () => encodes;
 }
 
-for (const selection of ["selected", "directory", "ignore"] as const) {
+for (const selection of ["selected", "directory"] as const) {
   test(`hash-only ${selection} inspection preserves ordered raw hashes and portable change detection`, () =>
-    fixture(async (root, ctx) => {
+    fixture(async (root, _ctx) => {
       const scoped = selection === "selected" ? undefined : "agent-directory";
       const base = configFromSettings(document(scoped));
-      const ignorePolicy =
-        selection === "ignore"
-          ? await fs
-              .writeFile(path.join(root, ".syncignore"), "*.omit\n")
-              .then(() =>
-                loadEffectiveIgnorePolicy(root, { filename: ".syncignore", sessions: false, configuredFilenames: [] }),
-              )
-          : undefined;
-      const config = { ...base, ignorePolicy };
-      const snapshotOptions = await resolvedSnapshotOptionsForContext(ctx, config);
-      await fs.writeFile(path.join(root, "scratch.omit"), "ignored in the ignore selection");
+      const config = base;
+      const snapshotOptions = { include: config.include, scope: config.scope };
+      await fs.writeFile(path.join(root, "scratch.omit"), "outside selected paths");
       const local = await createSnapshot(config.snapshotIdentity, snapshotOptions);
       const accepted = portableSnapshot(local, config.localFields);
       const remote = remoteFixture(accepted);
@@ -285,82 +264,6 @@ async function mergeFixture(
     await writeStateForConfig(config, acceptedState(config, remote.head(), initial), initial);
     await run({ root, ctx, config, remote });
   });
-}
-
-for (const changed of [false, true]) {
-  test(`continuous ${changed ? "changed" : "unchanged"} cycle bounds content passes and payload materializations`, () =>
-    mergeFixture(async ({ root, ctx, config, remote }) => {
-      if (changed) {
-        await fs.writeFile(path.join(root, "a.txt"), "modified");
-        const initial = await remote.readSnapshot(remote.head().snapshotRef);
-        remote.advance({ ...initial, id: "incoming", files: [...initial.files, file("remote.txt", "incoming")] });
-        remote.readSnapshot.mockClear();
-      }
-      const open = fs.open.bind(fs);
-      const sentinelPath = path.join(root, "blob.dat");
-      let opens = 0;
-      vi.spyOn(fs, "open").mockImplementation(async (name, flags, mode) => {
-        if (name === sentinelPath) opens++;
-        return open(name, flags, mode);
-      });
-      const encodes = countSentinelEncodes(true);
-      const loaders = createEngineLoaders();
-      const loadOperations = loaders.operations;
-      let journalBackup: string | undefined;
-      const done = Promise.withResolvers<string>();
-      const loadEngine = async () => {
-        assert.equal(changed, true);
-        await fs.writeFile(path.join(root, "a.txt"), "new edit");
-        return {
-          ...(await loadOperations()),
-          syncBoth: (context: EngineContext, options: CommandOptions) => syncBoth(context, options, remote.factory),
-        };
-      };
-      const runtime = createContinuousSync(
-        {
-          ...loaders,
-          inspection: async () => ({
-            inspectSync: (config, options, signal, _factory, timings) =>
-              inspectSync(config, options, signal, remote.factory, timings),
-          }),
-          operations: loadEngine,
-        },
-        undefined,
-        (_ctx, text) => done.resolve(text),
-      );
-      const publish = remote.publishSnapshot.getMockImplementation();
-      assert.ok(publish);
-      remote.publishSnapshot.mockImplementation(async (...args) => {
-        journalBackup = (await readMergeJournal(config))?.backup;
-        return publish(...args);
-      });
-      const abort = new AbortController();
-      runtime.start(ctx, abort.signal, false, true);
-      try {
-        const report = await done.promise;
-        assert.match(report, /continuous startup \(completed\)/u);
-      } finally {
-        abort.abort();
-        await runtime.stop();
-      }
-      assert.equal(remote.publishSnapshot.mock.calls.length, changed ? 1 : 0);
-      assert.equal(remote.readSnapshot.mock.calls.length, changed ? 2 : 0);
-      assert.equal(opens, changed ? 5 : 1);
-      assert.equal(encodes(), changed ? 2 : 0);
-      if (changed) {
-        assert.equal(await fs.readFile(path.join(root, "remote.txt"), "utf8"), "incoming");
-        assert.ok(journalBackup);
-        const backup = await decodeSnapshot(await fs.readFile(journalBackup));
-        const settings = backup.files.find((entry) => entry.path === "settings.json");
-        assert.equal(Buffer.from(settings?.contentBase64 ?? "", "base64").toString("utf8"), settingsBytes);
-        assert.equal(
-          backup.files.some((entry) => entry.path === "remote.txt"),
-          false,
-        );
-        assert.equal(backup.files.find((entry) => entry.path === "a.txt")?.sha256, file("a.txt", "new edit").sha256);
-        assert.equal((await readStateForConfig(config)).lastAppliedSnapshot, remote.head().snapshotId);
-      }
-    }));
 }
 
 for (const phase of ["review", "backup", "cancel"] as const) {

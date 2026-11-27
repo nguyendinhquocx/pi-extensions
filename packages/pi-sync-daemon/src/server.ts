@@ -4,7 +4,7 @@ import { lstatSync } from "node:fs";
 import fs from "node:fs/promises";
 import { createServer, type ServerResponse } from "node:http";
 import lockfile from "proper-lockfile";
-import { DAEMON_BUILD_VERSION } from "./build-version.js";
+import { DAEMON_BUILD_ID, DAEMON_BUILD_VERSION } from "./build-version.js";
 import { ConsentPublicationError, readConsent } from "./consent.js";
 import type { DaemonDiagnosticSink } from "./daemon-debug.js";
 import { endpointOwner } from "./endpoint.js";
@@ -22,6 +22,7 @@ import {
   readJsonBody,
   readUpgradeOwner,
   runtimePaths,
+  type UpgradeOwner,
 } from "./identity.js";
 import { createIdleExit, type IdleExitPolicy } from "./idle-exit.js";
 import { withCleanup } from "./lifecycle.js";
@@ -107,6 +108,7 @@ export interface ServerHooks {
   lifetime?(): Promise<IdleExitPolicy>;
   quiesce?(): Promise<void>;
   foregroundRecoveryAllowed?(): boolean;
+  upgradeAllowed?(): boolean;
   stopped?(): void;
   failure?(): void;
   diagnostic?: DaemonDiagnosticSink;
@@ -462,12 +464,7 @@ export async function startServer(root: string, execute: Execute, hooks: ServerH
       digest,
       client,
       generation: peer.facts.generation,
-      participantGeneration: [
-        "startup-transfer",
-        "shutdown",
-        "daemon.authorize",
-        "daemon.authorize-connected",
-      ].includes(operation)
+      participantGeneration: ["startup-transfer", "shutdown", "daemon.authorize"].includes(operation)
         ? participantGeneration
         : undefined,
       controller: new AbortController(),
@@ -492,10 +489,7 @@ export async function startServer(root: string, execute: Execute, hooks: ServerH
         if (Buffer.byteLength(JSON.stringify(result ?? null)) > MAX_MESSAGE_BYTES / 2)
           throw new Error("Operation result exceeds its byte limit; use bounded inspection.");
         if (isForegroundDirection(operation) && isForegroundQueueOutcome(result)) {
-          if (
-            (result.foregroundQueueCleanup === "before-mutation" && job.committed) ||
-            (result.foregroundQueueCleanup === "resume-adoption" && (!job.committed || operation !== "pull.foreground"))
-          )
+          if (result.foregroundQueueCleanup === "before-mutation" && job.committed)
             throw Object.assign(new Error("File-queue release and transfer outcome could not be verified."), {
               code: OWNERSHIP_CLEANUP_REQUIRED,
             });
@@ -720,6 +714,45 @@ export async function startServer(root: string, execute: Execute, hooks: ServerH
     });
     return { stopping: true };
   }
+  function upgradeBlocker() {
+    if (
+      ledger.failed ||
+      foregroundRecoveryJob ||
+      consentPublicationFailed ||
+      hooks.upgradeAllowed?.() === false ||
+      [...participants.values()].some((peer) => peer.resumeUnsafe)
+    )
+      return "repair";
+    if (
+      peerOperations.size ||
+      expiring ||
+      backgroundJobs.size ||
+      pending.size ||
+      [...jobs.values()].some(({ view }) => view.phase === "queued" || view.phase === "running")
+    )
+      return "busy";
+    if ([...participants.values()].some((peer) => peer.reservations?.size)) return "repair";
+  }
+  async function stopForUpgrade(params: unknown, signal?: AbortSignal) {
+    if (!record(params) || Object.keys(params).length !== 0) throw new Error("Invalid upgrade stop request.");
+    const checkBarrier = (barrier: UpgradeOwner | undefined) => {
+      signal?.throwIfAborted();
+      assertOwner();
+      if (barrier?.purpose || barrier?.instance !== identity.instance || barrier.pid !== identity.pid || !ownsLog())
+        throw new Error("Daemon owner or upgrade record changed; no stop was accepted.");
+    };
+    checkBarrier(await readUpgradeOwner(paths));
+    const deferred = upgradeBlocker();
+    if (deferred) return { deferred };
+    return admission.run(async () => {
+      checkBarrier(await readUpgradeOwner(paths));
+      const deferred = upgradeBlocker();
+      if (deferred) return { deferred };
+      if (Object.values(readConsent(paths.root)?.setups ?? {}).some((setup) => setup.afterExit))
+        return { deferred: "unattended" };
+      return stop();
+    }, signal);
+  }
   async function stopForeground(params: Record<string, unknown>, signal?: AbortSignal) {
     if (params.check !== undefined && params.check !== true) throw new Error("Invalid foreground stop request.");
     const barrier = await readUpgradeOwner(paths);
@@ -781,11 +814,48 @@ export async function startServer(root: string, execute: Execute, hooks: ServerH
     if (method === "hello")
       return {
         version: PROTOCOL_VERSION,
+        ignoreFilesRetired: true,
+        autonomousSyncRetired: true,
         buildVersion: DAEMON_BUILD_VERSION,
+        ...(DAEMON_BUILD_ID && { buildId: DAEMON_BUILD_ID }),
+        upgradeStop: 1,
         root: identity.root,
         instance: identity.instance,
         pid: identity.pid,
       };
+    if (method === "upgrade-stop") return stopForUpgrade(params, signal);
+    if (method === "protect-session") {
+      validateFacts(params);
+      const { pid, cwd, mode, sessionFile } = params;
+      if (!sessionFile) throw new Error("A session file is required for protection.");
+      return admission.run(async () => {
+        assertOwner();
+        if (!processExists(pid)) throw new Error("Client process is not alive.");
+        const recorded = [...participants.values()].some(
+          (peer) => peer.handoff?.kind === "exit" && peer.facts.pid === pid && peer.facts.sessionFile === sessionFile,
+        );
+        if (!recorded) {
+          if (participants.size >= 64 || closedClients.size >= 10_000)
+            throw new Error("Daemon client capacity reached.");
+          const id = randomUUID();
+          participants.set(id, {
+            facts: { id, pid, generation: id, cwd, mode, sessionFile, hasUI: false, idle: false },
+            handoff: { kind: "exit" },
+            callbacks: new Map(),
+            events: [],
+            connected: false,
+            closing: false,
+            suspected: false,
+            seen: 0,
+          });
+          closedClients.add(id);
+        }
+        await savePeers(undefined, recorded);
+        signal?.throwIfAborted();
+        assertOwner();
+        return { protected: true };
+      }, signal);
+    }
     if (method === "attach") {
       const attached = await admission.run(async () => {
         assertOwner();
@@ -1066,14 +1136,33 @@ export async function startServer(root: string, execute: Execute, hooks: ServerH
         respond(response, 403, { error: { name: "Error", message: "Invalid daemon identity or protocol." } });
         return;
       }
-      if (["attach", "resume-contact", "startup.bootstrap", "state-wait", "foreground-stop"].includes(body.method)) {
+      if (
+        [
+          "attach",
+          "protect-session",
+          "resume-contact",
+          "startup.bootstrap",
+          "state-wait",
+          "foreground-stop",
+          "upgrade-stop",
+        ].includes(body.method)
+      ) {
         admissionController = new AbortController();
         response.once("close", disconnect);
         if (response.destroyed) disconnect();
       }
       const operation = handle(body.method, body.params, admissionController?.signal, body.reviewDetails === 1);
       if (
-        ["attach", "resume-contact", "startup.bootstrap", "update", "detach", "pause", "handoff"].includes(body.method)
+        [
+          "attach",
+          "protect-session",
+          "resume-contact",
+          "startup.bootstrap",
+          "update",
+          "detach",
+          "pause",
+          "handoff",
+        ].includes(body.method)
       ) {
         peerOperations.add(operation);
         void operation.finally(() => peerOperations.delete(operation)).catch(() => {});

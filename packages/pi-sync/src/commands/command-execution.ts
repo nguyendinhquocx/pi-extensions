@@ -1,4 +1,5 @@
 import type { ExtensionCommandContext, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { showDaemonStatus } from "../daemon/daemon-status-ui.js";
 import { CompletedDirectionalRecoveryError } from "../daemon/directional-recovery.js";
 import { type PiDaemonClient, piDaemonClient, remoteOperation } from "../daemon/pi-client.js";
 import { loadSettingsConfig, sessionTokenWarnings, syncSessionsWarnings } from "../settings/config.js";
@@ -12,7 +13,6 @@ import type { SyncLoaders } from "../sync/sync-loaders.js";
 import { RemoteSelectionMismatchError, syncSessionsSelected } from "../sync/sync-policy.js";
 import { automaticSyncSummary } from "../ui/automatic-sync-summary.js";
 import type { RunRouteResult } from "../ui/cancellable-operation.js";
-import { manualIgnoreFileGuidance } from "../ui/ignore-file-guidance.js";
 import { trackOperationDialogs } from "../ui/operation-dialogs.js";
 import { startupTransferSummary } from "../ui/sync-behavior.js";
 import { setSyncStatus } from "../ui/sync-status.js";
@@ -76,7 +76,6 @@ export async function executeCommand(
   onDialog?: (active: boolean) => void,
   retryRefusal = false,
   directionalFingerprint?: string,
-  requirePendingAdoption?: boolean,
 ): Promise<RunRouteResult> {
   ctx = trackOperationDialogs(ctx, onDialog);
   try {
@@ -84,8 +83,6 @@ export async function executeCommand(
     const command = await resolveSyncCommand(rawArgs, ctx);
     if (signal?.aborted || !command) return { kind: "completed" };
     const { subcommand, rest } = command;
-    if (requirePendingAdoption && (!directionalClient || subcommand !== "pull"))
-      throw new Error("Pull recovery requires the original directional action.");
     if (directionalClient && directionalFingerprint !== undefined) {
       if ((subcommand !== "push" && subcommand !== "pull") || rest.length || !setup || retryRefusal)
         throw new Error("Invalid directional action.");
@@ -97,7 +94,6 @@ export async function executeCommand(
         directionalFingerprint,
         signal,
         onCommit,
-        requirePendingAdoption,
       );
     }
     const options = parseOptions(rest);
@@ -105,10 +101,7 @@ export async function executeCommand(
     if (signal) options.signal = signal;
     if (onCommit) options.onCommit = onCommit;
     validateCommandOptions(subcommand, options);
-    if (retryRefusal) {
-      if (subcommand !== "sync") throw new Error("A refused-model retry is available only for merged sync.");
-      options.agentRetryRefusal = true;
-    }
+    if (retryRefusal) throw new Error("Model retries are no longer supported. Use reviewed manual sync.");
 
     switch (subcommand) {
       case "daemon": {
@@ -120,24 +113,14 @@ export async function executeCommand(
           await recoverDaemonOwnership(ctx, client, signal);
         } else if (action === "handover") {
           await client.run("daemon.handover", {}, options.signal);
-        } else if (action === "allow-after-exit" || action === "revoke-after-exit") {
+        } else if (action === "allow-after-exit") {
+          throw new Error("Continuous sync was retired. New after-exit grants are not supported.");
+        } else if (action === "revoke-after-exit") {
           await client.run("daemon.handover", {}, options.signal);
           const policy = (await client.run("daemon.policy", {}, options.signal)) as { fingerprint: string };
-          await client.run(
-            "daemon.authorize",
-            { fingerprint: policy.fingerprint, afterExit: action === "allow-after-exit" },
-            options.signal,
-          );
+          await client.run("daemon.authorize", { fingerprint: policy.fingerprint, afterExit: false }, options.signal);
         } else if (action === "status") {
-          const connection = await client.verifyConnection(options.signal);
-          const guidance = client.ownershipCleanupRequired
-            ? "Use /sync daemon recover to review and stop the daemon."
-            : "Use pi-sync-daemon status/stop/restart --root <agent-directory> for explicit lifecycle control.";
-          const state = client.ownershipCleanupRequired ? "connected; recovery required" : "connected";
-          ctx.ui.notify(
-            `pi-sync-daemon: ${state}\nPID: ${connection.identity.pid}\nInstance: ${connection.identity.instance}\n${guidance}`,
-            "info",
-          );
+          await showDaemonStatus(ctx, client, options.signal);
         } else throw new Error("Use /sync daemon status|recover|handover|allow-after-exit|revoke-after-exit.");
         return { kind: "completed" };
       }
@@ -263,14 +246,11 @@ async function runDirectionalAction(
   fingerprint: string,
   signal: AbortSignal | undefined,
   onCommit: (() => void) | undefined,
-  requirePendingAdoption?: boolean,
 ): Promise<RunRouteResult> {
   try {
     const operation = `${direction}.foreground`;
     const intent = { setup, fingerprint };
-    const result = (await (requirePendingAdoption
-      ? client.run(operation, intent, signal, ctx, onCommit, undefined, true)
-      : client.run(operation, intent, signal, ctx, onCommit))) as
+    const result = (await client.run(operation, intent, signal, ctx, onCommit)) as
       | { outcome?: "applied" | "cancelled"; message?: string }
       | undefined;
     if (!client.canReportDirectionalResult() || (signal?.aborted && result?.outcome !== "applied"))
@@ -346,17 +326,14 @@ async function showConfig(ctx: ExtensionCommandContext, options: CommandOptions)
       `settings field merge: ${config.mergeSettings ? "On" : "Off"}`,
       `machine-local settings.json fields: ${(config.localFields ?? []).map(safeTerminalText).join(", ") || "none"}`,
       `startup transfer: ${startupTransferSummary(config)}`,
-      `autonomous sync: ${config.agentMode ? "On" : "Off"}`,
-      `continuous sync: ${config.continuous ? (config.agentMode ? "On" : "paused; Autonomous sync is Off") : "Off"}`,
+      "Autonomous sync and Continuous sync are retired. Saved legacy flags have no effect.",
       config.scope ? "sync scope: Pi agent directory" : `included content: ${config.include.join(", ") || "none"}`,
-      ...(config.pathPolicy === "ignore-file"
-        ? ["path policy: local ignore file", manualIgnoreFileGuidance(config.ignoreFile ?? ".syncignore")]
-        : config.scope
-          ? [
-              `excluded paths: ${config.exclude?.map(safeTerminalText).join(", ") || "none"}`,
-              `re-included paths: ${config.reinclude?.map(safeTerminalText).join(", ") || "none"}`,
-            ]
-          : []),
+      ...(config.scope
+        ? [
+            `excluded paths: ${config.exclude?.map(safeTerminalText).join(", ") || "none"}`,
+            `re-included paths: ${config.reinclude?.map(safeTerminalText).join(", ") || "none"}`,
+          ]
+        : []),
       `sessions: ${syncSessionsSelected(config) ? "included" : "not included"}`,
       `settings file: ${localConfigPath()}`,
       ...warnings,

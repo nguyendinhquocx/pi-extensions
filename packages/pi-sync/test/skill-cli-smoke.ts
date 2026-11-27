@@ -89,7 +89,8 @@ try {
       "--no-mcp",
       "--no-context-files",
       "--no-prompt-templates",
-      "--no-tools",
+      "--tools",
+      "read",
       "--offline",
       "--provider",
       "skill-smoke",
@@ -174,28 +175,41 @@ try {
     const settled = waitFor((record) => record.type === "agent_settled");
     await Promise.all([send("prompt", { message }), settled]);
   }
-  function latestUserMessage() {
+  function latestMessages() {
     const messages = requests.at(-1)?.messages;
     assert.ok(Array.isArray(messages));
-    const latest = messages.filter((message) => message.role === "user").at(-1);
+    return messages;
+  }
+  function latestUserMessage() {
+    const latest = latestMessages()
+      .filter((message) => message.role === "user")
+      .at(-1);
     assert.ok(latest);
     return JSON.stringify(latest);
   }
-  await prompt("Transport control prompt; do not call tools.");
+  function latestSystemPrompt() {
+    return JSON.stringify(latestMessages().filter(({ role }) => role === "system" || role === "developer"));
+  }
+  function assertSkillCatalog(systemPrompt: string) {
+    assert.match(systemPrompt, /<name>configure-pi-sync<\/name>/u);
+    assert.match(systemPrompt, /<description>Explain Pi Sync settings/u);
+    assert.doesNotMatch(systemPrompt, /Make and verify a clear, authorized local edit/u);
+  }
+  await prompt("How do I compare two Git branches without changing them?");
   assert.equal(requests.length, 1);
-  assert.doesNotMatch(
-    JSON.stringify(requests[0]),
-    /configure-pi-sync/u,
-    "manual-only metadata must not enter ordinary prompts",
-  );
+  const systemPrompt = latestSystemPrompt();
+  assertSkillCatalog(systemPrompt);
+  await prompt("Where can I check which folders Pi Sync skips?");
+  assert.equal(requests.length, 2);
+  assert.equal(latestSystemPrompt(), systemPrompt, "ordinary turns must preserve the system prompt");
+  assert.doesNotMatch(latestUserMessage(), /<skill name=/u, "plain requests do not expand the skill eagerly");
   const requestsToExpand = [
     "Turn on debug logging in pi-sync.json.",
-    "Exclude npm/ from the ignore file for my home setup.",
-    "Exclude npm/ from my active ignore file only if this setup remains current.",
-    "Draft a .syncignore without writing it.",
-    "Audit my ignore rules for blocked exceptions without editing the file.",
-    "Turn on Autonomous sync in my legacy-only setup.",
-    "The running daemon is older. Can you still edit my active ignore file?",
+    "An upgrade says my inactive setup still uses .syncignore. What should I do?",
+    "My old remote is ahead and uses snapshot version 7. Can I keep the data?",
+    "Pi Sync says an old recovery is pending. Should I remove the journal?",
+    "Keep npm/ local without changing my sync setup automatically.",
+    "Turn on Autonomous sync in my Selected paths setup.",
     "Error: Agent directory changed or has an unsafe filesystem layout; no snapshot was collected.",
     "Where do I enter my WebDAV app password?",
     "What does ./ mean for R2 and S3?",
@@ -213,9 +227,8 @@ try {
     assert.ok(request.includes("Make and verify a clear, authorized local edit"));
     assert.ok(request.includes("expected: documentFingerprint(document), next"));
     assert.ok(request.includes("start with read-only local checks"));
-    assert.ok(request.includes("Draft a new ignore file"));
-    assert.ok(request.includes("Add, revise, or audit existing rules"));
-    assert.ok(request.includes("never write based only on `activeSyncSetup`"));
+    assert.ok(request.includes("Recover after ignore-file support was removed"));
+    assert.ok(request.includes("Do not start or replace the daemon, downgrade packages, remove or rewrite settings"));
     assert.ok(request.includes("needsUpgrade: false"));
     assert.ok(request.includes("A schema-valid change is not proof of user review or consent"));
   }
@@ -224,6 +237,8 @@ try {
   const afterReload = await send("get_commands");
   assert.match(JSON.stringify(afterReload), /skill:configure-pi-sync/u);
   assert.equal(requests.length, beforeReload, "reload must not contact the provider");
+  await prompt("Where can I check which folders Pi Sync skips?");
+  assertSkillCatalog(latestSystemPrompt());
   await prompt("/skill:configure-pi-sync What changed after reload?");
   assert.match(latestUserMessage(), /Make and verify a clear, authorized local edit/u);
   assert.match(latestUserMessage(), /What changed after reload\?/u);
@@ -243,7 +258,7 @@ try {
       explicitRequests: requestsToExpand.length,
       localFixtureRequests: requests.length,
       externalProviderRequests: 0,
-      tools: "disabled",
+      tools: "read only; not called by fixture",
       privateSettingsCreated: false,
       syncStateCreated: false,
       publicContextReload: true,

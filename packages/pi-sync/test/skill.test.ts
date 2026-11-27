@@ -64,7 +64,7 @@ function configurationExample(): Record<string, unknown> {
   return example;
 }
 
-test("manifest publishes one manual-only skill without changing the extension entrypoint", () => {
+test("manifest publishes one model-invocable skill without changing the extension entrypoint", () => {
   assert.deepEqual(manifest.pi.extensions, ["./dist/index.ts"]);
   assert.deepEqual(manifest.pi.skills, ["./skills"]);
   assert.ok(manifest.files.includes("skills"));
@@ -73,17 +73,17 @@ test("manifest publishes one manual-only skill without changing the extension en
   assert.equal(loaded.skills.length, 1);
   assert.equal(loaded.skills[0]?.name, "configure-pi-sync");
   assert.equal(loaded.skills[0]?.baseDir, skillDirectory);
-  assert.equal(loaded.skills[0]?.disableModelInvocation, true);
-  assert.equal(formatSkillsForPrompt(loaded.skills), "");
+  assert.equal(loaded.skills[0]?.disableModelInvocation, false);
   for (const phrase of [
+    "Explain Pi Sync settings",
     "pi-sync.json",
     ".syncignore",
-    "Apply authorized local edits",
-    "troubleshoot Pi Sync errors",
-    "Do not use to execute sync",
+    "apply authorized routine edits",
+    "choose synced paths",
+    "troubleshoot local sync errors",
+    "Do not use it to run sync",
     "administer remote storage",
-    "develop pi-sync source code",
-    "change unrelated Pi settings",
+    "modify unrelated settings",
   ]) {
     assert.ok(loaded.skills[0]?.description.includes(phrase), `missing trigger boundary: ${phrase}`);
   }
@@ -91,7 +91,7 @@ test("manifest publishes one manual-only skill without changing the extension en
 });
 
 for (const source of ["package", "root"] as const) {
-  test(`${source} package discovery and reload retain the explicit-only skill`, async () => {
+  test(`${source} package discovery and reload advertise the skill to the model`, async () => {
     const directory = mkdtempSync(path.join(tmpdir(), "pi-sync-skill-loader-"));
     const previousHome = process.env.HOME;
     process.env.HOME = directory;
@@ -112,8 +112,11 @@ for (const source of ["package", "root"] as const) {
         assert.deepEqual(result.diagnostics, [], pass);
         const skills = result.skills.filter(({ name }) => name === "configure-pi-sync");
         assert.equal(skills.length, 1, pass);
-        assert.equal(skills[0]?.disableModelInvocation, true);
-        assert.equal(formatSkillsForPrompt(skills), "");
+        assert.equal(skills[0]?.disableModelInvocation, false);
+        const catalog = formatSkillsForPrompt(skills);
+        assert.match(catalog, /<name>configure-pi-sync<\/name>/u, pass);
+        assert.match(catalog, /<description>Explain Pi Sync settings/u, pass);
+        assert.doesNotMatch(catalog, /Make and verify a clear, authorized local edit/u, pass);
       }
       assert.deepEqual(readdirSync(directory), [], "resource discovery must not materialize user settings");
     } finally {
@@ -128,18 +131,18 @@ test("skill separates authorized local changes from read-only troubleshooting an
   for (const contract of [
     "Invoking this skill or asking a question does not authorize a write",
     "start with read-only local checks",
+    "Distinguish an unsupported setup, a retired remote format, a retired local baseline, and a pending recovery error",
+    "Do not start or replace the daemon, downgrade packages, remove or rewrite settings",
     "expected: documentFingerprint(document), next",
     "`settings.repair-read` with `{}` for a non-migrating read",
     "verify the requested fields before reporting success",
-    "edit the configured ignore file, not `sync.exclude`",
-    "Do not create a missing rule file or change the selected filename",
     "proceed only if it returns an owner with `needsUpgrade: false`",
-    "run `ignore.read` with `{ setup: setupName }`",
-    "Ask the user to name the exact setup before editing an ignore file; never write based only on `activeSyncSetup`",
-    "If the edit must apply only while the setup remains current, explain that the local workflow cannot guarantee that condition and do not write",
-    "repeat `ignore.read` for the same user-named setup and recheck its path, sharing setups, file identity, byte digest, and original file permissions",
     "A schema-valid change is not proof of user review or consent, even in a legacy-only setup",
-    "Keep settings, rule-file contents, daemon payloads, and other private evidence in the local process",
+    "Keep settings, daemon payloads, and other private evidence in the local process",
+    "`<getAgentDir()>/pi-sync.log` (normally `~/.pi/agent/pi-sync.log`)",
+    "Read only a bounded tail of an existing private regular file",
+    "never raw log lines",
+    "do not enable Debug mode or start a transfer just to collect evidence",
     "Leave operations that Pi Sync requires the user to review in `/sync`",
     "Do not start sync, run `/sync doctor` or backend/network commands",
   ]) {
@@ -177,7 +180,8 @@ test("bundled links stay inside the skill and identify existing reference fragme
     }
   }
   assert.match(reference, /authoritative public settings reference/u);
-  assert.match(readme, /loads only on request/u);
+  assert.match(readme, /automatically load/u);
+  assert.match(readme, /Loading the skill does not authorize edits/u);
   assert.match(readme, /applies authorized edits to `pi-sync\.json` through the running local daemon/u);
   assert.match(readme, /\/skill:configure-pi-sync/u);
   assert.match(readme, /skills\/configure-pi-sync\/references\/configuration\.md/u);
@@ -218,7 +222,7 @@ test("the authoritative settings reference retains original fragments and curren
     "Debug mode",
     "Secret scanning",
     "Diagnostics",
-    "Ignore-file policy",
+    "Retired ignore-file policy",
     "Included content",
     "Automatic startup transfer",
     "Unchanged transfer fast path",
@@ -335,45 +339,3 @@ test("the directory policy fragment validates inside a version-7 setup without i
   Object.assign(setup, { sync: fragments[0] });
   validateSettingsDocument(settings);
 });
-
-test("the ignore-file policy fragment validates alongside legacy setups in version 8", () => {
-  const fragments = documentedPolicyFragments().filter((value) => value.pathPolicy === "ignore-file");
-  assert.equal(fragments.length, 1);
-  const settings = configurationExample();
-  settings.version = 8;
-  const setups = settings.syncSetups as Record<string, { sync: unknown }>;
-  const setup = setups.home;
-  assert.ok(setup);
-  setup.sync = fragments[0];
-  const validated = validateSettingsDocument(settings);
-  assert.equal(validated.syncSetups.home?.sync.pathPolicy, "ignore-file");
-  assert.ok(Object.values(validated.syncSetups).some(({ sync }) => Array.isArray(sync.include)));
-  settings.version = 7;
-  assert.throws(() => validateSettingsDocument(settings));
-});
-
-for (const version of [undefined, 1, 2, 10]) {
-  test(`unsupported settings version ${String(version)} is not interpreted as a supported example`, () => {
-    const settings = configurationExample();
-    settings.version = version;
-    assert.throws(() => validateSettingsDocument(settings), /Unsupported pi-sync settings/u);
-  });
-}
-
-for (const [label, mutate] of [
-  ["missing include", (setup: Record<string, unknown>) => delete setup.include],
-  ["missing automatic", (setup: Record<string, unknown>) => delete setup.automatic],
-  [
-    "string automatic",
-    (setup: Record<string, unknown>) => {
-      setup.automatic = "false";
-    },
-  ],
-] as const) {
-  test(`reference requirements reject ${label}`, () => {
-    const settings = validateSettingsDocument(configurationExample());
-    assert.ok(settings.syncSetups.home);
-    mutate(settings.syncSetups.home.sync);
-    assert.throws(() => validateSettingsDocument(settings), /sync.include|sync.automatic/u);
-  });
-}

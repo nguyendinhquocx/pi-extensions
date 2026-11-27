@@ -7,6 +7,7 @@ import os from "node:os";
 import path from "node:path";
 import lockfile from "proper-lockfile";
 import { test, vi } from "vitest";
+import { DAEMON_BUILD_ID } from "../dist/build-version.js";
 import { main as daemonCli } from "../dist/cli.js";
 import {
   DaemonConnection,
@@ -30,15 +31,14 @@ import {
 import type { Identity } from "../src/protocol.js";
 import { startServer } from "../src/server.js";
 
-const launches = vi.hoisted(() => vi.fn());
+const launches = vi.hoisted(() => vi.fn<() => ChildProcess | undefined>());
 vi.mock("node:child_process", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:child_process")>();
   const realSpawn: typeof spawn = actual.spawn;
   return {
     ...actual,
     spawn: ((file: string, args: string[], options: Parameters<typeof spawn>[2]) => {
-      if (args[1] === "serve") launches();
-      return realSpawn(file, args, options);
+      return (args[1] === "serve" && launches()) || realSpawn(file, args, options);
     }) as typeof spawn,
   };
 });
@@ -81,10 +81,16 @@ const server = createServer(async (request, response) => {
   } else if (mode === "attached" && (!attached || body.method === "poll")) {
     if (body.method === "attach") attached = true;
     value = { result: { cursor: 0, callbacks: [], events: [] } };
-  } else if (mode === "upgrade" && body.method === "hello") {
+  } else if (["upgrade", "defer-upgrade", "drop-stop", "legacy"].includes(mode) && body.method === "hello") {
     const { version, root, instance, pid } = identity;
-    value = { result: { version, root, instance, pid, buildVersion } };
-  } else if (mode === "upgrade" && body.method === "stop") {
+    value = { result: { version, root, instance, pid, buildVersion, ...(mode !== "legacy" && { upgradeStop: 1 }) } };
+  } else if (mode === "defer-upgrade" && body.method === "upgrade-stop") {
+    value = { result: { deferred: "busy" } };
+  } else if (mode === "drop-stop" && body.method === "upgrade-stop") {
+    process.send({ type: "stop", authenticated });
+    request.socket.destroy();
+    return;
+  } else if ((mode === "upgrade" && body.method === "upgrade-stop") || (["upgrade", "legacy"].includes(mode) && body.method === "stop")) {
     response.once("finish", () => process.send({ type: "stop", authenticated }));
     value = { result: { stopping: true } };
   } else if (mode === "incompatible") {
@@ -129,7 +135,10 @@ type Mode =
   | "generic-attach"
   | "admitted-event"
   | "callbacks"
-  | "upgrade";
+  | "upgrade"
+  | "defer-upgrade"
+  | "drop-stop"
+  | "legacy";
 
 function message(child: ChildProcess, type: string) {
   return new Promise<Record<string, unknown>>((resolve, reject) => {
@@ -296,12 +305,15 @@ function observeExitPoll(owner: Awaited<ReturnType<typeof createOwner>>) {
     return kill(pid, signal);
   });
   const launched = Promise.withResolvers<"launch">();
-  launches.mockImplementation(() => launched.resolve("launch"));
+  launches.mockImplementation(() => {
+    launched.resolve("launch");
+    return undefined;
+  });
   return {
     first: Promise.race([polled.promise.then(() => "poll" as const), launched.promise]),
     restore: () => {
       spy.mockRestore();
-      launches.mockImplementation(() => {});
+      launches.mockImplementation(() => undefined);
     },
   };
 }
@@ -341,6 +353,7 @@ for (const buildVersion of [undefined, "0.0.0"]) {
           assert.notEqual(next.identity.instance, owner.identity.instance);
           assert.equal(next.identity.instance, other.identity.instance);
           assert.equal(next.needsUpgrade, false);
+          assert.equal(Number(next.replacedOwner) + Number(other.replacedOwner), 1);
           assert.equal(launches.mock.calls.length, 1);
           await owner.preserved();
         } finally {
@@ -357,7 +370,12 @@ for (const buildVersion of [DAEMON_BUILD_VERSION, "999.0.0"]) {
   test(`startup reuses an owner on build ${buildVersion} without a downgrade`, () =>
     fixture(
       async (owner) => {
-        assert.equal((await ensureDaemon(owner.root)).identity.instance, owner.identity.instance);
+        const reused = await ensureDaemon(owner.root);
+        assert.equal(reused.identity.instance, owner.identity.instance);
+        assert.equal(reused.replacedOwner, false);
+        assert.equal(reused.buildId, undefined);
+        if (buildVersion === "999.0.0")
+          await assert.rejects(daemonCli(["restart", "--root", owner.root]), /running daemon is newer/u);
         await owner.unchanged();
       },
       "upgrade",
@@ -446,6 +464,120 @@ test("reviewed recovery leaves retained unattended consent and the owner unchang
     DAEMON_BUILD_VERSION,
   ));
 
+test.each([
+  ["legacy", /does not support guarded upgrades/u],
+  ["defer-upgrade", /deferred while sync work is active/u],
+] as const)("%s leaves the same owner without a pending upgrade", (mode, expected) =>
+  fixture(async (owner) => {
+    launches.mockClear();
+    const messages: unknown[] = [];
+    owner.child.on("message", (value) => messages.push(value));
+    await assert.rejects(ensureDaemon(owner.root), expected);
+    await owner.command("probe");
+    assert.ok(!messages.some((value) => (value as { type?: string }).type === "stop"));
+    assert.equal(launches.mock.calls.length, 0);
+    await owner.unchanged();
+  }, mode),
+);
+
+test.each([
+  ["bootstrap", false, /bootstrap timed out before the child handshake/u],
+  ["readiness", true, /readiness timed out/u],
+] as const)("a %s timeout releases the startup lock", (_phase, boot, failure) =>
+  fixture(async (owner) => {
+    await owner.command("release");
+    const exited = once(owner.child, "exit");
+    owner.child.send("exit");
+    await exited;
+    const launched = Promise.withResolvers<ChildProcess>();
+    const spawnOverride = (await vi.importActual<typeof import("node:child_process")>("node:child_process")).spawn;
+    launches.mockImplementationOnce(() => {
+      const child = spawnOverride(
+        process.execPath,
+        [
+          "--eval",
+          `
+process.on("disconnect", () => process.exit(0));
+process.on("message", () => {
+  process.send({ type: "booting" });
+  process.send({ type: "booting" });
+  process.send({ type: "fixture-booted" });
+});
+process.send({ type: "fixture-ready" });`,
+        ],
+        { stdio: ["ignore", "ignore", "ignore", "ipc"] },
+      );
+      launched.resolve(child);
+      return child;
+    });
+    const timers: { ms: number; trigger: () => void }[] = [];
+    const originalSetTimeout = globalThis.setTimeout;
+    const clock = vi.spyOn(globalThis, "setTimeout").mockImplementation((callback, milliseconds, ...args) => {
+      if (milliseconds === 15_000 || milliseconds === 60_000)
+        timers.push({ ms: milliseconds, trigger: () => callback(...args) });
+      return originalSetTimeout(callback, milliseconds, ...args);
+    });
+    const clear = vi.spyOn(globalThis, "clearTimeout");
+    const controller = new AbortController();
+    const startup = ensureDaemon(owner.root, controller.signal);
+    void startup.catch(() => {});
+    let child: ChildProcess | undefined;
+    try {
+      child = await beforeStartupSettles(launched.promise, "child launch", startup);
+      await beforeStartupSettles(message(child, "fixture-ready"), "the test child handshake", startup);
+      assert.deepEqual(
+        timers.map(({ ms }) => ms),
+        [60_000],
+      );
+      if (boot) {
+        const bootstrapTimer = clock.mock.results.find((_, index) => clock.mock.calls[index]?.[1] === 60_000)?.value;
+        const booted = message(child, "fixture-booted");
+        child.send("boot");
+        await beforeStartupSettles(booted, "the daemon handshake", startup);
+        assert.deepEqual(
+          timers.map(({ ms }) => ms),
+          [60_000, 15_000],
+        );
+        assert.ok(clear.mock.calls.some(([timer]) => timer === bootstrapTimer));
+      }
+      timers.at(-1)?.trigger();
+      await assert.rejects(startup, failure);
+      assert.equal(await readIdentity(owner.paths), undefined);
+      const release = await lockfile.lock(owner.paths.directory, { lockfilePath: owner.paths.startup });
+      await release();
+    } finally {
+      controller.abort();
+      await startup.catch(() => {});
+      clear.mockRestore();
+      clock.mockRestore();
+      if (child) await terminate(child);
+    }
+  }),
+);
+
+test("a lost upgrade stop reply retains the barrier and concurrent callers adopt one successor", () =>
+  fixture(async (owner) => {
+    launches.mockClear();
+    const stopped = message(owner.child, "stop");
+    const result = assert.rejects(ensureDaemon(owner.root), /could not replace the daemon safely/u);
+    await Promise.all([stopped, result]);
+    assert.equal((await readUpgradeOwner(owner.paths))?.instance, owner.identity.instance);
+    assert.equal(launches.mock.calls.length, 0);
+    await owner.command("release");
+    const first = ensureDaemon(owner.root);
+    const second = ensureDaemon(owner.root);
+    const both = Promise.all([first, second]);
+    void both.catch(() => {});
+    const exited = once(owner.child, "exit");
+    owner.child.send("exit");
+    await exited;
+    const [one, two] = await both;
+    assert.equal(one.identity.instance, two.identity.instance);
+    assert.notEqual(one.identity.instance, owner.identity.instance);
+    assert.equal(launches.mock.calls.length, 1);
+    assert.equal(await readUpgradeOwner(owner.paths), undefined);
+  }, "drop-stop"));
+
 test("a new caller waits for the old PID after cancellation and identity release", () =>
   fixture(async (owner) => {
     launches.mockClear();
@@ -468,6 +600,8 @@ test("a new caller waits for the old PID after cancellation and identity release
     assert.deepEqual(await cliResult("status", owner.root), {
       running: false,
       root: owner.root,
+      expectedBuildVersion: DAEMON_BUILD_VERSION,
+      expectedBuildId: DAEMON_BUILD_ID,
       pendingUpgradePid: owner.identity.pid,
     });
     await assert.rejects(daemonCli(["repair-upgrade", "--root", owner.root]), /cannot verify.*exit/iu);
@@ -624,6 +758,8 @@ for (const stateDirectory of ["pi-sync", ".pisync"]) {
       const messages: unknown[] = [];
       owner.child.on("message", (value) => messages.push(value));
       await assert.rejects(ensureDaemon(owner.root), /revoke unattended Pi Sync permission/iu);
+      await assert.rejects(daemonCli(["restart", "--root", owner.root]), /revoke unattended Pi Sync permission/iu);
+      assert.equal(await readUpgradeOwner(owner.paths), undefined);
       await owner.command("probe");
       assert.ok(!messages.some((value) => (value as { type?: string }).type === "stop"));
       assert.deepEqual(await fs.readFile(owner.paths.identity), owner.identityBytes);

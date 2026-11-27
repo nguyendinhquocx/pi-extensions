@@ -65,32 +65,25 @@ export default function sync(pi: ExtensionAPI, dependencies: Partial<SyncDepende
               }
               const commands = await loaders.commands();
               if (signal.aborted || owner !== client) return;
-              const recoveryMenu = !command && client.pendingPullReview;
-              if (recoveryMenu) await client.setBusy("command", true, false);
-              try {
-                if (signal.aborted || owner !== client) return;
-                await commands.handleCommand(
-                  args,
-                  ctx,
-                  commandSignal,
-                  loaders,
-                  attention,
-                  undefined,
-                  needsDaemonRecovery,
-                );
-              } finally {
-                if (recoveryMenu && !signal.aborted && owner === client)
-                  await client.setBusy("command", false, !needsDaemonRecovery()).catch(() => {});
-              }
+              await commands.handleCommand(
+                args,
+                ctx,
+                commandSignal,
+                loaders,
+                attention,
+                undefined,
+                needsDaemonRecovery,
+              );
               return;
             }
-            const requiresContact = !["help", "unlock", "migrate-state"].includes(command ?? "");
+            const daemonStatus = command === "daemon" && (!action || action === "status");
+            const requiresContact = !daemonStatus && !["help", "unlock", "migrate-state"].includes(command ?? "");
             let busyPublished = false;
             try {
               await client.setBusy("command", true, requiresContact);
               busyPublished = requiresContact;
               if (signal.aborted || owner !== client) return;
-              await check.stop();
+              if (!daemonStatus) await check.stop();
               if (signal.aborted || owner !== client) return;
               if (
                 ready === false &&
@@ -131,7 +124,7 @@ export default function sync(pi: ExtensionAPI, dependencies: Partial<SyncDepende
             } finally {
               if (!signal.aborted && owner === client) {
                 // Recovery can publish busy facts after bypassing the initial contact check.
-                const publish = busyPublished || command === "unlock" || command === "migrate-state";
+                const publish = busyPublished || daemonStatus || command === "unlock" || command === "migrate-state";
                 // Release local busy state even if contact failed; do not mask the command result.
                 await client.setBusy("command", false, publish && !needsDaemonRecovery()).catch(() => {});
               }
@@ -204,13 +197,7 @@ export default function sync(pi: ExtensionAPI, dependencies: Partial<SyncDepende
         client.disableQueueReleaseUI();
         releaseStatus();
       }
-      if (
-        ready &&
-        !signal.aborted &&
-        owner === client &&
-        !(ready.continuous && ready.agentMode) &&
-        (ready.automatic || startupTransferEnabled(ready))
-      )
+      if (ready && !signal.aborted && owner === client && (ready.automatic || startupTransferEnabled(ready)))
         await withPiDaemonClient(ctx, async () => {
           check.start(
             ctx,
