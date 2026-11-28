@@ -7,6 +7,7 @@ import { type GoalWait, normalizeGoalWait } from "./wait.js";
 
 const GOAL_STATE_ENTRY_TYPE = "goal-state";
 const LEGACY_GOALS_STATE_ENTRY_TYPE = "goals-state";
+const OBJECTIVE_LOOKUP_LIMIT = 64;
 const STATE_FILE = join(getAgentDir(), "pi-goal-state.json");
 
 export type SafetyPauseCause = "continuation_limit" | "no_progress";
@@ -39,6 +40,11 @@ export interface GoalStateEntryData {
   goal: ActiveGoal | null;
 }
 
+interface CompactGoalStateEntryData {
+  goal: Omit<ActiveGoal, "text">;
+  objectiveEntryId: string;
+}
+
 export interface LegacyQueueState {
   retainedGoals: number;
 }
@@ -49,9 +55,16 @@ export interface LoadedGoalState {
 }
 
 interface SessionEntry {
+  id?: string;
+  parentId?: string | null;
   type?: string;
   customType?: string;
   data?: unknown;
+}
+
+interface CheckpointHistory {
+  getLeafEntry(): SessionEntry | undefined;
+  getEntry(id: string): SessionEntry | undefined;
 }
 
 interface SessionContext {
@@ -66,17 +79,159 @@ export function serializeGoalState(goal: ActiveGoal | undefined): GoalStateEntry
   return { goal: goal ? structuredClone(goal) : null };
 }
 
+export function serializeBoundedGoalState(
+  goal: ActiveGoal | undefined,
+  history?: Partial<CheckpointHistory>,
+): GoalStateEntryData | CompactGoalStateEntryData {
+  const full = serializeGoalState(goal);
+  if (
+    !full.goal ||
+    full.goal.status === "complete" ||
+    !canWalkHistory(history) ||
+    !isStoredGoal(full.goal) ||
+    !hasPersistableNumbers(full.goal)
+  ) {
+    return full;
+  }
+  const objectiveEntryId = findObjectiveEntryId(full.goal, history);
+  if (!objectiveEntryId) return full;
+  const { text: _text, ...accounting } = full.goal;
+  const compact = { goal: accounting, objectiveEntryId };
+  return Buffer.byteLength(JSON.stringify(compact)) < Buffer.byteLength(JSON.stringify(full)) ? compact : full;
+}
+
+function canWalkHistory(history: Partial<CheckpointHistory> | undefined): history is CheckpointHistory {
+  return typeof history?.getLeafEntry === "function" && typeof history.getEntry === "function";
+}
+
+function findObjectiveEntryId(goal: ActiveGoal, history: CheckpointHistory): string | undefined {
+  let entry = history.getLeafEntry();
+  let sourceId: string | undefined;
+  const seen = new Set<string>();
+  for (let inspected = 1; entry; inspected += 1) {
+    const { id, parentId } = entry;
+    if (typeof id !== "string" || !id || seen.has(id)) return undefined;
+    seen.add(id);
+    if (parentId && seen.has(parentId)) return undefined;
+    if (isCanonicalEntry(entry)) {
+      const checkpoint = referenceCheckpoint(entry.data);
+      if (!checkpoint || !hasPersistableNumbers(checkpoint.goal)) return undefined;
+      if (sourceId === undefined || id === sourceId) {
+        const full = fullReferenceSource(checkpoint.goal);
+        if (full) return full.id === goal.id && full.text === goal.text ? id : undefined;
+      }
+      const link = compactCheckpoint(checkpoint);
+      if (!link || link.goal.id !== goal.id || (sourceId !== undefined && link.objectiveEntryId !== sourceId)) {
+        return undefined;
+      }
+      sourceId = link.objectiveEntryId;
+      if (seen.has(sourceId)) return undefined;
+    } else if (id === sourceId) {
+      return undefined;
+    }
+    if (inspected === OBJECTIVE_LOOKUP_LIMIT || typeof parentId !== "string" || !parentId) return undefined;
+    entry = history.getEntry(parentId);
+    if (entry?.id !== parentId) return undefined;
+  }
+  return undefined;
+}
+
+function hasPersistableNumbers(goal: unknown): boolean {
+  return (
+    isRecord(goal) &&
+    [goal.startedAt, goal.updatedAt, goal.iteration, goal.tokensUsed, goal.timeUsedSeconds, goal.baselineTokens].every(
+      Number.isFinite,
+    ) &&
+    (goal.activeStartedAt === undefined || Number.isFinite(goal.activeStartedAt))
+  );
+}
+
 export function loadGoalStateFromSession(ctx: SessionContext): LoadedGoalState {
-  const entries = ctx.sessionManager?.getBranch?.() ?? ctx.sessionManager?.getEntries?.() ?? [];
-  const canonicalEntry = entries
-    .filter((entry) => entry.type === "custom" && entry.customType === GOAL_STATE_ENTRY_TYPE)
-    .pop();
-  if (canonicalEntry) return loadCanonicalGoalState(canonicalEntry.data);
+  const manager = ctx.sessionManager;
+  const branch = manager?.getBranch?.();
+  const entries = branch ?? manager?.getEntries?.() ?? [];
+  const canonicalEntry = entries.findLast(isCanonicalEntry);
+  if (canonicalEntry) {
+    const leaf = branch?.at(-1) ?? canonicalEntry;
+    return loadCanonicalGoalState(
+      resolveCheckpointObjective(canonicalEntry.data, leaf.id, () =>
+        branch ? (manager?.getEntries?.() ?? branch) : entries,
+      ),
+    );
+  }
 
   const legacyEntry = entries
     .filter((entry) => entry.type === "custom" && entry.customType === LEGACY_GOALS_STATE_ENTRY_TYPE)
     .pop();
   return legacyEntry ? loadLegacyGoalsState(legacyEntry.data) : emptyGoalState();
+}
+
+function isCanonicalEntry(entry: SessionEntry): boolean {
+  return entry.type === "custom" && entry.customType === GOAL_STATE_ENTRY_TYPE;
+}
+
+function resolveCheckpointObjective(
+  data: unknown,
+  leafId: string | undefined,
+  getRawEntries: () => readonly SessionEntry[],
+): unknown {
+  if (!isRecord(data) || !Object.hasOwn(data, "objectiveEntryId")) return data;
+  if (isRecord(data.goal) && Object.hasOwn(data.goal, "text")) return data;
+  const checkpoint = compactCheckpoint(referenceCheckpoint(data));
+  if (!checkpoint || !leafId) return undefined;
+  const text = referencedObjective(getRawEntries(), leafId, checkpoint.objectiveEntryId, checkpoint.goal.id);
+  return text === undefined ? undefined : { ...data, goal: { ...checkpoint.goal, text } };
+}
+
+function referenceCheckpoint(data: unknown) {
+  if (!isRecord(data) || Object.hasOwn(data, "queue") || Object.hasOwn(data, "pendingAction")) return undefined;
+  const goal = data.goal;
+  if (!isRecord(goal) || goal.status === "queued" || goal.status === "complete") return undefined;
+  return { goal, objectiveEntryId: data.objectiveEntryId };
+}
+
+function fullReferenceSource(goal: Record<string, unknown> | undefined) {
+  return goal && Object.hasOwn(goal, "text") && isStoredGoal(goal) ? goal : undefined;
+}
+
+function compactCheckpoint(checkpoint: ReturnType<typeof referenceCheckpoint>) {
+  if (!checkpoint) return undefined;
+  const { goal, objectiveEntryId } = checkpoint;
+  if (typeof objectiveEntryId !== "string" || !objectiveEntryId) return undefined;
+  if (Object.hasOwn(goal, "text") || !hasStoredGoalFields(goal)) return undefined;
+  return { goal, objectiveEntryId };
+}
+
+function referencedObjective(
+  entries: readonly SessionEntry[],
+  leafId: string,
+  sourceId: string,
+  goalId: string,
+): string | undefined {
+  const indexById = new Map<string, number | null>();
+  for (const [index, entry] of entries.entries()) {
+    if (entry.id) indexById.set(entry.id, indexById.has(entry.id) ? null : index);
+  }
+  let text: string | undefined;
+  for (let index = indexById.get(leafId); typeof index === "number"; ) {
+    const entry = entries[index];
+    if (!entry) return undefined;
+    if (text === undefined) {
+      if (entry.id === sourceId) {
+        if (!isCanonicalEntry(entry)) return undefined;
+        const source = fullReferenceSource(referenceCheckpoint(entry.data)?.goal);
+        if (source?.id !== goalId) return undefined;
+        text = source.text;
+      } else if (isCanonicalEntry(entry)) {
+        const checkpoint = compactCheckpoint(referenceCheckpoint(entry.data));
+        if (checkpoint?.objectiveEntryId !== sourceId || checkpoint.goal.id !== goalId) return undefined;
+      }
+    }
+    const parent = entry.parentId ? indexById.get(entry.parentId) : undefined;
+    if (typeof parent === "number" && parent >= index) return undefined;
+    index = parent;
+  }
+  return text;
 }
 
 function loadCanonicalGoalState(data: unknown): LoadedGoalState {
@@ -216,15 +371,16 @@ function readState(): Record<string, unknown> {
 }
 
 function isStoredGoal(value: unknown): value is LegacyStoredGoal {
-  if (!isRecord(value)) return false;
+  return isRecord(value) && validObjective(value.text) && hasStoredGoalFields(value);
+}
+
+function hasStoredGoalFields(value: Record<string, unknown>): value is Record<string, unknown> & { id: string } {
   return (
     typeof value.id === "string" &&
     Boolean(value.id) &&
     value.id === value.id.trim() &&
-    validObjective(value.text) &&
-    ["active", "queued", "paused", "blocked", "usage_limited", "budget_limited", "complete"].includes(
-      String(value.status),
-    ) &&
+    typeof value.status === "string" &&
+    ["active", "queued", "paused", "blocked", "usage_limited", "budget_limited", "complete"].includes(value.status) &&
     typeof value.startedAt === "number" &&
     typeof value.updatedAt === "number" &&
     typeof value.iteration === "number" &&

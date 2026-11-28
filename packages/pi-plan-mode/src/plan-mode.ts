@@ -88,6 +88,7 @@ import {
   configuredImplementationPlanRetention,
   configuredPlanModeToggleShortcut,
   configuredPlanPane,
+  configuredPlanPaneWidthRatio,
   configuredThinkingLevel,
   type ImplementationPlanRetention,
   type PlanModeSettings,
@@ -188,18 +189,15 @@ export default function planMode(pi: ExtensionAPI, dependencies: PlanModeDepende
   let shutdownTask: Promise<void> | undefined;
   let widgetState: EditorStatusWidgetState = { collapsed: false };
   const planPane = createPlanPaneController();
-  const paneShortcut = createPlanPaneShortcut(pi, (ctx) => {
-    if (
-      shutdownStarted ||
-      currentSession !== ctx.sessionManager ||
-      !state.enabled ||
-      !workflowMutex.isOwner(workflowOwner)
-    )
-      return;
-    if (ctx.mode === "tui" && ctx.hasUI && configuredPlanPane(settings) !== "off") {
-      planPane.toggle(ctx.sessionManager);
-    }
-  });
+  const ownsPlanPane = (ctx: ExtensionContext) =>
+    !shutdownStarted && currentSession === ctx.sessionManager && state.enabled && workflowMutex.isOwner(workflowOwner);
+  const paneShortcut = createPlanPaneShortcut(
+    pi,
+    (ctx) => {
+      if (ownsPlanPane(ctx)) planPane.toggle(ctx.sessionManager);
+    },
+    (ctx, data, canToggle) => ownsPlanPane(ctx) && planPane.handleInput(ctx.sessionManager, data, canToggle),
+  );
   let liveCompletion: { session: ExtensionContext["sessionManager"]; toolCallId: string; plan: string } | undefined;
   const draft = createPlanDraftController();
   let interactiveUiPromise: Promise<InteractiveUi> | undefined;
@@ -216,6 +214,7 @@ export default function planMode(pi: ExtensionAPI, dependencies: PlanModeDepende
   const explicitPlanModeSettingsPath = dependencies.settingsPath;
   let state: PlanModeState = { enabled: false, awaitingAction: false };
   let settings: PlanModeSettings = { thinkingLevel: "inherit" };
+  let paneWidthSaves: { pending?: { ratio: number } } = {};
   let startupToggleShortcut: ReturnType<typeof configuredPlanModeToggleShortcut>;
   let shortcutInitialized = false;
   let workflowAllowedToolNames: string[] | undefined;
@@ -343,7 +342,12 @@ export default function planMode(pi: ExtensionAPI, dependencies: PlanModeDepende
         );
       }
 
-      return interaction.answer(toolCallId, parsed.questions, ctx, signal);
+      const resumePane = ownsPlanPane(ctx) ? planPane.pauseForQuestion() : undefined;
+      try {
+        return await interaction.answer(toolCallId, parsed.questions, ctx, signal);
+      } finally {
+        resumePane?.();
+      }
     },
   });
 
@@ -620,6 +624,7 @@ export default function planMode(pi: ExtensionAPI, dependencies: PlanModeDepende
     pendingWorkflowToolPolicy = undefined;
     implementationRetention.reset();
     settings = { thinkingLevel: "inherit" };
+    paneWidthSaves = {};
     const branch = ctx.sessionManager.getBranch();
     const restoredState = restorePlanModeState(branch, STATE_ENTRY_TYPE);
     statePersistence.restore(restoredState);
@@ -629,6 +634,7 @@ export default function planMode(pi: ExtensionAPI, dependencies: PlanModeDepende
     if (generation !== menuGeneration || menuController.signal.aborted) return;
     initializePlanModeShortcut();
     interaction.startSession(ctx, startupToggleShortcut);
+    planPane.setPlanModeShortcut(startupToggleShortcut);
     paneShortcut.startSession(ctx, startupToggleShortcut);
     startPlanModeSettingsWatch(generation);
     if (!installRestoredState(restoredState, ctx)) return;
@@ -2382,7 +2388,47 @@ export default function planMode(pi: ExtensionAPI, dependencies: PlanModeDepende
   function updatePlanPane(ctx: ExtensionContext) {
     if (shutdownStarted || currentSession !== ctx.sessionManager) return;
     const content = state.latestPlan ?? (managedDraft(ctx) ? draft.preview() : undefined);
-    planPane.update(ctx, state.enabled ? configuredPlanPane(settings) : "off", content);
+    planPane.update(
+      ctx,
+      state.enabled ? configuredPlanPane(settings) : "off",
+      content,
+      paneWidthSaves.pending?.ratio ?? configuredPlanPaneWidthRatio(settings),
+      (ratio) => void savePlanPaneWidth(ctx, ratio),
+    );
+  }
+
+  async function savePlanPaneWidth(ctx: ExtensionContext, ratio: number) {
+    if (
+      shutdownStarted ||
+      currentSession !== ctx.sessionManager ||
+      !state.enabled ||
+      !workflowMutex.isOwner(workflowOwner)
+    ) {
+      return;
+    }
+    const saves = paneWidthSaves;
+    const lifecycle = captureMenuLifecycle();
+    const request = { ratio };
+    saves.pending = request;
+    updatePlanPane(ctx);
+    const updateSettings = dependencies.updateSettings ?? updatePlanModeSettings;
+    try {
+      await updateSettings(
+        { planPaneWidthRatio: ratio },
+        explicitPlanModeSettingsPath ? { settingsPath: explicitPlanModeSettingsPath } : undefined,
+      );
+      if (paneWidthSaves !== saves || shutdownStarted) return;
+      settingsReadRevision += 1;
+      settings = { ...settings, planPaneWidthRatio: ratio };
+      if (settingsWatch) schedulePlanModeSettingsReload(menuGeneration);
+    } catch (error) {
+      if (paneWidthSaves !== saves || shutdownStarted || saves.pending !== request) return;
+      if (lifecycle.isCurrent())
+        ctx.ui.notify(`Unable to save Plan pane width: ${terminalErrorDetail(error)}.`, "warning");
+    }
+    if (saves.pending !== request) return;
+    delete saves.pending;
+    if (currentSessionContext) updatePlanPane(currentSessionContext);
   }
 
   function clearUi(ctx: ExtensionContext) {

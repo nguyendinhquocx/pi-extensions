@@ -1,5 +1,17 @@
 # @narumitw/pi-goal
 
+## 0.55.7
+
+### Patch Changes
+
+- 0f16fc4: Reject compact Goal checkpoints that depend on duplicate entry IDs or out-of-order parents in a session file. Full checkpoints are unchanged.
+
+## 0.55.6
+
+### Patch Changes
+
+- 9387b83: Restore Goal checkpoints that refer to an earlier objective on the same branch. New checkpoints still store the full objective so older versions can read them.
+
 ## 0.55.5
 
 ### Patch Changes

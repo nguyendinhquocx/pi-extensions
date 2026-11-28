@@ -9,6 +9,7 @@ Style badges and preview local file citations in Pi's terminal transcript withou
 
 - Display decorative badges, linked badges, and local Markdown links in user and assistant messages.
 - Hover over a file link in fullscreen mode to preview local text files, including files outside the workspace, or workspace images.
+- Copy a whole code block with the **Copy code** button in fullscreen mode.
 - Turn on filename lookup for wikilinks in the current session.
 - Edit or turn off the system prompt hint for badges and file citations.
 
@@ -42,8 +43,7 @@ for a project install.
 
 If you load the old checkout path, replace it with `./packages/pi-inline`.
 Remove any explicit entry for the former `.pi/extensions/pi-inline-markup/`
-extension. Do not load both copies. Use `/inline` to open the settings menu.
-`/inline-markup` still opens the same menu.
+extension. Do not load both copies.
 
 ## 🚀 Quick start
 
@@ -54,10 +54,15 @@ workspace also work for text previews without any setup. If Pi detects Kitty
 graphics support, hover over a workspace image link such as
 `[Cat Photo](./cat.png)` to see the image.
 
+In fullscreen mode on a supported Pi version, click **Copy code** below a
+fenced block in a user or assistant message. The button is on the left by
+default. It copies the source without fences or display wrapping and shows
+Pi's `Copied!` message in the upper-right corner.
+
 ## 💬 Commands
 
-Run `/inline` with no arguments in the terminal UI. `/inline-markup` is a
-compatibility alias.
+Run `/inline` with no arguments in the terminal UI to open the settings menu.
+If you used `/inline-markup`, switch to `/inline`; the old command was removed.
 
 - **Wikilinks** changes filename lookup immediately for the current session.
   It starts Off in each new session and after `/reload`. Turning it Off stops
@@ -66,6 +71,15 @@ compatibility alias.
   the saved text.
 - **Edit Prompt Hint…** opens a multiline editor with the saved text, even if
   the hint is Off.
+- **Code Block Copy** saves and applies immediately, without a reload.
+  **Copy button** (default) adds a filled `Copy code` button below each block.
+  Narrow views use `Copy` when the full label does not fit. **Click block**
+  hides the button and copies about half a second after a single click, leaving
+  double-clicking and dragging to Pi. Moving the pointer alone after release
+  does not cancel copying. **Off** leaves Pi's native selection and `/copy`
+  command unchanged.
+- **Copy Button Position** saves and applies immediately. Choose **Left**
+  (default) or **Right**. This only affects **Copy button** mode.
 
 After a prompt hint change is saved, Pi asks whether to reload. Choose No to
 keep the saved change without applying it to the current session. Apply it later
@@ -92,9 +106,14 @@ still goes through, Pi tells you to run `/reload`.
   WebP paths and a file icon (📄) for other paths. Use a plain-text or inline-code
   label with an absolute path or a path relative to Pi's working directory.
   Paths can point outside that directory, including with `../`. Encode spaces
-  as `%20`. The icon does not indicate that a file exists or has a preview.
-- Use `#L12` for one source line or `#L12-L20` for an inclusive range. Hover also
-  accepts `#L12-20`. These previews show literal source rather than rendered Markdown.
+  as `%20` and `#` in a filename as `%23`. The icon does not indicate that a
+  file exists or has a preview.
+- **Click:** For a styled local path with a non-empty `#` anchor and no query,
+  the extension sends a `file://` URL for the file, without the anchor. It does
+  not ask the terminal or editor to jump to a line or heading.
+- **Hover:** Use `#L12` for one source line or `#L12-L20` (also `#L12-20`)
+  for an inclusive range. These previews show literal source. A Markdown heading
+  anchor previews the file without selecting the heading.
 
 When wikilinks are on, `[[README]]` looks up files under Pi's working directory,
 `[[README.md|Guide]]` sets a custom label, and `[[./README.md]]` selects an exact
@@ -107,12 +126,18 @@ and refreshes five seconds after each scan.
 
 ## ⚙️ Settings
 
-Prompt hint settings use `pi-inline.json` in Pi's agent directory (by default
+User settings use `pi-inline.json` in Pi's agent directory (by default
 `~/.pi/agent/`). Project settings are ignored. Use a regular file, not a
 symbolic link. If its content is invalid, repair it before saving through the
 menu. Settings writes are ordered within one Pi process, not between processes.
 Finish saving before editing the file by hand or from another Pi process.
 The former `externalPreviewRoots` field is ignored and can be removed.
+
+`codeBlockCopyMode` accepts `"button"` (the default), `"click"`, and `"off"`.
+`codeBlockCopyButtonPosition` accepts `"left"` (the default) and `"right"`.
+An invalid mode disables block copying. An invalid position uses the default.
+Invalid settings block saves until you repair the file. If you edit the file by
+hand, reload Pi to apply it.
 
 `promptHintEnabled` accepts a boolean and defaults to `true`. `promptHintText`
 accepts a non-blank string, including multiple lines. Line endings are saved as
@@ -140,9 +165,20 @@ turning it off does not remove text from earlier requests or stored history.
 ## 🚧 Limitations
 
 - Rounded badges require a font with Powerline glyphs.
+- Click-to-copy requires fullscreen SGR mouse reporting and a Pi version whose
+  rendering and selection behavior the extension has verified. On other versions
+  or in regular mode, Pi keeps its native behavior and the saved mode is retained.
+- Block copying applies to complete, nonempty fenced blocks at the top level of
+  user and assistant messages. It does not apply to streaming text, nested
+  blocks, tool output, or thinking. If decoration would change the original
+  rendering, the extension leaves the message unchanged. The button is omitted
+  when there is not enough room.
 - Hover previews require fullscreen mode, OSC 8 hyperlinks, and mouse movement
   reports without a button press. Pi does not request these reports in tmux,
   Zellij, or GNU Screen.
+- Opening a `file://` link depends on your terminal. If Pi and the terminal
+  viewer run on different hosts, the URL can resolve on the wrong host. Do not
+  rely on these links to open remote files.
 - Text previews show up to 16 KiB of a regular UTF-8 file. For a line-anchored
   preview, the first requested line must start within the first 256 KiB.
 - Image previews require Kitty graphics and display a static PNG, JPEG, GIF, or

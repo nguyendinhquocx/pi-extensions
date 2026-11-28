@@ -18,7 +18,9 @@ Pi's official [TUI guidance](https://github.com/earendil-works/pi/blob/main/pack
 
 A split workspace releases Pi's command wait after its first non-overlay root mounts, receives focus, and requests rendering.
 This lets Pi's idle loop consume main-pane submissions without closing BTW; the streaming path keeps Pi's normal steering behavior.
-The initial manager and fullscreen-only workspaces remain modal.
+The initial manager, fullscreen-only workspace, and floating window remain modal.
+
+The floating layout stays on Pi’s existing renderer through `ctx.ui.custom({ overlay: true })`; it does not participate in the terminal handoff. One owned overlay hosts the composer, answering view, and review pages. The [Kit floating frame](https://github.com/narumiruna/pi-extensions/blob/main/packages/pi-tui-kit/docs/api.md#floating-frame) owns the rectangle, border, and drag regions, and reports the inner viewport. BTW’s page adapter adds the existing three reserved editor rows for legacy page layouts; that offset is not part of the Kit API. A page change keeps window geometry; closure or Pi-driven disposal cancels the active page and prevents late factories from mounting.
 
 Command completion does not end resource ownership.
 `BtwSessionLifetime` still tracks the complete UI task and drains retained thread work and settings writes during shutdown.
